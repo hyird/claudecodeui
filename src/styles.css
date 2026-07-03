@@ -181,15 +181,19 @@ button:focus-visible {
   height: 64px;
   margin-bottom: 20px;
   border-radius: 16px;
-  background: linear-gradient(135deg, hsl(var(--auth-primary)), hsl(var(--auth-primary) / 0.80));
+  border: 1px solid hsl(var(--auth-border) / 0.82);
+  background:
+    linear-gradient(180deg, hsl(var(--auth-card)), hsl(var(--auth-primary) / 0.06)),
+    hsl(var(--auth-card));
   box-shadow:
-    inset 0 0 0 1px hsl(0 0% 100% / 0.20),
-    0 10px 24px -10px hsl(var(--auth-primary) / 0.45);
+    inset 0 1px 0 hsl(0 0% 100% / 0.75),
+    0 14px 28px -18px hsl(var(--auth-primary) / 0.38),
+    0 1px 2px hsl(var(--auth-foreground) / 0.08);
 }
 
 .auth-logo img {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   display: block;
 }
 

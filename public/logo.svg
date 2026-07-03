@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none">
-  <rect width="32" height="32" rx="8" fill="hsl(221.2 83.2% 53.3%)"/>
+  <rect x="4" y="4" width="24" height="24" rx="8" fill="hsl(221.2 83.2% 53.3% / 0.08)" stroke="hsl(221.2 83.2% 53.3% / 0.22)"/>
   <path
-    d="M8 9C8 8.44772 8.44772 8 9 8H23C23.5523 8 24 8.44772 24 9V18C24 18.5523 23.5523 19 23 19H12L8 23V9Z"
-    stroke="white"
-    stroke-width="2"
+    d="M10 10.5C10 9.67157 10.6716 9 11.5 9H21.5C22.3284 9 23 9.67157 23 10.5V17.5C23 18.3284 22.3284 19 21.5 19H14L10 23V10.5Z"
+    stroke="hsl(221.2 83.2% 53.3%)"
+    stroke-width="2.1"
     stroke-linecap="round"
     stroke-linejoin="round"
     fill="none"
