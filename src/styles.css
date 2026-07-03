@@ -1000,9 +1000,13 @@ button:focus-visible {
    alternate-screen TUI like Claude with no scrollback); `auto` hides it
    whenever the buffer fits the viewport. */
 .terminal-pane .xterm .xterm-viewport {
-  overflow-y: auto !important;
+  overflow-y: hidden !important;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+.terminal-pane .xterm .xterm-viewport.has-scrollback {
+  overflow-y: auto !important;
 }
 
 .terminal-pane .xterm .xterm-viewport::-webkit-scrollbar {

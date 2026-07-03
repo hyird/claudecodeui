@@ -173,6 +173,16 @@ export default function TerminalPane({
     screen.style.willChange = '';
   }, []);
 
+  const updateScrollbackAffordance = useCallback(() => {
+    const terminal = terminalRef.current;
+    const viewport = terminal?.element?.querySelector<HTMLElement>('.xterm-viewport');
+    if (!terminal || !viewport) {
+      return;
+    }
+
+    viewport.classList.toggle('has-scrollback', terminal.buffer.active.baseY > 0);
+  }, []);
+
   // Resize only on whole-cell boundaries. Any sub-cell remainder stays blank.
   const resizeAfterLayoutSettles = useCallback(() => {
     fitAndResize();
@@ -256,6 +266,7 @@ export default function TerminalPane({
     });
 
     terminal.open(container);
+    updateScrollbackAffordance();
     terminal.writeln('\x1b[36mCloudCLI Terminal\x1b[0m');
     terminal.writeln('\x1b[90mConnecting...\x1b[0m');
 
@@ -294,6 +305,7 @@ export default function TerminalPane({
           terminal.writeln(`\x1b[36mSession ${message.sessionId}\x1b[0m`);
           terminal.writeln(`\x1b[90m${message.cwd}\x1b[0m\r\n`);
           onStatusChange(tab.id, 'connected');
+          updateScrollbackAffordance();
           resizeAfterLayoutSettles();
           return;
         }
@@ -327,6 +339,9 @@ export default function TerminalPane({
     const titleSubscription = terminal.onTitleChange((title) => {
       onTitleChange(tab.id, title);
     });
+    const scrollSubscription = terminal.onScroll(updateScrollbackAffordance);
+    const writeParsedSubscription = terminal.onWriteParsed(updateScrollbackAffordance);
+    const resizeSubscription = terminal.onResize(updateScrollbackAffordance);
     const pasteHandler = (event: ClipboardEvent) => {
       const data = event.clipboardData?.getData('text/plain');
       if (!data) {
@@ -351,6 +366,9 @@ export default function TerminalPane({
       clearScreenTransform();
       dataSubscription.dispose();
       titleSubscription.dispose();
+      scrollSubscription.dispose();
+      writeParsedSubscription.dispose();
+      resizeSubscription.dispose();
       container.removeEventListener('paste', pasteHandler);
       resizeObserver.disconnect();
       socket.close();
@@ -369,6 +387,7 @@ export default function TerminalPane({
     resizeAfterLayoutSettles,
     resizeDuringDrag,
     sendInput,
+    updateScrollbackAffordance,
     authToken,
     tab.id,
   ]);

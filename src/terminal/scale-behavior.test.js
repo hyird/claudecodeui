@@ -51,10 +51,21 @@ test('terminal screen does not force transform styling while idle', () => {
   assert.equal(rule.includes('transition: transform'), false);
 });
 
-test('terminal viewport scrollbar appears only when scrollback overflows', () => {
+test('terminal viewport hides fractional scrollbars until scrollback exists', () => {
   const viewportRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport \{[\s\S]*?\}/);
+  const scrollbackRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport\.has-scrollback \{[\s\S]*?\}/);
   const rule = viewportRule?.[0] ?? '';
+  const activeRule = scrollbackRule?.[0] ?? '';
 
-  assert.match(rule, /overflow-y:\s*auto\s*!important/);
+  assert.match(rule, /overflow-y:\s*hidden\s*!important/);
   assert.equal(rule.includes('overflow-y: scroll'), false);
+  assert.match(activeRule, /overflow-y:\s*auto\s*!important/);
+});
+
+test('terminal viewport scroll affordance follows xterm scrollback state', () => {
+  assert.match(source, /const updateScrollbackAffordance = useCallback/);
+  assert.match(source, /terminal\.buffer\.active\.baseY > 0/);
+  assert.match(source, /viewport\.classList\.toggle\('has-scrollback'/);
+  assert.match(source, /terminal\.onScroll\(updateScrollbackAffordance\)/);
+  assert.match(source, /terminal\.onWriteParsed\(updateScrollbackAffordance\)/);
 });
