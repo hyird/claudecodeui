@@ -989,11 +989,6 @@ button:focus-visible {
   height: 100%;
 }
 
-.terminal-pane .xterm-screen {
-  transform-origin: 0 0;
-  transition: transform 90ms cubic-bezier(0.2, 0, 0, 1);
-}
-
 /* Slim scroll affordance — only present when there is scrollback to reach.
    xterm.css forces `overflow-y: scroll` (a permanent track, even in an
    alternate-screen TUI like Claude with no scrollback); `auto` hides it

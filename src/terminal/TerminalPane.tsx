@@ -21,7 +21,13 @@ type TerminalPaneProps = {
   onTitleChange: (tabId: string, title: string) => void;
 };
 
-const MAX_DRAG_UPSCALE = 1.22;
+type TerminalDimensions = {
+  cols: number;
+  rows: number;
+};
+
+const MIN_TERMINAL_COLS = 2;
+const MIN_TERMINAL_ROWS = 1;
 
 function createWebSocketUrl(authToken: string) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -67,27 +73,67 @@ export default function TerminalPane({
     }
   }, []);
 
-  // Fit the grid to the frame, but only do the expensive work — grid resize,
-  // repaint and PTY reflow — when the cell count actually changes. A character
-  // terminal can only grow/shrink one whole cell at a time, so most resize
-  // frames leave cols/rows untouched; forwarding those no-op sizes to node-pty
-  // floods ConPTY with redundant reflows and makes dragging lag behind the
-  // window edge.
-  const fitAndResize = useCallback(() => {
-    const terminal = terminalRef.current;
+  const readFitDimensions = useCallback((): TerminalDimensions | undefined => {
     const fitAddon = fitAddonRef.current;
-    const socket = socketRef.current;
-    if (!terminal || !fitAddon) {
-      return;
+    if (!fitAddon) {
+      return undefined;
     }
 
-    let dims: { cols: number; rows: number } | undefined;
     try {
-      dims = fitAddon.proposeDimensions();
+      const dims = fitAddon.proposeDimensions();
+      if (dims && Number.isFinite(dims.cols) && Number.isFinite(dims.rows)) {
+        return dims;
+      }
     } catch {
-      return;
+      return undefined;
     }
-    if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) {
+
+    return undefined;
+  }, []);
+
+  const measureCellCapacity = useCallback((fallback?: TerminalDimensions) => {
+    const terminal = terminalRef.current;
+    const container = containerRef.current;
+    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
+    if (!terminal || !container || !screen) {
+      return fallback;
+    }
+
+    const baseCols = terminal.cols || fallback?.cols || lastSizeRef.current.cols;
+    const baseRows = terminal.rows || fallback?.rows || lastSizeRef.current.rows;
+    if (baseCols <= 0 || baseRows <= 0 || screen.offsetWidth <= 0 || screen.offsetHeight <= 0) {
+      return fallback;
+    }
+
+    const cellWidth = screen.offsetWidth / baseCols;
+    const cellHeight = screen.offsetHeight / baseRows;
+    if (!Number.isFinite(cellWidth) || !Number.isFinite(cellHeight) || cellWidth <= 0 || cellHeight <= 0) {
+      return fallback;
+    }
+
+    const style = window.getComputedStyle(container);
+    const availWidth = container.clientWidth
+      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const availHeight = container.clientHeight
+      - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+
+    return {
+      cols: Math.max(MIN_TERMINAL_COLS, Math.floor(availWidth / cellWidth)),
+      rows: Math.max(MIN_TERMINAL_ROWS, Math.floor(availHeight / cellHeight)),
+    };
+  }, []);
+
+  const proposeFrameDimensions = useCallback(() => (
+    measureCellCapacity(readFitDimensions())
+  ), [measureCellCapacity, readFitDimensions]);
+
+  // Fit to the largest whole-cell grid the current frame can contain. Any
+  // leftover pixels stay blank instead of clipping the right edge/bottom row.
+  const fitAndResize = useCallback(() => {
+    const terminal = terminalRef.current;
+    const socket = socketRef.current;
+    const dims = proposeFrameDimensions();
+    if (!terminal || !dims) {
       return;
     }
 
@@ -108,7 +154,7 @@ export default function TerminalPane({
         rows: dims.rows,
       }));
     }
-  }, []);
+  }, [proposeFrameDimensions]);
 
   const sendInput = useCallback((data: string) => {
     const socket = socketRef.current;
@@ -117,7 +163,7 @@ export default function TerminalPane({
     }
   }, []);
 
-  const clearScreenScale = useCallback(() => {
+  const clearScreenTransform = useCallback(() => {
     const screen = terminalRef.current?.element?.querySelector<HTMLElement>('.xterm-screen');
     if (!screen) {
       return;
@@ -128,47 +174,7 @@ export default function TerminalPane({
     screen.style.willChange = '';
   }, []);
 
-  // Between cell boundaries the character grid can be a few pixels larger than
-  // the frame (a grid only snaps a whole cell at a time, and xterm re-renders
-  // async). Left alone, `overflow: hidden` clips the last row/column. This
-  // pass scales the rendered grid down just enough to stay inside the frame —
-  // and clears the transform the moment it fits, so text is crisp at rest.
-  const clampScaleToFrame = useCallback((allowGrow = false) => {
-    const terminal = terminalRef.current;
-    const container = containerRef.current;
-    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
-    if (!container || !screen) {
-      return;
-    }
-
-    const gridWidth = screen.offsetWidth;
-    const gridHeight = screen.offsetHeight;
-    if (gridWidth <= 0 || gridHeight <= 0) {
-      return;
-    }
-
-    const style = window.getComputedStyle(container);
-    const availWidth = container.clientWidth
-      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-    const availHeight = container.clientHeight
-      - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
-
-    const fitScale = Math.min(availWidth / gridWidth, availHeight / gridHeight);
-    const scale = allowGrow
-      ? Math.min(MAX_DRAG_UPSCALE, fitScale)
-      : Math.min(1, fitScale);
-
-    if (scale > 0.999 && scale < 1.001) {
-      screen.style.transform = '';
-      screen.style.transformOrigin = '';
-      screen.style.willChange = '';
-    } else {
-      screen.style.transformOrigin = '0 0';
-      screen.style.willChange = 'transform';
-      screen.style.transform = `scale(${scale})`;
-    }
-  }, []);
-
+  // Resize only on whole-cell boundaries. Any sub-cell remainder stays blank.
   const resizeAfterLayoutSettles = useCallback(() => {
     // Coalesce a burst of ResizeObserver ticks into at most one fit per frame
     // so a live drag stays responsive without thrashing layout.
@@ -178,41 +184,39 @@ export default function TerminalPane({
     resizeFrameRef.current = window.requestAnimationFrame(() => {
       resizeFrameRef.current = 0;
       fitAndResize();
-      clearScreenScale();
+      clearScreenTransform();
     });
 
     // One trailing pass after the layout settles (drag end, tab switch,
-    // settings panel toggle) to lock onto the final size and crisp scale.
+    // settings panel toggle) to lock onto the final whole-cell grid.
     resizeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     resizeTimersRef.current = [window.setTimeout(() => {
       fitAndResize();
-      clearScreenScale();
+      clearScreenTransform();
     }, 120)];
-  }, [clearScreenScale, fitAndResize]);
+  }, [clearScreenTransform, fitAndResize]);
 
-  // During a window drag, full-screen TUIs such as Claude repaint the whole
-  // alternate screen whenever the PTY size changes. Scale the current grid
-  // during drag, then resize xterm/PTY once after the layout settles.
+  // During a window drag, keep fitting to whole cells. Any sub-cell remainder
+  // stays as blank space instead of scaling or clipping the character grid.
   const resizeDuringDrag = useCallback(() => {
     if (resizeFrameRef.current) {
       window.cancelAnimationFrame(resizeFrameRef.current);
     }
     resizeFrameRef.current = window.requestAnimationFrame(() => {
       resizeFrameRef.current = 0;
-      clampScaleToFrame(true);
+      fitAndResize();
+      clearScreenTransform();
     });
 
     resizeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     resizeTimersRef.current = [
       window.setTimeout(() => {
         fitAndResize();
-        clearScreenScale();
+        clearScreenTransform();
       }, 180),
-      // Converge after xterm's async re-render so any lingering shrink-scale is
-      // cleared and text ends up pixel-crisp.
-      window.setTimeout(clearScreenScale, 320),
+      window.setTimeout(clearScreenTransform, 320),
     ];
-  }, [clampScaleToFrame, clearScreenScale, fitAndResize]);
+  }, [clearScreenTransform, fitAndResize]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -259,8 +263,8 @@ export default function TerminalPane({
       // Size the grid to the frame first, then announce it via init. Sending a
       // resize before init would be rejected by the server ("not initialized")
       // and flash an error line.
-      const dims = fitAddon.proposeDimensions();
-      if (dims && Number.isFinite(dims.cols) && Number.isFinite(dims.rows)) {
+      const dims = proposeFrameDimensions();
+      if (dims) {
         terminal.resize(dims.cols, dims.rows);
         lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
       }
@@ -339,7 +343,7 @@ export default function TerminalPane({
 
     return () => {
       clearResizeTimers();
-      clearScreenScale();
+      clearScreenTransform();
       dataSubscription.dispose();
       titleSubscription.dispose();
       container.removeEventListener('paste', pasteHandler);
@@ -352,10 +356,11 @@ export default function TerminalPane({
     };
   }, [
     clearResizeTimers,
-    clearScreenScale,
+    clearScreenTransform,
     fitAndResize,
     onStatusChange,
     onTitleChange,
+    proposeFrameDimensions,
     resizeAfterLayoutSettles,
     resizeDuringDrag,
     sendInput,

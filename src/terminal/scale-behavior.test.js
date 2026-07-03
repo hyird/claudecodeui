@@ -11,19 +11,28 @@ function extractCallback(name) {
   return match[0];
 }
 
-test('terminal screen scale is transient during resize and cleared once settled', () => {
+test('terminal screen fits whole cells without scale transforms', () => {
   const settledResize = extractCallback('resizeAfterLayoutSettles');
   const dragResize = extractCallback('resizeDuringDrag');
 
-  assert.match(source, /const clearScreenScale = useCallback/);
-  assert.match(dragResize, /clampScaleToFrame\(true\)/);
-  assert.match(dragResize, /clearScreenScale/);
-  assert.match(settledResize, /clearScreenScale\(\)/);
+  assert.match(source, /const clearScreenTransform = useCallback/);
+  assert.match(source, /const measureCellCapacity = useCallback/);
+  assert.match(source, /Math\.floor\(availWidth \/ cellWidth\)/);
+  assert.match(source, /Math\.floor\(availHeight \/ cellHeight\)/);
+  assert.equal(source.includes('clampScaleToFrame'), false);
+  assert.equal(source.includes('MAX_DRAG_UPSCALE'), false);
+  assert.equal(source.includes('clearScreenScale'), false);
+  assert.equal(source.includes('scale(${'), false);
+  assert.match(dragResize, /fitAndResize\(\)/);
+  assert.match(dragResize, /clearScreenTransform/);
+  assert.match(settledResize, /clearScreenTransform\(\)/);
   assert.equal(settledResize.includes('clampScaleToFrame'), false);
 });
 
-test('terminal screen does not force a transform compositing layer while idle', () => {
+test('terminal screen does not force transform styling while idle', () => {
   const screenRule = styles.match(/\.terminal-pane \.xterm-screen \{[\s\S]*?\}/);
-  assert.ok(screenRule, 'Could not find terminal screen CSS rule');
-  assert.equal(screenRule[0].includes('will-change'), false);
+  const rule = screenRule?.[0] ?? '';
+  assert.equal(rule.includes('will-change'), false);
+  assert.equal(rule.includes('transform-origin'), false);
+  assert.equal(rule.includes('transition: transform'), false);
 });
