@@ -1,5 +1,6 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useRef } from 'react';
 
@@ -29,9 +30,6 @@ type TerminalDimensions = {
   cols: number;
   rows: number;
 };
-
-const MIN_TERMINAL_COLS = 2;
-const MIN_TERMINAL_ROWS = 1;
 
 function createWebSocketUrl(authToken: string) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -75,88 +73,42 @@ export default function TerminalPane({
     }
   }, []);
 
-  const readFitDimensions = useCallback((): TerminalDimensions | undefined => {
+  const fitTerminal = useCallback((notifyServer = true): TerminalDimensions | undefined => {
+    const terminal = terminalRef.current;
     const fitAddon = fitAddonRef.current;
-    if (!fitAddon) {
+    if (!terminal || !fitAddon) {
       return undefined;
     }
 
     try {
-      const dims = fitAddon.proposeDimensions();
-      if (dims && Number.isFinite(dims.cols) && Number.isFinite(dims.rows)) {
-        return dims;
-      }
+      fitAddon.fit();
     } catch {
       return undefined;
     }
 
-    return undefined;
-  }, []);
-
-  const measureCellCapacity = useCallback((fallback?: TerminalDimensions) => {
-    const terminal = terminalRef.current;
-    const container = containerRef.current;
-    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
-    if (!terminal || !container || !screen) {
-      return fallback;
-    }
-
-    const baseCols = terminal.cols || fallback?.cols || lastSizeRef.current.cols;
-    const baseRows = terminal.rows || fallback?.rows || lastSizeRef.current.rows;
-    if (baseCols <= 0 || baseRows <= 0 || screen.offsetWidth <= 0 || screen.offsetHeight <= 0) {
-      return fallback;
-    }
-
-    const cellWidth = screen.offsetWidth / baseCols;
-    const cellHeight = screen.offsetHeight / baseRows;
-    if (!Number.isFinite(cellWidth) || !Number.isFinite(cellHeight) || cellWidth <= 0 || cellHeight <= 0) {
-      return fallback;
-    }
-
-    const style = window.getComputedStyle(container);
-    const availWidth = container.clientWidth
-      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-    const availHeight = container.clientHeight
-      - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
-
-    return {
-      cols: Math.max(MIN_TERMINAL_COLS, Math.floor(availWidth / cellWidth)),
-      rows: Math.max(MIN_TERMINAL_ROWS, Math.floor(availHeight / cellHeight)),
-    };
-  }, []);
-
-  const proposeFrameDimensions = useCallback(() => (
-    measureCellCapacity(readFitDimensions())
-  ), [measureCellCapacity, readFitDimensions]);
-
-  // Fit to the largest whole-cell grid the current frame can contain. Any
-  // leftover pixels stay blank instead of clipping the right edge/bottom row.
-  const fitAndResize = useCallback(() => {
-    const terminal = terminalRef.current;
     const socket = socketRef.current;
-    const dims = proposeFrameDimensions();
-    if (!terminal || !dims) {
-      return;
-    }
+    const dims = { cols: terminal.cols, rows: terminal.rows };
 
     const last = lastSizeRef.current;
     if (dims.cols === last.cols && dims.rows === last.rows) {
-      return;
+      return dims;
     }
     lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
 
-    if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
-      terminal.resize(dims.cols, dims.rows);
-    }
-
-    if (socket?.readyState === WebSocket.OPEN) {
+    if (notifyServer && socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({
         type: 'resize',
         cols: dims.cols,
         rows: dims.rows,
       }));
     }
-  }, [proposeFrameDimensions]);
+
+    return dims;
+  }, []);
+
+  const fitAndResize = useCallback(() => {
+    fitTerminal();
+  }, [fitTerminal]);
 
   const sendInput = useCallback((data: string) => {
     const socket = socketRef.current;
@@ -268,7 +220,6 @@ export default function TerminalPane({
       lineHeight: 1.12,
       scrollback: 10000,
       theme: terminalTheme,
-      windowsMode: true,
     });
     const fitAddon = new FitAddon();
 
@@ -276,6 +227,7 @@ export default function TerminalPane({
     fitAddonRef.current = fitAddon;
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
+    terminal.loadAddon(new WebglAddon());
     terminal.attachCustomKeyEventHandler((event) => {
       if (isCopyShortcut(event) && copyTerminalSelection(terminal, event)) {
         return false;
@@ -288,6 +240,11 @@ export default function TerminalPane({
       return true;
     });
     terminal.attachCustomWheelEventHandler((event) => {
+      const mouseTrackingEnabled = terminal.element?.classList.contains('enable-mouse-events') === true;
+      if (mouseTrackingEnabled) {
+        return true;
+      }
+
       if (terminal.buffer.active.baseY <= 0) {
         event.preventDefault();
         event.stopPropagation();
@@ -311,16 +268,12 @@ export default function TerminalPane({
       // Size the grid to the frame first, then announce it via init. Sending a
       // resize before init would be rejected by the server ("not initialized")
       // and flash an error line.
-      const dims = proposeFrameDimensions();
-      if (dims) {
-        terminal.resize(dims.cols, dims.rows);
-        lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
-      }
+      const dims = fitTerminal(false);
       socket.send(JSON.stringify({
         type: 'init',
         sessionId: tab.id,
-        cols: terminal.cols,
-        rows: terminal.rows,
+        cols: dims?.cols ?? terminal.cols,
+        rows: dims?.rows ?? terminal.rows,
       }));
       resizeAfterLayoutSettles();
     });
@@ -431,9 +384,9 @@ export default function TerminalPane({
     clearResizeTimers,
     clearScreenTransform,
     fitAndResize,
+    fitTerminal,
     onStatusChange,
     onTitleChange,
-    proposeFrameDimensions,
     resizeAfterLayoutSettles,
     resizeDuringDrag,
     scheduleRenderRefresh,

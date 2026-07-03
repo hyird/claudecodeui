@@ -11,14 +11,16 @@ function extractCallback(name) {
   return match[0];
 }
 
-test('terminal screen fits whole cells without scale transforms', () => {
+test('terminal resize uses FitAddon fit logic without scale transforms', () => {
   const settledResize = extractCallback('resizeAfterLayoutSettles');
   const dragResize = extractCallback('resizeDuringDrag');
 
   assert.match(source, /const clearScreenTransform = useCallback/);
-  assert.match(source, /const measureCellCapacity = useCallback/);
-  assert.match(source, /Math\.floor\(availWidth \/ cellWidth\)/);
-  assert.match(source, /Math\.floor\(availHeight \/ cellHeight\)/);
+  assert.match(source, /const fitTerminal = useCallback/);
+  assert.match(source, /fitAddon\.fit\(\)/);
+  assert.equal(source.includes('measureCellCapacity'), false);
+  assert.equal(source.includes('proposeFrameDimensions'), false);
+  assert.equal(source.includes('terminal.resize(dims.cols, dims.rows)'), false);
   assert.equal(source.includes('clampScaleToFrame'), false);
   assert.equal(source.includes('MAX_DRAG_UPSCALE'), false);
   assert.equal(source.includes('clearScreenScale'), false);
@@ -90,6 +92,16 @@ test('terminal wheel events are not converted to arrow keys without scrollback',
   assert.match(source, /return true/);
 });
 
+test('terminal wheel events pass through when mouse tracking is enabled', () => {
+  assert.match(source, /terminal\.element\?\.classList\.contains\('enable-mouse-events'\) === true/);
+  assert.match(source, /if \(mouseTrackingEnabled\) \{\s+return true;\s+\}/);
+  assert.ok(
+    source.indexOf("classList.contains('enable-mouse-events')")
+      < source.indexOf('terminal.buffer.active.baseY <= 0'),
+    'mouse tracking should be checked before the no-scrollback wheel fallback',
+  );
+});
+
 test('terminal output and scroll events schedule a full renderer refresh', () => {
   assert.match(source, /renderRefreshFrameRef/);
   assert.match(source, /const scheduleRenderRefresh = useCallback/);
@@ -100,4 +112,10 @@ test('terminal output and scroll events schedule a full renderer refresh', () =>
   assert.match(source, /terminal\.onWriteParsed\(\(\) => \{/);
   assert.match(source, /terminal\.onResize\(\(\) => \{/);
   assert.match(source, /scheduleRenderRefresh\(\)/);
+});
+
+test('terminal uses only the WebGL renderer', () => {
+  assert.match(source, /WebglAddon/);
+  assert.match(source, /terminal\.loadAddon\(new WebglAddon\(\)\)/);
+  assert.equal(source.includes('using default renderer fallback'), false);
 });

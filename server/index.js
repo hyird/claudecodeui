@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
+import serializeXterm from '@xterm/addon-serialize';
+import headlessXterm from '@xterm/headless';
 import { Hono } from 'hono';
 import pty from 'node-pty';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -31,6 +33,8 @@ const PORT = Number(process.env.PORT || 3001);
 const BUFFER_LIMIT = 5000;
 const SAFE_ID = /^[a-zA-Z0-9_.:-]+$/;
 const SPINNER_TITLE_PREFIX = /^[\u2800-\u28ff]+[\s:·.-]*/u;
+const { SerializeAddon } = serializeXterm;
+const { Terminal: HeadlessTerminal } = headlessXterm;
 
 const app = new Hono();
 const webSocketServerOptions = {
@@ -412,9 +416,39 @@ function resolveCwd(requestedCwd) {
   return fallback;
 }
 
+function createTerminalSnapshot(cols, rows) {
+  const terminal = new HeadlessTerminal({
+    allowProposedApi: true,
+    cols,
+    rows,
+    scrollback: BUFFER_LIMIT,
+  });
+  const serializer = new SerializeAddon();
+  terminal.loadAddon(serializer);
+
+  return {
+    terminal,
+    serializer,
+    terminalSnapshot: '',
+  };
+}
+
+function writeTerminalSnapshot(session, chunk) {
+  session.terminal.write(chunk, () => {
+    session.terminalSnapshot = session.serializer.serialize();
+  });
+}
+
+function resizeSession(session, cols, rows) {
+  session.terminal.resize(cols, rows);
+  session.pty.resize(cols, rows);
+  session.terminalSnapshot = session.serializer.serialize();
+}
+
 function createSession(sessionId, options) {
   const cwd = resolveCwd(options.cwd);
   const shell = resolveShell();
+  const terminalSnapshot = createTerminalSnapshot(options.cols, options.rows);
   const shellProcess = pty.spawn(shell.command, shell.args, {
     name: 'xterm-256color',
     cols: options.cols,
@@ -432,16 +466,15 @@ function createSession(sessionId, options) {
     id: sessionId,
     cwd,
     pty: shellProcess,
+    terminal: terminalSnapshot.terminal,
+    serializer: terminalSnapshot.serializer,
+    terminalSnapshot: terminalSnapshot.terminalSnapshot,
     socket: null,
-    buffer: [],
     closed: false,
   };
 
   shellProcess.onData((chunk) => {
-    if (session.buffer.length >= BUFFER_LIMIT) {
-      session.buffer.shift();
-    }
-    session.buffer.push(chunk);
+    writeTerminalSnapshot(session, chunk);
 
     if (session.socket?.readyState === WebSocket.OPEN) {
       sendTerminalOutput(session.socket, chunk);
@@ -473,9 +506,9 @@ function attachSocket(ws, session) {
   }
 
   ws.send(JSON.stringify({ type: 'ready', cwd: session.cwd, sessionId: session.id }));
-  const bufferedOutput = session.buffer.join('');
-  if (bufferedOutput) {
-    sendTerminalOutput(ws, bufferedOutput);
+  const terminalSnapshot = session.terminalSnapshot;
+  if (terminalSnapshot) {
+    sendTerminalOutput(ws, terminalSnapshot);
   }
   broadcastTabsState();
 }
@@ -524,7 +557,7 @@ function handleInit(ws, message) {
     rows,
   });
 
-  session.pty.resize(cols, rows);
+  resizeSession(session, cols, rows);
   attachSocket(ws, session);
   return session;
 }
@@ -560,7 +593,7 @@ terminalWss.on('connection', (ws) => {
     }
 
     if (message.type === 'resize') {
-      activeSession.pty.resize(readNumber(message.cols, 100), readNumber(message.rows, 30));
+      resizeSession(activeSession, readNumber(message.cols, 100), readNumber(message.rows, 30));
       return;
     }
 
