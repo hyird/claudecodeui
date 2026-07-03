@@ -118,6 +118,17 @@ export default function TerminalPane({
     }
   }, []);
 
+  const clearScreenScale = useCallback(() => {
+    const screen = terminalRef.current?.element?.querySelector<HTMLElement>('.xterm-screen');
+    if (!screen) {
+      return;
+    }
+
+    screen.style.transform = '';
+    screen.style.transformOrigin = '';
+    screen.style.willChange = '';
+  }, []);
+
   // Between cell boundaries the character grid can be a few pixels larger than
   // the frame (a grid only snaps a whole cell at a time, and xterm re-renders
   // async). Left alone, `overflow: hidden` clips the last row/column. This
@@ -151,8 +162,10 @@ export default function TerminalPane({
     if (scale > 0.999 && scale < 1.001) {
       screen.style.transform = '';
       screen.style.transformOrigin = '';
+      screen.style.willChange = '';
     } else {
       screen.style.transformOrigin = '0 0';
+      screen.style.willChange = 'transform';
       screen.style.transform = `scale(${scale})`;
     }
   }, []);
@@ -166,7 +179,7 @@ export default function TerminalPane({
     resizeFrameRef.current = window.requestAnimationFrame(() => {
       resizeFrameRef.current = 0;
       fitAndResize();
-      clampScaleToFrame();
+      clearScreenScale();
     });
 
     // One trailing pass after the layout settles (drag end, tab switch,
@@ -174,9 +187,9 @@ export default function TerminalPane({
     resizeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     resizeTimersRef.current = [window.setTimeout(() => {
       fitAndResize();
-      clampScaleToFrame();
+      clearScreenScale();
     }, 120)];
-  }, [clampScaleToFrame, fitAndResize]);
+  }, [clearScreenScale, fitAndResize]);
 
   // During a window drag, full-screen TUIs such as Claude repaint the whole
   // alternate screen whenever the PTY size changes. Scale the current grid
@@ -194,13 +207,13 @@ export default function TerminalPane({
     resizeTimersRef.current = [
       window.setTimeout(() => {
         fitAndResize();
-        clampScaleToFrame();
+        clearScreenScale();
       }, 180),
       // Converge after xterm's async re-render so any lingering shrink-scale is
       // cleared and text ends up pixel-crisp.
-      window.setTimeout(clampScaleToFrame, 320),
+      window.setTimeout(clearScreenScale, 320),
     ];
-  }, [clampScaleToFrame, fitAndResize]);
+  }, [clampScaleToFrame, clearScreenScale, fitAndResize]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -317,6 +330,7 @@ export default function TerminalPane({
 
     return () => {
       clearResizeTimers();
+      clearScreenScale();
       dataSubscription.dispose();
       titleSubscription.dispose();
       container.removeEventListener('paste', pasteHandler);
@@ -329,6 +343,7 @@ export default function TerminalPane({
     };
   }, [
     clearResizeTimers,
+    clearScreenScale,
     fitAndResize,
     onStatusChange,
     onTitleChange,
