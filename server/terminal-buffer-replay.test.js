@@ -15,7 +15,28 @@ test('terminal attach replays a serialized screen snapshot instead of raw PTY hi
   assert.equal(source.includes('for (const chunk of session.buffer)'), false);
 });
 
+test('server snapshot scrollback is bounded for lower memory reconnect state', () => {
+  assert.match(source, /const SERVER_SNAPSHOT_SCROLLBACK = 1000/);
+  assert.match(source, /scrollback:\s*SERVER_SNAPSHOT_SCROLLBACK/);
+  assert.equal(source.includes('scrollback: BUFFER_LIMIT'), false);
+});
+
+test('terminal output marks snapshots dirty instead of serializing on every chunk', () => {
+  const writeSnapshot = source.match(/function writeTerminalSnapshot\(session, chunk\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+
+  assert.match(source, /function readTerminalSnapshot\(session\)/);
+  assert.match(writeSnapshot, /session\.snapshotDirty = true/);
+  assert.equal(writeSnapshot.includes('session.serializer.serialize()'), false);
+  assert.match(source, /session\.terminalSnapshot = session\.serializer\.serialize\(\)/);
+  assert.match(source, /const terminalSnapshot = readTerminalSnapshot\(session\)/);
+});
+
 test('serialized tab titles are stripped of volatile spinner prefixes', () => {
   assert.match(source, /SPINNER_TITLE_PREFIX/);
   assert.match(source, /title:\s*cleanTerminalTitle\(tab\.title\) \|\| tab\.title/);
+});
+
+test('terminal websocket disables transport compression for already-compressed output frames', () => {
+  assert.match(source, /const terminalWebSocketServerOptions = \{\s+noServer:\s*true,\s+perMessageDeflate:\s*false,\s+\}/);
+  assert.match(source, /const terminalWss = new WebSocketServer\(terminalWebSocketServerOptions\)/);
 });

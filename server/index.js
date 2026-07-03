@@ -38,23 +38,27 @@ const rootDir = path.resolve(__dirname, '..');
 const distDir = path.join(rootDir, 'dist');
 
 const PORT = Number(process.env.PORT || 3001);
-const BUFFER_LIMIT = 5000;
+const SERVER_SNAPSHOT_SCROLLBACK = 1000;
 const SAFE_ID = /^[a-zA-Z0-9_.:-]+$/;
 const SPINNER_TITLE_PREFIX = /^[\u2800-\u28ff]+[\s:·.-]*/u;
 const { SerializeAddon } = serializeXterm;
 const { Terminal: HeadlessTerminal } = headlessXterm;
 
 const app = new Hono();
-const webSocketServerOptions = {
+const compressedWebSocketServerOptions = {
   noServer: true,
   perMessageDeflate: {
     threshold: 512,
     zlibDeflateOptions: { level: 3 },
   },
 };
-const authSessionWss = new WebSocketServer(webSocketServerOptions);
-const terminalWss = new WebSocketServer(webSocketServerOptions);
-const tabsWss = new WebSocketServer(webSocketServerOptions);
+const terminalWebSocketServerOptions = {
+  noServer: true,
+  perMessageDeflate: false,
+};
+const authSessionWss = new WebSocketServer(compressedWebSocketServerOptions);
+const terminalWss = new WebSocketServer(terminalWebSocketServerOptions);
+const tabsWss = new WebSocketServer(compressedWebSocketServerOptions);
 
 const sessions = new Map();
 const authSessionSubscribers = new Map();
@@ -421,7 +425,7 @@ function createTerminalSnapshot(cols, rows) {
     allowProposedApi: true,
     cols,
     rows,
-    scrollback: BUFFER_LIMIT,
+    scrollback: SERVER_SNAPSHOT_SCROLLBACK,
   });
   const serializer = new SerializeAddon();
   terminal.loadAddon(serializer);
@@ -435,14 +439,24 @@ function createTerminalSnapshot(cols, rows) {
 
 function writeTerminalSnapshot(session, chunk) {
   session.terminal.write(chunk, () => {
-    session.terminalSnapshot = session.serializer.serialize();
+    session.snapshotDirty = true;
   });
+}
+
+function readTerminalSnapshot(session) {
+  if (session.snapshotDirty || !session.terminalSnapshot) {
+    session.terminalSnapshot = session.serializer.serialize();
+    session.snapshotDirty = false;
+  }
+
+  return session.terminalSnapshot;
 }
 
 function resizeSession(session, cols, rows) {
   session.terminal.resize(cols, rows);
   session.pty.resize(cols, rows);
-  session.terminalSnapshot = session.serializer.serialize();
+  session.snapshotDirty = true;
+  readTerminalSnapshot(session);
 }
 
 function createSession(sessionId, options) {
@@ -469,6 +483,7 @@ function createSession(sessionId, options) {
     terminal: terminalSnapshot.terminal,
     serializer: terminalSnapshot.serializer,
     terminalSnapshot: terminalSnapshot.terminalSnapshot,
+    snapshotDirty: false,
     socket: null,
     closed: false,
   };
@@ -506,7 +521,7 @@ function attachSocket(ws, session) {
   }
 
   ws.send(encodeTerminalServerMessage({ type: 'ready', cwd: session.cwd, sessionId: session.id }));
-  const terminalSnapshot = session.terminalSnapshot;
+  const terminalSnapshot = readTerminalSnapshot(session);
   if (terminalSnapshot) {
     sendTerminalOutput(ws, terminalSnapshot);
   }

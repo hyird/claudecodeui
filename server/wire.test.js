@@ -38,6 +38,15 @@ test('small terminal output stays uncompressed inside the protobuf frame', () =>
   assert.equal(decodeOutputFrame(frame), 'ok\r\n');
 });
 
+test('terminal output below the compression threshold skips deflate even when repetitive', () => {
+  const output = 'x'.repeat(256);
+  const frame = encodeTerminalOutput(output);
+  const message = TerminalServerMessage.decode(frame);
+
+  assert.equal(message.output.compressed, false);
+  assert.equal(Buffer.from(message.output.data).toString('utf8'), output);
+});
+
 test('terminal output preserves OSC 52 clipboard sequences through protobuf', () => {
   const output = 'before\x1b]52;c;SGVsbG8=\x07middle\x1b]52;c;V29ybGQ=\x1b\\after';
   assert.equal(decodeOutputFrame(encodeTerminalOutput(output)), output);

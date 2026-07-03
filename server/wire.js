@@ -11,6 +11,8 @@ const {
   AuthServerMessage,
 } = cloudcli;
 
+const TERMINAL_OUTPUT_COMPRESSION_THRESHOLD = 512;
+
 function toUint8(raw) {
   if (raw instanceof Uint8Array) {
     return raw;
@@ -86,10 +88,19 @@ export function encodeTerminalServerMessage(message) {
 // old codec used — the bytes just travel inside the protobuf output field now.
 export function encodeTerminalOutput(text) {
   const raw = Buffer.from(String(text), 'utf8');
-  const compressed = deflateSync(raw);
-  const useCompressed = compressed.length < raw.length;
+  let payload = raw;
+  let useCompressed = false;
+
+  if (raw.length >= TERMINAL_OUTPUT_COMPRESSION_THRESHOLD) {
+    const compressed = deflateSync(raw);
+    if (compressed.length < raw.length) {
+      payload = compressed;
+      useCompressed = true;
+    }
+  }
+
   return TerminalServerMessage.encode({
-    output: { data: useCompressed ? compressed : raw, compressed: useCompressed },
+    output: { data: payload, compressed: useCompressed },
   }).finish();
 }
 
