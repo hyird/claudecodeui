@@ -34,6 +34,8 @@ type TerminalDimensions = {
 
 const MIN_TERMINAL_COLS = 2;
 const MIN_TERMINAL_ROWS = 1;
+const TERMINAL_RECONNECT_DELAY_MS = 1000;
+const TERMINAL_RESUME_PONG_TIMEOUT_MS = 2500;
 
 function createWebSocketUrl(authToken: string) {
   return websocketUrl('/terminal', authToken);
@@ -299,32 +301,9 @@ export default function TerminalPane({
     terminal.writeln('\x1b[36mCloudCLI Terminal\x1b[0m');
     terminal.writeln('\x1b[90mConnecting...\x1b[0m');
 
-    const socket = new WebSocket(createWebSocketUrl(authToken));
-    socket.binaryType = 'arraybuffer';
-    socketRef.current = socket;
-    onStatusChange(tab.id, 'connecting');
-
-    socket.addEventListener('open', () => {
-      // Size the grid to the frame first, then announce it via init. Sending a
-      // resize before init would be rejected by the server ("not initialized")
-      // and flash an error line.
-      const dims = proposeFrameDimensions();
-      if (dims) {
-        terminal.resize(dims.cols, dims.rows);
-        lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
-      }
-      socket.send(encodeTerminalClientMessage({
-        type: 'init',
-        sessionId: tab.id,
-        cols: terminal.cols,
-        rows: terminal.rows,
-      }));
-      resizeAfterLayoutSettles();
-    });
-
-    const handleTerminalServerMessage = async (raw: MessageEvent['data']) => {
+    const handleTerminalServerMessage = async (socket: WebSocket, raw: MessageEvent['data']) => {
       const message = await decodeTerminalServerMessage(raw);
-      if (!message) {
+      if (!message || socketRef.current !== socket) {
         return;
       }
 
@@ -354,23 +333,151 @@ export default function TerminalPane({
 
       if (message.type === 'exit') {
         onStatusChange(tab.id, 'exited');
+        return;
+      }
+
+      if (message.type === 'pong') {
+        clearPongTimer();
+        return;
       }
     };
 
+    let disposed = false;
+    let reconnectTimer = 0;
+    let pongTimer = 0;
     let terminalMessageQueue = Promise.resolve();
-    socket.addEventListener('message', (event) => {
-      terminalMessageQueue = terminalMessageQueue
-        .then(() => handleTerminalServerMessage(event.data))
-        .catch(() => undefined);
-    });
 
-    socket.addEventListener('close', () => {
+    function clearReconnectTimer() {
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = 0;
+      }
+    }
+
+    function clearPongTimer() {
+      if (pongTimer) {
+        window.clearTimeout(pongTimer);
+        pongTimer = 0;
+      }
+    }
+
+    function scheduleReconnect() {
+      if (disposed || reconnectTimer) {
+        return;
+      }
       onStatusChange(tab.id, 'disconnected');
-    });
+      reconnectTimer = window.setTimeout(connect, TERMINAL_RECONNECT_DELAY_MS);
+    }
 
-    socket.addEventListener('error', () => {
-      onStatusChange(tab.id, 'error');
-    });
+    function connect() {
+      if (disposed) {
+        return;
+      }
+
+      const currentSocket = socketRef.current;
+      if (
+        currentSocket
+        && (currentSocket.readyState === WebSocket.OPEN || currentSocket.readyState === WebSocket.CONNECTING)
+      ) {
+        return;
+      }
+
+      clearReconnectTimer();
+      clearPongTimer();
+
+      const socket = new WebSocket(createWebSocketUrl(authToken));
+      socket.binaryType = 'arraybuffer';
+      socketRef.current = socket;
+      onStatusChange(tab.id, 'connecting');
+
+      socket.addEventListener('open', () => {
+        if (disposed || socketRef.current !== socket) {
+          return;
+        }
+
+        // Size the grid to the frame first, then announce it via init. Sending a
+        // resize before init would be rejected by the server ("not initialized")
+        // and flash an error line.
+        const dims = proposeFrameDimensions();
+        if (dims) {
+          terminal.resize(dims.cols, dims.rows);
+          lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
+        }
+        socket.send(encodeTerminalClientMessage({
+          type: 'init',
+          sessionId: tab.id,
+          cols: terminal.cols,
+          rows: terminal.rows,
+        }));
+        resizeAfterLayoutSettles();
+      });
+
+      socket.addEventListener('message', (event) => {
+        if (socketRef.current !== socket) {
+          return;
+        }
+
+        terminalMessageQueue = terminalMessageQueue
+          .then(() => handleTerminalServerMessage(socket, event.data))
+          .catch(() => undefined);
+      });
+
+      socket.addEventListener('close', () => {
+        if (socketRef.current === socket) {
+          socketRef.current = null;
+          clearPongTimer();
+          scheduleReconnect();
+        }
+      });
+
+      socket.addEventListener('error', () => {
+        if (socketRef.current === socket) {
+          onStatusChange(tab.id, 'error');
+          socket.close();
+          scheduleReconnect();
+        }
+      });
+    }
+
+    const probeConnectionAfterResume = () => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+
+      const socket = socketRef.current;
+      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+        scheduleReconnect();
+        return;
+      }
+
+      if (socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      clearPongTimer();
+      try {
+        socket.send(encodeTerminalClientMessage({ type: 'ping' }));
+      } catch {
+        socketRef.current = null;
+        socket.close();
+        scheduleReconnect();
+        return;
+      }
+
+      pongTimer = window.setTimeout(() => {
+        if (socketRef.current !== socket) {
+          return;
+        }
+
+        socketRef.current = null;
+        socket.close();
+        scheduleReconnect();
+      }, TERMINAL_RESUME_PONG_TIMEOUT_MS);
+    };
+
+    document.addEventListener('visibilitychange', probeConnectionAfterResume);
+    window.addEventListener('focus', probeConnectionAfterResume);
+    connect();
 
     const dataSubscription = terminal.onData(sendInput);
     const titleSubscription = terminal.onTitleChange((title) => {
@@ -413,7 +520,10 @@ export default function TerminalPane({
     resizeObserver.observe(container);
 
     return () => {
+      disposed = true;
       clearResizeTimers();
+      clearReconnectTimer();
+      clearPongTimer();
       clearScreenTransform();
       dataSubscription.dispose();
       titleSubscription.dispose();
@@ -422,8 +532,10 @@ export default function TerminalPane({
       resizeSubscription.dispose();
       container.removeEventListener('paste', pasteHandler);
       container.removeEventListener('copy', copyHandler, true);
+      document.removeEventListener('visibilitychange', probeConnectionAfterResume);
+      window.removeEventListener('focus', probeConnectionAfterResume);
       resizeObserver.disconnect();
-      socket.close();
+      socketRef.current?.close();
       terminal.dispose();
       socketRef.current = null;
       fitAddonRef.current = null;

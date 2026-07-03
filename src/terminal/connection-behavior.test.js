@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { test } from 'node:test';
 
 const source = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+const terminalPaneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
 
 function extractTerminalStack() {
   const match = source.match(/<section className="terminal-stack">[\s\S]*?<\/section>/);
@@ -37,4 +38,12 @@ test('toolbar does not remount or restart the active terminal session', () => {
   assert.equal(source.includes('reconnectActiveTab'), false);
   assert.equal(source.includes("type: 'restart-tab'"), false);
   assert.equal(source.includes('restartActiveTab'), false);
+});
+
+test('terminal pane reconnects its websocket after sleep or disconnect', () => {
+  assert.match(terminalPaneSource, /let reconnectTimer = 0/);
+  assert.match(terminalPaneSource, /reconnectTimer = window\.setTimeout\(connect, TERMINAL_RECONNECT_DELAY_MS\)/);
+  assert.match(terminalPaneSource, /document\.addEventListener\('visibilitychange', probeConnectionAfterResume\)/);
+  assert.match(terminalPaneSource, /window\.addEventListener\('focus', probeConnectionAfterResume\)/);
+  assert.match(terminalPaneSource, /type: 'ping'/);
 });
