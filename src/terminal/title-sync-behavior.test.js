@@ -14,10 +14,11 @@ test('server-sent tab titles are normalized with the terminal title cleaner', ()
   assert.match(source, /title:\s*cleanTerminalTitle\(tab\.title\)/);
 });
 
-test('terminal title patches are debounced before hitting the API', () => {
+test('terminal title updates are debounced before using the tabs websocket', () => {
   assert.match(source, /TITLE_SYNC_DELAY_MS/);
   assert.match(source, /titleSyncTimersRef/);
   assert.match(source, /window\.clearTimeout\(existingTimer\)/);
   assert.match(source, /window\.setTimeout/);
-  assert.match(source, /sendTabsMutation\(`\/api\/terminal\/tabs\/\$\{encodeURIComponent\(tabId\)\}`/);
+  assert.match(source, /sendTabsCommand\(\{\s*type:\s*'update-title'/);
+  assert.equal(source.includes("method: 'PATCH'"), false);
 });

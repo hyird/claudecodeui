@@ -55,6 +55,28 @@ async function waitForHealth(url) {
   throw lastError ?? new Error('Timed out waiting for health endpoint');
 }
 
+function readJsonWebSocketMessage(ws, predicate, description) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), 5000);
+    const onMessage = (raw) => {
+      const message = JSON.parse(String(raw));
+      if (!predicate || predicate(message)) {
+        clearTimeout(timeout);
+        ws.off('message', onMessage);
+        ws.off('error', onError);
+        resolve(message);
+      }
+    };
+    const onError = (error) => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+      reject(error);
+    };
+    ws.on('message', onMessage);
+    ws.once('error', onError);
+  });
+}
+
 before(async () => {
   const port = await getFreePort();
   baseUrl = `http://127.0.0.1:${port}`;
@@ -255,16 +277,26 @@ test('terminal tab WebSocket requires and accepts auth token', async () => {
   assert.match(String(unauthorizedError.message), /401/);
 
   const authenticated = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
-  const firstMessage = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Timed out waiting for tabs websocket message')), 5000);
-    authenticated.once('message', (raw) => {
-      clearTimeout(timeout);
-      resolve(JSON.parse(String(raw)));
-    });
-    authenticated.once('error', reject);
-  });
+  const firstMessage = await readJsonWebSocketMessage(
+    authenticated,
+    (message) => message.type === 'tabs',
+    'tabs websocket message',
+  );
   assert.equal(firstMessage.type, 'tabs');
   assert.ok(Array.isArray(firstMessage.state.tabs));
+  const tabId = firstMessage.state.tabs[0].id;
+
+  authenticated.send(JSON.stringify({ type: 'update-title', tabId, title: '\u2819 Ruvia' }));
+  const titleUpdate = await readJsonWebSocketMessage(
+    authenticated,
+    (message) => (
+      message.type === 'tabs' &&
+      message.state.tabs.some((tab) => tab.id === tabId && tab.title === 'Ruvia')
+    ),
+    'tabs websocket title update',
+  );
+  assert.equal(titleUpdate.state.tabs.find((tab) => tab.id === tabId).title, 'Ruvia');
+
   authenticated.close();
 });
 

@@ -41,6 +41,13 @@ type TerminalAppProps = {
   onAuthInvalidated: (invalidToken?: string) => void;
 };
 
+type TabsClientCommand =
+  | { type: 'add-tab' }
+  | { type: 'set-active'; activeId: string }
+  | { type: 'update-title'; tabId: string; title: string }
+  | { type: 'restart-tab'; tabId: string }
+  | { type: 'close-tab'; tabId: string };
+
 function createTabsWebSocketUrl(authToken: string) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(`${protocol}//${window.location.host}/terminal/tabs`);
@@ -157,6 +164,8 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
   const [preferences, setPreferences] = useState<TerminalPreferences>(readPreferences);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const tabsStateRef = useRef(tabsState);
+  const tabsSocketRef = useRef<WebSocket | null>(null);
+  const pendingTabsCommandsRef = useRef<TabsClientCommand[]>([]);
   const pendingTitlesRef = useRef<Record<string, string>>({});
   const titleSyncTimersRef = useRef<Record<string, number>>({});
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -172,21 +181,22 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
     Object.values(titleSyncTimersRef.current).forEach((timer) => window.clearTimeout(timer));
     titleSyncTimersRef.current = {};
     pendingTitlesRef.current = {};
+    pendingTabsCommandsRef.current = [];
   }, []);
 
   const applyTabsState = useCallback((state: TerminalTabsState) => {
     setTabsState(normalizeTabsState(state));
   }, []);
 
-  const sendTabsMutation = useCallback((path: string, init?: RequestInit) => {
-    void requestTabsState(path, authToken, init)
-      .then(applyTabsState)
-      .catch((error) => {
-        if (isAuthExpiredError(error)) {
-          onAuthInvalidated(authToken);
-        }
-      });
-  }, [applyTabsState, authToken, onAuthInvalidated]);
+  const sendTabsCommand = useCallback((command: TabsClientCommand) => {
+    const socket = tabsSocketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(command));
+      return;
+    }
+
+    pendingTabsCommandsRef.current.push(command);
+  }, []);
 
   useEffect(() => {
     localStorage.removeItem('terminal-tabs-state');
@@ -242,6 +252,17 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
 
     const connect = () => {
       socket = new WebSocket(createTabsWebSocketUrl(authToken));
+      tabsSocketRef.current = socket;
+      socket.addEventListener('open', () => {
+        if (tabsSocketRef.current !== socket) {
+          return;
+        }
+        const pendingCommands = pendingTabsCommandsRef.current;
+        pendingTabsCommandsRef.current = [];
+        for (const command of pendingCommands) {
+          socket?.send(JSON.stringify(command));
+        }
+      });
       socket.addEventListener('message', (event) => {
         const message = parseTabsMessage(event.data);
         if (message?.type === 'tabs') {
@@ -249,6 +270,9 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
         }
       });
       socket.addEventListener('close', () => {
+        if (tabsSocketRef.current === socket) {
+          tabsSocketRef.current = null;
+        }
         if (!disposed) {
           reconnectTimer = window.setTimeout(connect, 1000);
         }
@@ -261,6 +285,9 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
     return () => {
       disposed = true;
       window.clearTimeout(reconnectTimer);
+      if (tabsSocketRef.current === socket) {
+        tabsSocketRef.current = null;
+      }
       socket?.close();
     };
   }, [applyTabsState, authToken, onAuthInvalidated]);
@@ -311,13 +338,9 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
         return;
       }
 
-      sendTabsMutation(`/api/terminal/tabs/${encodeURIComponent(tabId)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: pendingTitle }),
-      });
+      sendTabsCommand({ type: 'update-title', tabId, title: pendingTitle });
     }, TITLE_SYNC_DELAY_MS);
-  }, [sendTabsMutation]);
+  }, [sendTabsCommand]);
 
   const updateFontSize = useCallback((value: number | string) => {
     setPreferences((current) => ({
@@ -327,8 +350,8 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
   }, []);
 
   const addTab = useCallback(() => {
-    sendTabsMutation('/api/terminal/tabs', { method: 'POST' });
-  }, [sendTabsMutation]);
+    sendTabsCommand({ type: 'add-tab' });
+  }, [sendTabsCommand]);
 
   const selectTab = useCallback((tabId: string) => {
     if (!SAFE_TAB_ID.test(tabId)) {
@@ -336,30 +359,24 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
     }
 
     setTabsState((current) => ({ ...current, activeId: tabId }));
-    sendTabsMutation('/api/terminal/tabs/active', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ activeId: tabId }),
-    });
-  }, [sendTabsMutation]);
+    sendTabsCommand({ type: 'set-active', activeId: tabId });
+  }, [sendTabsCommand]);
 
   const closeTab = useCallback((tabId: string) => {
     if (tabs.length <= 1) {
       return;
     }
 
-    sendTabsMutation(`/api/terminal/tabs/${encodeURIComponent(tabId)}`, { method: 'DELETE' });
-  }, [sendTabsMutation, tabs.length]);
+    sendTabsCommand({ type: 'close-tab', tabId });
+  }, [sendTabsCommand, tabs.length]);
 
   const restartActiveTab = useCallback(() => {
     if (!activeTab) {
       return;
     }
 
-    sendTabsMutation(`/api/terminal/tabs/${encodeURIComponent(activeTab.id)}/restart`, {
-      method: 'POST',
-    });
-  }, [activeTab, sendTabsMutation]);
+    sendTabsCommand({ type: 'restart-tab', tabId: activeTab.id });
+  }, [activeTab, sendTabsCommand]);
 
   useEffect(() => {
     document.title = activeTab?.title

@@ -330,6 +330,58 @@ function restartTab(tabId) {
   return serializeTabsState();
 }
 
+function sendTabsError(ws, message) {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'error', message }));
+  }
+}
+
+function handleTabsCommand(ws, message) {
+  if (message?.type === 'ping') {
+    ws.send(JSON.stringify({ type: 'pong' }));
+    return;
+  }
+
+  if (message?.type === 'add-tab') {
+    addTab();
+    return;
+  }
+
+  if (message?.type === 'set-active') {
+    const activeId = readString(message.activeId);
+    if (!activeId || !setActiveTab(activeId)) {
+      sendTabsError(ws, 'Invalid active tab');
+    }
+    return;
+  }
+
+  if (message?.type === 'update-title') {
+    const tabId = readString(message.tabId);
+    if (!tabId || !updateTabTitle(tabId, message.title)) {
+      sendTabsError(ws, 'Invalid tab update');
+    }
+    return;
+  }
+
+  if (message?.type === 'restart-tab') {
+    const tabId = readString(message.tabId);
+    if (!tabId || !restartTab(tabId)) {
+      sendTabsError(ws, 'Invalid tab restart');
+    }
+    return;
+  }
+
+  if (message?.type === 'close-tab') {
+    const tabId = readString(message.tabId);
+    if (!tabId || !removeTab(tabId)) {
+      sendTabsError(ws, 'Invalid tab close');
+    }
+    return;
+  }
+
+  sendTabsError(ws, 'Unknown tabs command');
+}
+
 function resolveShell() {
   if (os.platform() === 'win32') {
     return {
@@ -536,10 +588,7 @@ tabsWss.on('connection', (ws) => {
   sendTabsState(ws);
 
   ws.on('message', (raw) => {
-    const message = parseMessage(raw);
-    if (message?.type === 'ping') {
-      ws.send(JSON.stringify({ type: 'pong' }));
-    }
+    handleTabsCommand(ws, parseMessage(raw));
   });
 
   ws.on('close', () => {
