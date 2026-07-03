@@ -55,6 +55,7 @@ export default function TerminalPane({
   const activeRef = useRef(active);
   const resizeTimersRef = useRef<number[]>([]);
   const resizeFrameRef = useRef(0);
+  const renderRefreshFrameRef = useRef(0);
   const lastSizeRef = useRef({ cols: 0, rows: 0 });
 
   useEffect(() => {
@@ -67,6 +68,10 @@ export default function TerminalPane({
     if (resizeFrameRef.current) {
       window.cancelAnimationFrame(resizeFrameRef.current);
       resizeFrameRef.current = 0;
+    }
+    if (renderRefreshFrameRef.current) {
+      window.cancelAnimationFrame(renderRefreshFrameRef.current);
+      renderRefreshFrameRef.current = 0;
     }
   }, []);
 
@@ -179,6 +184,22 @@ export default function TerminalPane({
     }
 
     viewport.classList.toggle('has-scrollback', terminal.buffer.active.baseY > 0);
+  }, []);
+
+  const scheduleRenderRefresh = useCallback(() => {
+    if (renderRefreshFrameRef.current) {
+      return;
+    }
+
+    renderRefreshFrameRef.current = window.requestAnimationFrame(() => {
+      const terminal = terminalRef.current;
+      renderRefreshFrameRef.current = 0;
+      if (!terminal) {
+        return;
+      }
+
+      terminal.refresh(0, Math.max(0, terminal.rows - 1));
+    });
   }, []);
 
   // Resize only on whole-cell boundaries. Any sub-cell remainder stays blank.
@@ -318,11 +339,14 @@ export default function TerminalPane({
           onStatusChange(tab.id, 'connected');
           updateScrollbackAffordance();
           resizeAfterLayoutSettles();
+          scheduleRenderRefresh();
           return;
         }
 
         if (message.type === 'output' && typeof message.data === 'string') {
-          terminal.write(message.data);
+          terminal.write(message.data, () => {
+            scheduleRenderRefresh();
+          });
           return;
         }
 
@@ -350,9 +374,19 @@ export default function TerminalPane({
     const titleSubscription = terminal.onTitleChange((title) => {
       onTitleChange(tab.id, title);
     });
-    const scrollSubscription = terminal.onScroll(updateScrollbackAffordance);
-    const writeParsedSubscription = terminal.onWriteParsed(updateScrollbackAffordance);
-    const resizeSubscription = terminal.onResize(updateScrollbackAffordance);
+    const refreshAfterTerminalChange = () => {
+      updateScrollbackAffordance();
+      scheduleRenderRefresh();
+    };
+    const scrollSubscription = terminal.onScroll(() => {
+      refreshAfterTerminalChange();
+    });
+    const writeParsedSubscription = terminal.onWriteParsed(() => {
+      refreshAfterTerminalChange();
+    });
+    const resizeSubscription = terminal.onResize(() => {
+      refreshAfterTerminalChange();
+    });
     const pasteHandler = (event: ClipboardEvent) => {
       const data = event.clipboardData?.getData('text/plain');
       if (!data) {
@@ -402,6 +436,7 @@ export default function TerminalPane({
     proposeFrameDimensions,
     resizeAfterLayoutSettles,
     resizeDuringDrag,
+    scheduleRenderRefresh,
     sendInput,
     updateScrollbackAffordance,
     authToken,

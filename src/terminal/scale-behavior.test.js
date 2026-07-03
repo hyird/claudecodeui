@@ -75,8 +75,10 @@ test('terminal viewport scroll affordance follows xterm scrollback state', () =>
   assert.match(source, /const updateScrollbackAffordance = useCallback/);
   assert.match(source, /terminal\.buffer\.active\.baseY > 0/);
   assert.match(source, /viewport\.classList\.toggle\('has-scrollback'/);
-  assert.match(source, /terminal\.onScroll\(updateScrollbackAffordance\)/);
-  assert.match(source, /terminal\.onWriteParsed\(updateScrollbackAffordance\)/);
+  assert.match(source, /const refreshAfterTerminalChange = \(\) => \{/);
+  assert.match(source, /updateScrollbackAffordance\(\)/);
+  assert.match(source, /terminal\.onScroll\(\(\) => \{/);
+  assert.match(source, /terminal\.onWriteParsed\(\(\) => \{/);
 });
 
 test('terminal wheel events are not converted to arrow keys without scrollback', () => {
@@ -86,4 +88,16 @@ test('terminal wheel events are not converted to arrow keys without scrollback',
   assert.match(source, /event\.stopPropagation\(\)/);
   assert.match(source, /return false/);
   assert.match(source, /return true/);
+});
+
+test('terminal output and scroll events schedule a full renderer refresh', () => {
+  assert.match(source, /renderRefreshFrameRef/);
+  assert.match(source, /const scheduleRenderRefresh = useCallback/);
+  assert.match(source, /terminal\.refresh\(0, Math\.max\(0, terminal\.rows - 1\)\)/);
+  assert.match(source, /resizeAfterLayoutSettles\(\);\s+scheduleRenderRefresh\(\);\s+return;/);
+  assert.match(source, /terminal\.write\(message\.data, \(\) => \{\s+scheduleRenderRefresh\(\);\s+\}\)/);
+  assert.match(source, /terminal\.onScroll\(\(\) => \{/);
+  assert.match(source, /terminal\.onWriteParsed\(\(\) => \{/);
+  assert.match(source, /terminal\.onResize\(\(\) => \{/);
+  assert.match(source, /scheduleRenderRefresh\(\)/);
 });
