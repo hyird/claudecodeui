@@ -1,7 +1,7 @@
 import { LogOut, Minus, Plus, RotateCcw, Settings, Terminal as TerminalIcon, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { AuthGate, authHeaders } from './auth';
+import { AuthApiError, AuthGate, authHeaders, isAuthExpiredError } from './auth';
 import type { AuthUser } from './auth';
 import TerminalPane from './terminal/TerminalPane';
 import type {
@@ -36,6 +36,7 @@ type TerminalAppProps = {
   authToken: string;
   user: AuthUser;
   onLogout: () => Promise<void>;
+  onAuthInvalidated: (invalidToken?: string) => void;
 };
 
 function createTabsWebSocketUrl(authToken: string) {
@@ -97,7 +98,7 @@ async function requestTabsState(path: string, authToken: string, init?: RequestI
     headers: authHeaders(authToken, init?.headers),
   });
   if (!response.ok) {
-    throw new Error(`Tab request failed: ${response.status}`);
+    throw new AuthApiError(response.status, `Tab request failed: ${response.status}`);
   }
 
   const payload = await response.json() as { state?: unknown };
@@ -149,7 +150,7 @@ function statusLabel(status: TerminalStatus) {
   return '已断开';
 }
 
-function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
+function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalAppProps) {
   const [tabsState, setTabsState] = useState<TerminalTabsState>(EMPTY_TABS_STATE);
   const [preferences, setPreferences] = useState<TerminalPreferences>(readPreferences);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -170,8 +171,12 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   const sendTabsMutation = useCallback((path: string, init?: RequestInit) => {
     void requestTabsState(path, authToken, init)
       .then(applyTabsState)
-      .catch(() => {});
-  }, [applyTabsState, authToken]);
+      .catch((error) => {
+        if (isAuthExpiredError(error)) {
+          onAuthInvalidated(authToken);
+        }
+      });
+  }, [applyTabsState, authToken, onAuthInvalidated]);
 
   useEffect(() => {
     localStorage.removeItem('terminal-tabs-state');
@@ -215,7 +220,14 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
             applyTabsState(state);
           }
         })
-        .catch(() => {});
+        .catch((error) => {
+          if (!disposed && isAuthExpiredError(error)) {
+            disposed = true;
+            window.clearTimeout(reconnectTimer);
+            socket?.close();
+            onAuthInvalidated(authToken);
+          }
+        });
     };
 
     const connect = () => {
@@ -241,7 +253,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [applyTabsState, authToken]);
+  }, [applyTabsState, authToken, onAuthInvalidated]);
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeId) ?? tabs[0],
@@ -496,8 +508,13 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
 export default function App() {
   return (
     <AuthGate>
-      {({ token, user, logout }) => (
-        <TerminalApp authToken={token} user={user} onLogout={logout} />
+      {({ token, user, logout, invalidateAuth }) => (
+        <TerminalApp
+          authToken={token}
+          user={user}
+          onLogout={logout}
+          onAuthInvalidated={invalidateAuth}
+        />
       )}
     </AuthGate>
   );

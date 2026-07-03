@@ -20,6 +20,20 @@ type AuthResponsePayload = {
   message?: string;
 };
 
+export class AuthApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'AuthApiError';
+    this.status = status;
+  }
+}
+
+export function isAuthExpiredError(error: unknown) {
+  return error instanceof AuthApiError && (error.status === 401 || error.status === 403);
+}
+
 async function parseJsonSafely<T>(response: Response): Promise<T | null> {
   try {
     return (await response.json()) as T;
@@ -92,7 +106,7 @@ export async function fetchCurrentUser(token: string) {
   });
   const payload = await parseJsonSafely<{ user?: AuthUser } & ApiErrorPayload>(response);
   if (!response.ok || !payload?.user) {
-    throw new Error(resolveApiErrorMessage(payload, 'Failed to load user'));
+    throw new AuthApiError(response.status, resolveApiErrorMessage(payload, 'Failed to load user'));
   }
   return payload.user;
 }
@@ -105,7 +119,7 @@ export async function register(username: string, password: string) {
   });
   const payload = await parseJsonSafely<AuthResponsePayload>(response);
   if (!response.ok) {
-    throw new Error(resolveApiErrorMessage(payload, 'Registration failed'));
+    throw new AuthApiError(response.status, resolveApiErrorMessage(payload, 'Registration failed'));
   }
   return readAuthSession(payload, 'Registration failed');
 }
@@ -118,7 +132,7 @@ export async function login(username: string, password: string) {
   });
   const payload = await parseJsonSafely<AuthResponsePayload>(response);
   if (!response.ok) {
-    throw new Error(resolveApiErrorMessage(payload, 'Login failed'));
+    throw new AuthApiError(response.status, resolveApiErrorMessage(payload, 'Login failed'));
   }
   return readAuthSession(payload, 'Login failed');
 }

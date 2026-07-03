@@ -18,6 +18,7 @@ export type AuthGateRenderProps = {
   token: string;
   user: AuthUser;
   logout: () => Promise<void>;
+  invalidateAuth: (invalidToken?: string) => void;
 };
 
 export type AuthGateProps = {

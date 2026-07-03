@@ -175,6 +175,22 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
   assert.equal(displacedUser.status, 403);
   assert.deepEqual(await displacedUser.json(), { error: 'Invalid token' });
 
+  const displacedTabs = await fetch(`${baseUrl}/api/terminal/tabs`, {
+    headers: { authorization: `Bearer ${registrationToken}` },
+  });
+  assert.equal(displacedTabs.status, 403);
+  assert.deepEqual(await displacedTabs.json(), { error: 'Invalid token' });
+
+  const displacedTabsSocket = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(registrationToken)}`);
+  const displacedTabsSocketError = await new Promise((resolve) => {
+    displacedTabsSocket.once('error', resolve);
+    displacedTabsSocket.once('open', () => {
+      displacedTabsSocket.close();
+      resolve(new Error('Unexpected displaced websocket open'));
+    });
+  });
+  assert.match(String(displacedTabsSocketError.message), /403/);
+
   const activeUser = await fetch(`${baseUrl}/api/auth/user`, {
     headers: { authorization: `Bearer ${authToken}` },
   });

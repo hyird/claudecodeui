@@ -1,3 +1,3 @@
 export { default as AuthGate } from './AuthGate';
-export { authHeaders } from './api';
+export { AuthApiError, authHeaders, isAuthExpiredError } from './api';
 export type { AuthUser } from './types';

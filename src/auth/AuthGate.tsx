@@ -4,6 +4,7 @@ import {
   clearStoredToken,
   fetchAuthStatus,
   fetchCurrentUser,
+  isAuthExpiredError,
   login,
   logout,
   readStoredToken,
@@ -28,6 +29,7 @@ const loadingState: AuthState = {
   token: '',
   user: null,
 };
+const AUTH_SESSION_RECHECK_INTERVAL_MS = 2000;
 
 function authenticatedState(session: AuthSession): AuthState {
   return {
@@ -35,6 +37,12 @@ function authenticatedState(session: AuthSession): AuthState {
     token: session.token,
     user: session.user,
   };
+}
+
+function clearStoredTokenIfCurrent(token: string) {
+  if (!token || readStoredToken() === token) {
+    clearStoredToken();
+  }
 }
 
 export default function AuthGate({ children }: AuthGateProps) {
@@ -82,6 +90,11 @@ export default function AuthGate({ children }: AuthGateProps) {
     setState(authenticatedState(session));
   }, []);
 
+  const handleAuthInvalidated = useCallback((invalidToken = '') => {
+    clearStoredTokenIfCurrent(invalidToken);
+    setState({ mode: 'login', token: '', user: null });
+  }, []);
+
   const handleLogin = useCallback(async (username: string, password: string): Promise<AuthActionResult> => {
     try {
       completeAuth(await login(username, password));
@@ -106,9 +119,50 @@ export default function AuthGate({ children }: AuthGateProps) {
     }
   }, [completeAuth]);
 
+  useEffect(() => {
+    if (state.mode !== 'authenticated' || !state.token) {
+      return;
+    }
+
+    let disposed = false;
+    let validating = false;
+    const validateCurrentToken = () => {
+      if (validating) {
+        return;
+      }
+      validating = true;
+      void fetchCurrentUser(state.token)
+        .catch((error) => {
+          if (!disposed && isAuthExpiredError(error)) {
+            handleAuthInvalidated(state.token);
+          }
+        })
+        .finally(() => {
+          validating = false;
+        });
+    };
+    const validateWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        validateCurrentToken();
+      }
+    };
+
+    const interval = window.setInterval(validateCurrentToken, AUTH_SESSION_RECHECK_INTERVAL_MS);
+    window.addEventListener('focus', validateCurrentToken);
+    document.addEventListener('visibilitychange', validateWhenVisible);
+    validateCurrentToken();
+
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', validateCurrentToken);
+      document.removeEventListener('visibilitychange', validateWhenVisible);
+    };
+  }, [handleAuthInvalidated, state.mode, state.token]);
+
   const handleLogout = useCallback(async () => {
     const token = state.token;
-    clearStoredToken();
+    clearStoredTokenIfCurrent(token);
     setState({ mode: 'login', token: '', user: null });
     if (token) {
       await logout(token);
@@ -133,6 +187,7 @@ export default function AuthGate({ children }: AuthGateProps) {
         token: state.token,
         user: state.user,
         logout: handleLogout,
+        invalidateAuth: handleAuthInvalidated,
       })}
     </>
   );
