@@ -38,15 +38,6 @@ function parseServerMessage(raw: MessageEvent['data']): TerminalServerMessage | 
   }
 }
 
-function isPasteShortcut(event: KeyboardEvent) {
-  return (
-    event.type === 'keydown' &&
-    !event.altKey &&
-    (event.ctrlKey || event.metaKey) &&
-    (event.key.toLowerCase() === 'v' || event.code === 'KeyV')
-  );
-}
-
 export default function TerminalPane({
   tab,
   active,
@@ -235,24 +226,6 @@ export default function TerminalPane({
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
     terminal.loadAddon(new ClipboardAddon());
-    terminal.attachCustomKeyEventHandler((event) => {
-      if (!isPasteShortcut(event) || !navigator.clipboard?.readText) {
-        return true;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      void navigator.clipboard.readText()
-        .then((data) => {
-          if (data) {
-            terminal.focus();
-            sendInput(data);
-          }
-        })
-        .catch(() => {});
-
-      return false;
-    });
 
     terminal.open(container);
     terminal.writeln('\x1b[36mCloudCLI Terminal\x1b[0m');
