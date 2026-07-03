@@ -1,4 +1,3 @@
-import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
@@ -247,7 +246,6 @@ export default function TerminalPane({
     fitAddonRef.current = fitAddon;
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
-    terminal.loadAddon(new ClipboardAddon());
     terminal.attachCustomKeyEventHandler((event) => {
       if (isPasteShortcut(event)) {
         return false;

@@ -9,6 +9,11 @@ test('terminal paste relies on native paste events instead of async clipboard re
   assert.match(source, /addEventListener\('paste', pasteHandler\)/);
 });
 
+test('terminal programs cannot access the browser clipboard through OSC 52', () => {
+  assert.equal(source.includes('@xterm/addon-clipboard'), false);
+  assert.equal(source.includes('ClipboardAddon'), false);
+});
+
 test('ctrl-v is reserved for browser paste instead of terminal control input', () => {
   assert.match(source, /attachCustomKeyEventHandler/);
   assert.match(source, /isPasteShortcut/);
