@@ -54,12 +54,21 @@ test('terminal screen does not force transform styling while idle', () => {
 test('terminal viewport hides fractional scrollbars until scrollback exists', () => {
   const viewportRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport \{[\s\S]*?\}/);
   const scrollbackRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport\.has-scrollback \{[\s\S]*?\}/);
+  const scrollbarRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport::-webkit-scrollbar \{[\s\S]*?\}/);
+  const activeScrollbarRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport\.has-scrollback::-webkit-scrollbar \{[\s\S]*?\}/);
   const rule = viewportRule?.[0] ?? '';
   const activeRule = scrollbackRule?.[0] ?? '';
+  const scrollbar = scrollbarRule?.[0] ?? '';
+  const activeScrollbar = activeScrollbarRule?.[0] ?? '';
 
-  assert.match(rule, /overflow-y:\s*hidden\s*!important/);
+  assert.match(rule, /overflow-y:\s*auto\s*!important/);
+  assert.match(rule, /scrollbar-width:\s*none/);
   assert.equal(rule.includes('overflow-y: scroll'), false);
-  assert.match(activeRule, /overflow-y:\s*auto\s*!important/);
+  assert.match(activeRule, /scrollbar-width:\s*thin/);
+  assert.match(scrollbar, /width:\s*0/);
+  assert.match(scrollbar, /height:\s*0/);
+  assert.match(activeScrollbar, /width:\s*6px/);
+  assert.match(activeScrollbar, /height:\s*6px/);
 });
 
 test('terminal viewport scroll affordance follows xterm scrollback state', () => {

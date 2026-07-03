@@ -996,20 +996,24 @@ button:focus-visible {
 }
 
 /* Slim scroll affordance — only present when there is scrollback to reach.
-   xterm.css forces `overflow-y: scroll` (a permanent track, even in an
-   alternate-screen TUI like Claude with no scrollback); `auto` hides it
-   whenever the buffer fits the viewport. */
+   Keep `auto` so wheel events still flow through xterm, but visually hide the
+   track until xterm reports real scrollback. */
 .terminal-pane .xterm .xterm-viewport {
-  overflow-y: hidden !important;
+  overflow-y: auto !important;
+  scrollbar-width: none;
+}
+
+.terminal-pane .xterm .xterm-viewport.has-scrollback {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
 }
 
-.terminal-pane .xterm .xterm-viewport.has-scrollback {
-  overflow-y: auto !important;
+.terminal-pane .xterm .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
-.terminal-pane .xterm .xterm-viewport::-webkit-scrollbar {
+.terminal-pane .xterm .xterm-viewport.has-scrollback::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
