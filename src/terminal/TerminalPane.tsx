@@ -31,6 +31,9 @@ type TerminalDimensions = {
   rows: number;
 };
 
+const MIN_TERMINAL_COLS = 2;
+const MIN_TERMINAL_ROWS = 1;
+
 function createWebSocketUrl(authToken: string) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(`${protocol}//${window.location.host}/terminal`);
@@ -73,42 +76,88 @@ export default function TerminalPane({
     }
   }, []);
 
-  const fitTerminal = useCallback((notifyServer = true): TerminalDimensions | undefined => {
-    const terminal = terminalRef.current;
+  const readFitDimensions = useCallback((): TerminalDimensions | undefined => {
     const fitAddon = fitAddonRef.current;
-    if (!terminal || !fitAddon) {
+    if (!fitAddon) {
       return undefined;
     }
 
     try {
-      fitAddon.fit();
+      const dims = fitAddon.proposeDimensions();
+      if (dims && Number.isFinite(dims.cols) && Number.isFinite(dims.rows)) {
+        return dims;
+      }
     } catch {
       return undefined;
     }
 
+    return undefined;
+  }, []);
+
+  const measureCellCapacity = useCallback((fallback?: TerminalDimensions) => {
+    const terminal = terminalRef.current;
+    const container = containerRef.current;
+    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
+    if (!terminal || !container || !screen) {
+      return fallback;
+    }
+
+    const baseCols = terminal.cols || fallback?.cols || lastSizeRef.current.cols;
+    const baseRows = terminal.rows || fallback?.rows || lastSizeRef.current.rows;
+    if (baseCols <= 0 || baseRows <= 0 || screen.offsetWidth <= 0 || screen.offsetHeight <= 0) {
+      return fallback;
+    }
+
+    const cellWidth = screen.offsetWidth / baseCols;
+    const cellHeight = screen.offsetHeight / baseRows;
+    if (!Number.isFinite(cellWidth) || !Number.isFinite(cellHeight) || cellWidth <= 0 || cellHeight <= 0) {
+      return fallback;
+    }
+
+    const style = window.getComputedStyle(container);
+    const availWidth = container.clientWidth
+      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const availHeight = container.clientHeight
+      - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+
+    return {
+      cols: Math.max(MIN_TERMINAL_COLS, Math.floor(availWidth / cellWidth)),
+      rows: Math.max(MIN_TERMINAL_ROWS, Math.floor(availHeight / cellHeight)),
+    };
+  }, []);
+
+  const proposeFrameDimensions = useCallback(() => (
+    measureCellCapacity(readFitDimensions())
+  ), [measureCellCapacity, readFitDimensions]);
+
+  // Fit to the largest whole-cell grid the current frame can contain. Any
+  // leftover pixels stay blank instead of clipping the right edge/bottom row.
+  const fitAndResize = useCallback(() => {
+    const terminal = terminalRef.current;
     const socket = socketRef.current;
-    const dims = { cols: terminal.cols, rows: terminal.rows };
+    const dims = proposeFrameDimensions();
+    if (!terminal || !dims) {
+      return;
+    }
 
     const last = lastSizeRef.current;
     if (dims.cols === last.cols && dims.rows === last.rows) {
-      return dims;
+      return;
     }
     lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
 
-    if (notifyServer && socket?.readyState === WebSocket.OPEN) {
+    if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
+      terminal.resize(dims.cols, dims.rows);
+    }
+
+    if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({
         type: 'resize',
         cols: dims.cols,
         rows: dims.rows,
       }));
     }
-
-    return dims;
-  }, []);
-
-  const fitAndResize = useCallback(() => {
-    fitTerminal();
-  }, [fitTerminal]);
+  }, [proposeFrameDimensions]);
 
   const sendInput = useCallback((data: string) => {
     const socket = socketRef.current;
@@ -268,12 +317,16 @@ export default function TerminalPane({
       // Size the grid to the frame first, then announce it via init. Sending a
       // resize before init would be rejected by the server ("not initialized")
       // and flash an error line.
-      const dims = fitTerminal(false);
+      const dims = proposeFrameDimensions();
+      if (dims) {
+        terminal.resize(dims.cols, dims.rows);
+        lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
+      }
       socket.send(JSON.stringify({
         type: 'init',
         sessionId: tab.id,
-        cols: dims?.cols ?? terminal.cols,
-        rows: dims?.rows ?? terminal.rows,
+        cols: terminal.cols,
+        rows: terminal.rows,
       }));
       resizeAfterLayoutSettles();
     });
@@ -384,9 +437,9 @@ export default function TerminalPane({
     clearResizeTimers,
     clearScreenTransform,
     fitAndResize,
-    fitTerminal,
     onStatusChange,
     onTitleChange,
+    proposeFrameDimensions,
     resizeAfterLayoutSettles,
     resizeDuringDrag,
     scheduleRenderRefresh,

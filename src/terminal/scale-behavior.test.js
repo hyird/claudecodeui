@@ -11,16 +11,20 @@ function extractCallback(name) {
   return match[0];
 }
 
-test('terminal resize uses FitAddon fit logic without scale transforms', () => {
+test('terminal resize manually fits to measured whole-cell dimensions without scale transforms', () => {
   const settledResize = extractCallback('resizeAfterLayoutSettles');
   const dragResize = extractCallback('resizeDuringDrag');
 
   assert.match(source, /const clearScreenTransform = useCallback/);
-  assert.match(source, /const fitTerminal = useCallback/);
-  assert.match(source, /fitAddon\.fit\(\)/);
-  assert.equal(source.includes('measureCellCapacity'), false);
-  assert.equal(source.includes('proposeFrameDimensions'), false);
-  assert.equal(source.includes('terminal.resize(dims.cols, dims.rows)'), false);
+  assert.match(source, /const readFitDimensions = useCallback/);
+  assert.match(source, /const measureCellCapacity = useCallback/);
+  assert.match(source, /const proposeFrameDimensions = useCallback/);
+  assert.match(source, /fitAddon\.proposeDimensions\(\)/);
+  assert.match(source, /screen\.offsetWidth \/ baseCols/);
+  assert.match(source, /container\.clientWidth/);
+  assert.match(source, /Math\.floor\(availWidth \/ cellWidth\)/);
+  assert.match(source, /terminal.resize\(dims.cols, dims.rows\)/);
+  assert.equal(source.includes('fitAddon.fit()'), false);
   assert.equal(source.includes('clampScaleToFrame'), false);
   assert.equal(source.includes('MAX_DRAG_UPSCALE'), false);
   assert.equal(source.includes('clearScreenScale'), false);
