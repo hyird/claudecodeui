@@ -3,6 +3,11 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useRef } from 'react';
 
+import {
+  copyTerminalSelection,
+  isCopyShortcut,
+  isPasteShortcut,
+} from './clipboard';
 import { terminalTheme } from './themes';
 import type {
   TerminalPreferences,
@@ -33,44 +38,6 @@ function createWebSocketUrl(authToken: string) {
   const url = new URL(`${protocol}//${window.location.host}/terminal`);
   url.searchParams.set('token', authToken);
   return url.toString();
-}
-
-function isPasteShortcut(event: KeyboardEvent) {
-  return event.type === 'keydown'
-    && event.key.toLowerCase() === 'v'
-    && (event.ctrlKey || event.metaKey)
-    && !event.altKey;
-}
-
-function isCopyShortcut(event: KeyboardEvent) {
-  return event.type === 'keydown'
-    && event.key.toLowerCase() === 'c'
-    && (event.ctrlKey || event.metaKey)
-    && !event.altKey;
-}
-
-function copyTerminalSelection(terminal: Terminal, event: ClipboardEvent | KeyboardEvent) {
-  if (!terminal.hasSelection()) {
-    return false;
-  }
-
-  const selection = terminal.getSelection();
-  if (!selection) {
-    return false;
-  }
-
-  event.preventDefault();
-  event.stopPropagation();
-
-  if ('clipboardData' in event && event.clipboardData) {
-    event.clipboardData.setData('text/plain', selection);
-    return true;
-  }
-
-  if (navigator.clipboard) {
-    void navigator.clipboard.writeText(selection).catch(() => undefined);
-  }
-  return true;
 }
 
 export default function TerminalPane({

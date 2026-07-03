@@ -2,29 +2,38 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
 
-const source = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+const paneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+const clipboardSource = fs.readFileSync(new URL('./clipboard.ts', import.meta.url), 'utf8');
 
 test('terminal paste relies on native paste events instead of async clipboard reads', () => {
-  assert.equal(source.includes('navigator.clipboard.readText'), false);
-  assert.match(source, /addEventListener\('paste', pasteHandler\)/);
+  assert.equal(paneSource.includes('navigator.clipboard.readText'), false);
+  assert.equal(clipboardSource.includes('navigator.clipboard.readText'), false);
+  assert.match(paneSource, /addEventListener\('paste', pasteHandler\)/);
 });
 
-test('terminal programs cannot access the browser clipboard through OSC 52', () => {
-  assert.equal(source.includes('@xterm/addon-clipboard'), false);
-  assert.equal(source.includes('ClipboardAddon'), false);
+test('terminal does not install xterm clipboard addon behavior', () => {
+  assert.equal(paneSource.includes('@xterm/addon-clipboard'), false);
+  assert.equal(paneSource.includes('ClipboardAddon'), false);
 });
 
 test('ctrl-v is reserved for browser paste instead of terminal control input', () => {
-  assert.match(source, /attachCustomKeyEventHandler/);
-  assert.match(source, /isPasteShortcut/);
-  assert.match(source, /return false;/);
+  assert.match(paneSource, /attachCustomKeyEventHandler/);
+  assert.match(paneSource, /isPasteShortcut/);
+  assert.match(clipboardSource, /export function isPasteShortcut/);
+  assert.match(clipboardSource, /isModifiedKeyShortcut\(event, 'v'\)/);
 });
 
-test('selected terminal text is copied in the frontend instead of sent as ctrl-c', () => {
-  assert.match(source, /isCopyShortcut/);
-  assert.match(source, /terminal\.hasSelection\(\)/);
-  assert.match(source, /terminal\.getSelection\(\)/);
-  assert.match(source, /navigator\.clipboard\.writeText/);
-  assert.match(source, /addEventListener\('copy', copyHandler, true\)/);
-  assert.match(source, /event\.stopPropagation\(\)/);
+test('selected terminal text is copied only after xterm has a native selection', () => {
+  assert.match(paneSource, /isCopyShortcut/);
+  assert.match(paneSource, /addEventListener\('copy', copyHandler, true\)/);
+  assert.match(clipboardSource, /terminal\.hasSelection\(\)/);
+  assert.match(clipboardSource, /terminal\.getSelection\(\)/);
+  assert.match(clipboardSource, /navigator\.clipboard\.writeText/);
+  assert.match(clipboardSource, /event\.stopPropagation\(\)/);
+});
+
+test('mouse-mode native selection stays on xterm shift-selection path', () => {
+  assert.equal(paneSource.includes("addEventListener('mousedown'"), false);
+  assert.equal(paneSource.includes("addEventListener('pointerdown'"), false);
+  assert.equal(paneSource.includes('shiftKey = true'), false);
 });
