@@ -21,7 +21,7 @@ import {
   registerUser,
   toAuthErrorResponse,
 } from './auth-store.js';
-import { sendTerminalOutput } from './terminal-ws-codec.js';
+import { DISABLE_MOUSE_TRACKING, sendTerminalOutput } from './terminal-ws-codec.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -473,6 +473,7 @@ function attachSocket(ws, session) {
   }
 
   ws.send(JSON.stringify({ type: 'ready', cwd: session.cwd, sessionId: session.id }));
+  sendTerminalOutput(ws, DISABLE_MOUSE_TRACKING);
   const bufferedOutput = session.buffer.join('');
   if (bufferedOutput) {
     sendTerminalOutput(ws, bufferedOutput);

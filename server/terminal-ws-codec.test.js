@@ -61,3 +61,27 @@ test('terminal websocket output strips OSC 52 writes split across chunks', () =>
 
   assert.equal(sent.map(decodeTerminalOutputFrame).join(''), 'abc');
 });
+
+test('terminal output strips mouse tracking enable sequences before framing', () => {
+  const frame = encodeTerminalOutputFrame(
+    'before\x1b[?1000hmiddle\x1b[?1000;1002;1006hafter\x1b[?25h\x1b[?1000l'
+  );
+
+  assert.equal(decodeTerminalOutputFrame(frame), 'beforemiddleafter\x1b[?25h\x1b[?1000l');
+});
+
+test('terminal websocket output strips mouse tracking enables split across chunks', () => {
+  const sent = [];
+  const ws = {
+    send(frame) {
+      sent.push(frame);
+    },
+  };
+
+  sendTerminalOutput(ws, 'a\x1b');
+  sendTerminalOutput(ws, '[?100');
+  sendTerminalOutput(ws, '0;1002;1006h');
+  sendTerminalOutput(ws, 'b');
+
+  assert.equal(sent.map(decodeTerminalOutputFrame).join(''), 'ab');
+});
