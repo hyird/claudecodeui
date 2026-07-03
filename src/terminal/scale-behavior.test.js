@@ -127,8 +127,10 @@ test('terminal output and scroll events force a synchronous full-range renderer 
   assert.match(source, /forceFullRefresh\(\)/);
 });
 
-test('terminal uses only the WebGL renderer', () => {
-  assert.match(source, /WebglAddon/);
-  assert.match(source, /terminal\.loadAddon\(new WebglAddon\(\)\)/);
-  assert.equal(source.includes('using default renderer fallback'), false);
+test('compact terminal frame aligns the grid to integer device pixels at 150 percent scale', () => {
+  assert.match(styles, /\.terminal-frame \{\s+inset:\s*6px;/);
+  assert.equal(styles.includes('inset: 7px;'), false);
+  assert.equal(source.includes('@xterm/addon-webgl'), false);
+  assert.equal(source.includes('WebglAddon'), false);
+  assert.equal(source.includes('terminal.loadAddon(new WebglAddon())'), false);
 });

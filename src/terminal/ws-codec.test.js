@@ -24,3 +24,9 @@ test('terminal pane routes websocket messages through async binary-aware decoder
   assert.match(paneSource, /encodeTerminalClientMessage/);
   assert.match(paneSource, /socket\.binaryType = 'arraybuffer'/);
 });
+
+test('terminal pane preserves websocket frame order while async decoding output', () => {
+  assert.match(paneSource, /const handleTerminalServerMessage = async/);
+  assert.match(paneSource, /let terminalMessageQueue = Promise\.resolve\(\)/);
+  assert.match(paneSource, /terminalMessageQueue = terminalMessageQueue[\s\S]*\.then\(\(\) => handleTerminalServerMessage\(event\.data\)\)/);
+});

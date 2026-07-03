@@ -1,6 +1,5 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useRef } from 'react';
 
@@ -180,18 +179,11 @@ export default function TerminalPane({
     viewport.classList.toggle('has-scrollback', terminal.buffer.active.baseY > 0);
   }, []);
 
-  // A scroll or an in-place TUI repaint changes what each viewport row should show,
-  // but xterm's WebGL renderer only rewrites the rows in the committed dirty range —
-  // its glyph model is keyed by viewport row, so any row left out keeps the previous
-  // frame's glyphs at the new offset and paints as a dirty/ghost row. Claude Code hits
-  // exactly the paths where xterm issues no full-viewport refresh of its own: it
-  // repaints in place (alt-screen / mouse tracking), and while the user is scrolled up
-  // it keeps streaming so the buffer scrolls under a fixed viewport (baseY-trim scroll,
-  // which fires onScroll but not the viewport's own full refresh). Force a full-range
-  // refresh SYNCHRONOUSLY so it unions into xterm's current render frame (its
-  // RenderDebouncer already coalesces to one paint per frame). The previous version
-  // deferred this to a separate, deduped rAF, so a partial frame committed first (or the
-  // refresh was dropped mid-burst) and flashed ghost rows before the full refresh landed.
+  // A scroll or an in-place TUI repaint changes what each viewport row should
+  // show. Claude Code hits the paths where xterm may not issue a full viewport
+  // refresh on its own: alt-screen mouse scrolling, in-place updates, and
+  // streaming while the buffer moves under a fixed viewport. Force a full-range
+  // refresh synchronously so it unions into xterm's current render frame.
   const forceFullRefresh = useCallback(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
@@ -274,7 +266,6 @@ export default function TerminalPane({
     fitAddonRef.current = fitAddon;
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
-    terminal.loadAddon(new WebglAddon());
     terminal.attachCustomKeyEventHandler((event) => {
       if (isCopyShortcut(event) && copyTerminalSelection(terminal, event)) {
         return false;
@@ -329,41 +320,46 @@ export default function TerminalPane({
       resizeAfterLayoutSettles();
     });
 
-    socket.addEventListener('message', (event) => {
-      void (async () => {
-        const message = await decodeTerminalServerMessage(event.data);
-        if (!message) {
-          return;
-        }
+    const handleTerminalServerMessage = async (raw: MessageEvent['data']) => {
+      const message = await decodeTerminalServerMessage(raw);
+      if (!message) {
+        return;
+      }
 
-        if (message.type === 'ready') {
-          terminal.clear();
-          terminal.writeln(`\x1b[36mSession ${message.sessionId}\x1b[0m`);
-          terminal.writeln(`\x1b[90m${message.cwd}\x1b[0m\r\n`);
-          onStatusChange(tab.id, 'connected');
-          updateScrollbackAffordance();
-          resizeAfterLayoutSettles();
+      if (message.type === 'ready') {
+        terminal.clear();
+        terminal.writeln(`\x1b[36mSession ${message.sessionId}\x1b[0m`);
+        terminal.writeln(`\x1b[90m${message.cwd}\x1b[0m\r\n`);
+        onStatusChange(tab.id, 'connected');
+        updateScrollbackAffordance();
+        resizeAfterLayoutSettles();
+        forceFullRefresh();
+        return;
+      }
+
+      if (message.type === 'output' && typeof message.data === 'string') {
+        terminal.write(message.data, () => {
           forceFullRefresh();
-          return;
-        }
+        });
+        return;
+      }
 
-        if (message.type === 'output' && typeof message.data === 'string') {
-          terminal.write(message.data, () => {
-            forceFullRefresh();
-          });
-          return;
-        }
+      if (message.type === 'error' && typeof message.message === 'string') {
+        terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
+        onStatusChange(tab.id, 'error');
+        return;
+      }
 
-        if (message.type === 'error' && typeof message.message === 'string') {
-          terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
-          onStatusChange(tab.id, 'error');
-          return;
-        }
+      if (message.type === 'exit') {
+        onStatusChange(tab.id, 'exited');
+      }
+    };
 
-        if (message.type === 'exit') {
-          onStatusChange(tab.id, 'exited');
-        }
-      })();
+    let terminalMessageQueue = Promise.resolve();
+    socket.addEventListener('message', (event) => {
+      terminalMessageQueue = terminalMessageQueue
+        .then(() => handleTerminalServerMessage(event.data))
+        .catch(() => undefined);
     });
 
     socket.addEventListener('close', () => {

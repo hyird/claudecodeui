@@ -1,4 +1,4 @@
-import { LogOut, Minus, Plus, RotateCcw, Settings, Terminal as TerminalIcon, X } from 'lucide-react';
+import { LogOut, Minus, Plus, Settings, Terminal as TerminalIcon, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AuthApiError, AuthGate, authHeaders, isAuthExpiredError } from './auth';
@@ -152,7 +152,6 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
   const [tabsState, setTabsState] = useState<TerminalTabsState>(EMPTY_TABS_STATE);
   const [preferences, setPreferences] = useState<TerminalPreferences>(readPreferences);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [reconnectKeys, setReconnectKeys] = useState<Record<string, number>>({});
   const tabsStateRef = useRef(tabsState);
   const tabsSocketRef = useRef<WebSocket | null>(null);
   const pendingTabsCommandsRef = useRef<TabsClientCommand[]>([]);
@@ -289,7 +288,6 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
     () => tabs.find((tab) => tab.id === activeId) ?? tabs[0],
     [activeId, tabs],
   );
-  const activeReconnectKey = activeTab ? reconnectKeys[activeTab.id] ?? 0 : 0;
 
   const updateTabStatus = useCallback((tabId: string, status: TerminalStatus) => {
     setTabsState((current) => ({
@@ -363,17 +361,6 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
 
     sendTabsCommand({ type: 'close-tab', tabId });
   }, [sendTabsCommand, tabs.length]);
-
-  const reconnectActiveTab = useCallback(() => {
-    if (!activeTab) {
-      return;
-    }
-
-    setReconnectKeys((current) => ({
-      ...current,
-      [activeTab.id]: (current[activeTab.id] ?? 0) + 1,
-    }));
-  }, [activeTab]);
 
   useEffect(() => {
     document.title = activeTab?.title
@@ -461,9 +448,6 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
           <button type="button" className="icon-button" onClick={addTab} title="新增终端" aria-label="新增终端">
             <Plus size={16} aria-hidden="true" />
           </button>
-          <button type="button" className="icon-button" onClick={reconnectActiveTab} title="重连当前终端" aria-label="重连当前终端">
-            <RotateCcw size={15} aria-hidden="true" />
-          </button>
           <button
             type="button"
             ref={settingsButtonRef}
@@ -491,7 +475,7 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
       <section className="terminal-stack">
         {activeTab && (
           <div
-            key={`${activeTab.id}:${activeReconnectKey}`}
+            key={activeTab.id}
             className="terminal-layer visible"
           >
             <TerminalPane

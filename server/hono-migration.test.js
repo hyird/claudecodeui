@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { afterAll as after, beforeAll as before, test } from 'bun:test';
+import { after, before, test } from 'node:test';
 
 import { WebSocket } from 'ws';
 import { cloudcli } from '../proto/messages.js';

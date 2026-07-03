@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { test } from 'bun:test';
+import { test } from 'node:test';
 
 const source = fs.readFileSync(new URL('./index.js', import.meta.url), 'utf8');
 

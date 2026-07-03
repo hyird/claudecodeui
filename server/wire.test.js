@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { inflateSync } from 'node:zlib';
-import { test } from 'bun:test';
+import { test } from 'node:test';
 
 import { cloudcli } from '../proto/messages.js';
 import {

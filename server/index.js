@@ -3,10 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { serve } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
 import serializeXterm from '@xterm/addon-serialize';
 import headlessXterm from '@xterm/headless';
 import { Hono } from 'hono';
-import { spawn as spawnPty } from 'bun-pty';
+import pty from 'node-pty';
+import { WebSocket, WebSocketServer } from 'ws';
 
 import {
   authenticateToken,
@@ -38,17 +41,20 @@ const PORT = Number(process.env.PORT || 3001);
 const BUFFER_LIMIT = 5000;
 const SAFE_ID = /^[a-zA-Z0-9_.:-]+$/;
 const SPINNER_TITLE_PREFIX = /^[\u2800-\u28ff]+[\s:·.-]*/u;
-// Bun's ServerWebSocket.readyState uses the standard WebSocket constants.
-const WS_OPEN = 1;
-const UPGRADE_ROUTES = {
-  '/auth/session': 'auth',
-  '/terminal': 'terminal',
-  '/terminal/tabs': 'tabs',
-};
 const { SerializeAddon } = serializeXterm;
 const { Terminal: HeadlessTerminal } = headlessXterm;
 
 const app = new Hono();
+const webSocketServerOptions = {
+  noServer: true,
+  perMessageDeflate: {
+    threshold: 512,
+    zlibDeflateOptions: { level: 3 },
+  },
+};
+const authSessionWss = new WebSocketServer(webSocketServerOptions);
+const terminalWss = new WebSocketServer(webSocketServerOptions);
+const tabsWss = new WebSocketServer(webSocketServerOptions);
 
 const sessions = new Map();
 const authSessionSubscribers = new Map();
@@ -98,22 +104,35 @@ async function requireAuth(c, next) {
   await next();
 }
 
-// Authenticates a WebSocket upgrade request. Returns { auth } on success, or
-// { status } (401 when no token is presented, 403 when the token is invalid)
-// so the caller can reply with a real HTTP response before the handshake —
-// something the node:http upgrade socket could not do under Bun.
-async function authenticateUpgradeRequest(request, url) {
-  const token = readBearerToken(request.headers.get('authorization')) || readString(url.searchParams.get('token'));
+function writeUpgradeRejection(socket, statusCode, message) {
+  const body = `${message}\n`;
+  socket.write(
+    `HTTP/1.1 ${statusCode} ${message}\r\n` +
+    'Connection: close\r\n' +
+    'Content-Type: text/plain; charset=utf-8\r\n' +
+    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+    '\r\n' +
+    body,
+  );
+  socket.destroy();
+}
+
+async function authenticateUpgrade(request, socket) {
+  const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+  const token = readBearerToken(request.headers.authorization) || readString(url.searchParams.get('token'));
+
   if (!token) {
-    return { status: 401 };
+    writeUpgradeRejection(socket, 401, 'Unauthorized');
+    return null;
   }
 
   const user = await authenticateToken(token);
   if (!user) {
-    return { status: 403 };
+    writeUpgradeRejection(socket, 403, 'Forbidden');
+    return null;
   }
 
-  return { auth: { user, token, tokenHash: hashSessionToken(token) } };
+  return { url, user, token, tokenHash: hashSessionToken(token) };
 }
 
 function addAuthSessionSubscriber(tokenHash, ws) {
@@ -123,18 +142,13 @@ function addAuthSessionSubscriber(tokenHash, ws) {
     authSessionSubscribers.set(tokenHash, subscribers);
   }
   subscribers.add(ws);
-}
 
-function removeAuthSessionSubscriber(tokenHash, ws) {
-  const subscribers = authSessionSubscribers.get(tokenHash);
-  if (!subscribers) {
-    return;
-  }
-
-  subscribers.delete(ws);
-  if (subscribers.size === 0) {
-    authSessionSubscribers.delete(tokenHash);
-  }
+  ws.on('close', () => {
+    subscribers.delete(ws);
+    if (subscribers.size === 0) {
+      authSessionSubscribers.delete(tokenHash);
+    }
+  });
 }
 
 onSessionInvalidated((tokenHash) => {
@@ -145,9 +159,10 @@ onSessionInvalidated((tokenHash) => {
 
   const payload = encodeAuthServerMessage({ type: 'session-invalidated' });
   for (const ws of subscribers) {
-    if (ws.readyState === WS_OPEN) {
-      ws.send(payload);
-      ws.close(4001, 'Session invalidated');
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload, () => {
+        ws.close(4001, 'Session invalidated');
+      });
     } else {
       subscribers.delete(ws);
     }
@@ -191,7 +206,7 @@ function getTabStatus(tabId) {
     return 'exited';
   }
 
-  return session.socket?.readyState === WS_OPEN ? 'connected' : 'disconnected';
+  return session.socket?.readyState === WebSocket.OPEN ? 'connected' : 'disconnected';
 }
 
 function serializeTabsState() {
@@ -218,7 +233,7 @@ function serializeTabsState() {
 }
 
 function sendTabsState(ws) {
-  if (ws.readyState === WS_OPEN) {
+  if (ws.readyState === WebSocket.OPEN) {
     ws.send(encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState() }));
   }
 }
@@ -226,7 +241,7 @@ function sendTabsState(ws) {
 function broadcastTabsState() {
   const payload = encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState() });
   for (const ws of tabSubscribers) {
-    if (ws.readyState === WS_OPEN) {
+    if (ws.readyState === WebSocket.OPEN) {
       ws.send(payload);
     } else {
       tabSubscribers.delete(ws);
@@ -320,7 +335,7 @@ function restartTab(tabId) {
 }
 
 function sendTabsError(ws, message) {
-  if (ws.readyState === WS_OPEN) {
+  if (ws.readyState === WebSocket.OPEN) {
     ws.send(encodeTabsServerMessage({ type: 'error', message }));
   }
 }
@@ -434,7 +449,7 @@ function createSession(sessionId, options) {
   const cwd = resolveCwd(options.cwd);
   const shell = resolveShell();
   const terminalSnapshot = createTerminalSnapshot(options.cols, options.rows);
-  const shellProcess = spawnPty(shell.command, shell.args, {
+  const shellProcess = pty.spawn(shell.command, shell.args, {
     name: 'xterm-256color',
     cols: options.cols,
     rows: options.rows,
@@ -461,7 +476,7 @@ function createSession(sessionId, options) {
   shellProcess.onData((chunk) => {
     writeTerminalSnapshot(session, chunk);
 
-    if (session.socket?.readyState === WS_OPEN) {
+    if (session.socket?.readyState === WebSocket.OPEN) {
       sendTerminalOutput(session.socket, chunk);
     }
   });
@@ -470,7 +485,7 @@ function createSession(sessionId, options) {
     session.closed = true;
     const suffix = signal ? ` (${signal})` : '';
     const message = `\r\n\x1b[33mProcess exited with code ${exitCode}${suffix}\x1b[0m\r\n`;
-    if (session.socket?.readyState === WS_OPEN) {
+    if (session.socket?.readyState === WebSocket.OPEN) {
       sendTerminalOutput(session.socket, message);
       session.socket.send(encodeTerminalServerMessage({ type: 'exit', exitCode, signal }));
     }
@@ -486,7 +501,7 @@ function createSession(sessionId, options) {
 function attachSocket(ws, session) {
   const oldSocket = session.socket;
   session.socket = ws;
-  if (oldSocket && oldSocket !== ws && oldSocket.readyState === WS_OPEN) {
+  if (oldSocket && oldSocket !== ws && oldSocket.readyState === WebSocket.OPEN) {
     oldSocket.close(1000, 'Replaced by newer terminal view');
   }
 
@@ -547,133 +562,114 @@ function handleInit(ws, message) {
   return session;
 }
 
-function handleTerminalMessage(ws, raw) {
-  const message = decodeTerminalClientMessage(raw);
-  if (!message || typeof message.type !== 'string') {
-    ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid message' }));
-    return;
-  }
+terminalWss.on('connection', (ws) => {
+  let activeSession = null;
 
-  if (message.type === 'init') {
-    ws.data.activeSession = handleInit(ws, message);
-    return;
-  }
-
-  const activeSession = ws.data.activeSession;
-  if (!activeSession) {
-    ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not initialized' }));
-    return;
-  }
-
-  if (activeSession.socket !== ws) {
-    ws.close(1000, 'Terminal connection replaced');
-    return;
-  }
-
-  if (message.type === 'input') {
-    activeSession.pty.write(readString(message.data));
-    return;
-  }
-
-  if (message.type === 'resize') {
-    resizeSession(activeSession, readNumber(message.cols, 100), readNumber(message.rows, 30));
-    return;
-  }
-
-  if (message.type === 'close') {
-    closeSession(activeSession.id);
-    ws.data.activeSession = null;
-    ws.close(1000, 'Terminal closed');
-    return;
-  }
-
-  if (message.type === 'ping') {
-    ws.send(encodeTerminalServerMessage({ type: 'pong' }));
-  }
-}
-
-// Central Bun WebSocket handler: per-connection state lives on ws.data (set at
-// upgrade time) and messages are dispatched by ws.data.kind.
-const websocket = {
-  // Terminal output payloads are already deflated inside the protobuf frame, so
-  // transport-level compression would only waste CPU re-deflating them.
-  perMessageDeflate: false,
-  open(ws) {
-    const { kind } = ws.data;
-    if (kind === 'auth') {
-      addAuthSessionSubscriber(ws.data.auth.tokenHash, ws);
-      ws.send(encodeAuthServerMessage({ type: 'session-active' }));
+  ws.on('message', (raw) => {
+    const message = decodeTerminalClientMessage(raw);
+    if (!message || typeof message.type !== 'string') {
+      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid message' }));
       return;
     }
 
-    if (kind === 'tabs') {
-      tabSubscribers.add(ws);
-      sendTabsState(ws);
-    }
-  },
-  message(ws, raw) {
-    const { kind } = ws.data;
-    if (kind === 'terminal') {
-      handleTerminalMessage(ws, raw);
+    if (message.type === 'init') {
+      activeSession = handleInit(ws, message);
       return;
     }
 
-    if (kind === 'tabs') {
-      handleTabsCommand(ws, decodeTabsClientMessage(raw));
+    if (!activeSession) {
+      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not initialized' }));
       return;
     }
 
-    if (kind === 'auth') {
-      const message = decodeAuthClientMessage(raw);
-      if (message?.type === 'ping') {
-        ws.send(encodeAuthServerMessage({ type: 'pong' }));
-      }
-    }
-  },
-  close(ws) {
-    const { kind } = ws.data;
-    if (kind === 'terminal') {
-      const activeSession = ws.data.activeSession;
-      if (activeSession && sessions.get(activeSession.id) === activeSession) {
-        detachSocket(activeSession, ws);
-      }
+    if (activeSession.socket !== ws) {
+      ws.close(1000, 'Terminal connection replaced');
       return;
     }
 
-    if (kind === 'tabs') {
-      tabSubscribers.delete(ws);
+    if (message.type === 'input') {
+      activeSession.pty.write(readString(message.data));
       return;
     }
 
-    if (kind === 'auth') {
-      removeAuthSessionSubscriber(ws.data.auth.tokenHash, ws);
+    if (message.type === 'resize') {
+      resizeSession(activeSession, readNumber(message.cols, 100), readNumber(message.rows, 30));
+      return;
     }
-  },
-};
 
-async function handleWebSocketUpgrade(request, server) {
-  const url = new URL(request.url);
-  const kind = UPGRADE_ROUTES[url.pathname];
-  if (!kind) {
-    return new Response('Not found\n', { status: 404 });
-  }
+    if (message.type === 'close') {
+      closeSession(activeSession.id);
+      activeSession = null;
+      ws.close(1000, 'Terminal closed');
+      return;
+    }
 
-  const result = await authenticateUpgradeRequest(request, url);
-  if (result.status) {
-    return new Response(result.status === 401 ? 'Unauthorized\n' : 'Forbidden\n', {
-      status: result.status,
-      headers: { 'content-type': 'text/plain; charset=utf-8' },
-    });
-  }
-
-  const upgraded = server.upgrade(request, {
-    data: { kind, auth: result.auth, activeSession: null },
+    if (message.type === 'ping') {
+      ws.send(encodeTerminalServerMessage({ type: 'pong' }));
+    }
   });
-  if (upgraded) {
-    return undefined;
+
+  ws.on('close', () => {
+    if (activeSession && sessions.get(activeSession.id) === activeSession) {
+      detachSocket(activeSession, ws);
+    }
+  });
+});
+
+tabsWss.on('connection', (ws) => {
+  tabSubscribers.add(ws);
+  sendTabsState(ws);
+
+  ws.on('message', (raw) => {
+    handleTabsCommand(ws, decodeTabsClientMessage(raw));
+  });
+
+  ws.on('close', () => {
+    tabSubscribers.delete(ws);
+  });
+});
+
+authSessionWss.on('connection', (ws, request, auth) => {
+  addAuthSessionSubscriber(auth.tokenHash, ws);
+  ws.send(encodeAuthServerMessage({ type: 'session-active' }));
+
+  ws.on('message', (raw) => {
+    const message = decodeAuthClientMessage(raw);
+    if (message?.type === 'ping') {
+      ws.send(encodeAuthServerMessage({ type: 'pong' }));
+    }
+  });
+});
+
+async function handleUpgrade(request, socket, head) {
+  const auth = await authenticateUpgrade(request, socket);
+  if (!auth) {
+    return;
   }
 
-  return new Response('Upgrade failed\n', { status: 400 });
+  const { pathname } = auth.url;
+  if (pathname === '/auth/session') {
+    authSessionWss.handleUpgrade(request, socket, head, (ws) => {
+      authSessionWss.emit('connection', ws, request, auth);
+    });
+    return;
+  }
+
+  if (pathname === '/terminal') {
+    terminalWss.handleUpgrade(request, socket, head, (ws) => {
+      terminalWss.emit('connection', ws, request);
+    });
+    return;
+  }
+
+  if (pathname === '/terminal/tabs') {
+    tabsWss.handleUpgrade(request, socket, head, (ws) => {
+      tabsWss.emit('connection', ws, request);
+    });
+    return;
+  }
+
+  socket.destroy();
 }
 
 app.get('/api/health', (c) => c.json({ ok: true, sessions: sessions.size }));
@@ -772,34 +768,20 @@ app.post('/api/terminal/close', async (c) => {
 });
 
 if (fs.existsSync(distDir)) {
-  const indexHtmlPath = path.join(distDir, 'index.html');
-
-  // Serve built assets from dist with a SPA fallback to index.html, using
-  // Bun.file so the runtime sets content types and streams the response.
-  app.get('*', async (c) => {
-    const requestPath = c.req.path === '/' ? '/index.html' : c.req.path;
-    const candidate = path.resolve(distDir, `.${requestPath}`);
-    if (candidate === distDir || candidate.startsWith(distDir + path.sep)) {
-      const asset = Bun.file(candidate);
-      if (await asset.exists()) {
-        return new Response(asset);
-      }
-    }
-
-    return c.html(await Bun.file(indexHtmlPath).text());
-  });
+  app.use('*', serveStatic({ root: distDir }));
+  app.get('*', async (c) => c.html(await fs.promises.readFile(path.join(distDir, 'index.html'), 'utf8')));
 }
 
-const server = Bun.serve({
+const server = serve({
+  fetch: app.fetch,
   port: PORT,
-  fetch(request, bunServer) {
-    if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') {
-      return handleWebSocketUpgrade(request, bunServer);
-    }
-
-    return app.fetch(request);
-  },
-  websocket,
+}, () => {
+  console.log(`Terminal server listening on http://localhost:${PORT}`);
 });
 
-console.log(`Terminal server listening on http://localhost:${server.port}`);
+server.on('upgrade', (request, socket, head) => {
+  void handleUpgrade(request, socket, head).catch((error) => {
+    console.error('WebSocket upgrade error:', error);
+    socket.destroy();
+  });
+});

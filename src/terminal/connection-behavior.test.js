@@ -4,11 +4,19 @@ import { test } from 'node:test';
 
 const source = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 
+function extractTerminalStack() {
+  const match = source.match(/<section className="terminal-stack">[\s\S]*?<\/section>/);
+  assert.ok(match, 'Could not find terminal stack');
+  return match[0];
+}
+
 test('only the active terminal pane is mounted to avoid websocket bursts on login', () => {
-  assert.match(source, /activeTab && \(/);
-  assert.match(source, /key=\{`\$\{activeTab\.id\}:\$\{activeReconnectKey\}`\}/);
-  assert.match(source, /tab=\{activeTab\}/);
-  assert.equal(source.includes('{tabs.map((tab) => ('), false);
+  const terminalStack = extractTerminalStack();
+
+  assert.match(terminalStack, /activeTab && \(/);
+  assert.match(terminalStack, /key=\{activeTab\.id\}/);
+  assert.match(terminalStack, /tab=\{activeTab\}/);
+  assert.equal(terminalStack.includes('tabs.map'), false);
 });
 
 test('tab mutations use the tabs websocket instead of HTTP mutation endpoints', () => {
@@ -22,15 +30,11 @@ test('tab mutations use the tabs websocket instead of HTTP mutation endpoints', 
   assert.equal(source.includes('/api/terminal/tabs/${encodeURIComponent'), false);
 });
 
-test('toolbar reconnect remounts the current pane without restarting the session', () => {
-  assert.match(source, /reconnectKeys/);
-  assert.match(source, /const activeReconnectKey = activeTab/);
-  assert.match(source, /const reconnectActiveTab = useCallback/);
-  assert.match(source, /\[activeTab\.id\]: \(current\[activeTab\.id\] \?\? 0\) \+ 1/);
-  assert.match(source, /key=\{`\$\{activeTab\.id\}:\$\{activeReconnectKey\}`\}/);
-  assert.match(source, /onClick=\{reconnectActiveTab\}/);
-  assert.match(source, /title="重连当前终端"/);
+test('toolbar does not remount or restart the active terminal session', () => {
+  assert.match(extractTerminalStack(), /key=\{activeTab\.id\}/);
+  assert.equal(source.includes('reconnectKeys'), false);
+  assert.equal(source.includes('activeReconnectKey'), false);
+  assert.equal(source.includes('reconnectActiveTab'), false);
   assert.equal(source.includes("type: 'restart-tab'"), false);
   assert.equal(source.includes('restartActiveTab'), false);
-  assert.equal(source.includes('重启当前终端'), false);
 });
