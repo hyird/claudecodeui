@@ -1,130 +1,504 @@
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
-import { I18nextProvider } from 'react-i18next';
+import { LogOut, Minus, Plus, RotateCcw, Settings, Terminal as TerminalIcon, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { ThemeProvider } from './contexts/ThemeContext';
-import { AuthProvider, ProtectedRoute } from './components/auth';
-import { TaskMasterProvider } from './contexts/TaskMasterContext';
-import { TasksSettingsProvider } from './contexts/TasksSettingsContext';
-import { WebSocketProvider } from './contexts/WebSocketContext';
-import { PluginsProvider } from './contexts/PluginsContext';
-import AppContent from './components/app/AppContent';
-import i18n from './i18n/config.js';
+import { AuthGate, authHeaders } from './auth';
+import type { AuthUser } from './auth';
+import TerminalPane from './terminal/TerminalPane';
+import type {
+  TerminalPreferences,
+  TerminalStatus,
+  TerminalTab,
+  TerminalTabsServerMessage,
+  TerminalTabsState,
+} from './terminal/types';
 
-const DEPLOYMENT_ASSET_DIRECTORIES = new Set(['assets', 'static', 'icons', 'images']);
+const DEFAULT_PREFERENCES: TerminalPreferences = {
+  fontSize: 14,
+};
 
-/**
- * Detect the router basename from explicit runtime config or deployment hints.
- *
- * CloudCLI can be served from a path prefix by a reverse proxy, for example:
- *   /ai/manifest.json
- *   /ai/assets/index-abc123.js
- *   /ai/icons/icon-192x192.png
- *
- * React Router needs that prefix as its basename, but the packaged app should
- * also keep working when served directly from the domain root. The direct-root
- * case is easy to misread because asset URLs such as /icons/icon-192x192.png
- * contain a directory even though there is no application basename.
- */
-function detectRouterBasename() {
-  const explicitBasename = typeof window !== 'undefined' ? window.__ROUTER_BASENAME__ || '' : '';
-  if (explicitBasename) {
-    // Keep the deployment escape hatch authoritative. A trailing slash is
-    // harmless for humans but React Router expects a normalized basename.
-    return explicitBasename.replace(/\/+$/, '');
+const MIN_FONT_SIZE = 11;
+const MAX_FONT_SIZE = 22;
+const SAFE_TAB_ID = /^[a-zA-Z0-9_.:-]+$/;
+const EMPTY_TABS_STATE: TerminalTabsState = {
+  tabs: [],
+  activeId: '',
+  nextIndex: 1,
+};
+const TERMINAL_STATUSES = new Set<string>([
+  'connecting',
+  'connected',
+  'disconnected',
+  'exited',
+  'error',
+]);
+
+type TerminalAppProps = {
+  authToken: string;
+  user: AuthUser;
+  onLogout: () => Promise<void>;
+};
+
+function createTabsWebSocketUrl(authToken: string) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = new URL(`${protocol}//${window.location.host}/terminal/tabs`);
+  url.searchParams.set('token', authToken);
+  return url.toString();
+}
+
+function parseTabsMessage(raw: MessageEvent['data']): TerminalTabsServerMessage | null {
+  try {
+    return JSON.parse(String(raw)) as TerminalTabsServerMessage;
+  } catch {
+    return null;
+  }
+}
+
+function isTerminalStatus(value: unknown): value is TerminalStatus {
+  return typeof value === 'string' && TERMINAL_STATUSES.has(value);
+}
+
+function normalizeTabsState(value: unknown): TerminalTabsState {
+  const raw = value as Partial<TerminalTabsState>;
+  const rawTabs = Array.isArray(raw?.tabs) ? (raw.tabs as unknown[]) : [];
+  const tabs = rawTabs.length > 0
+    ? rawTabs
+        .filter((tab): tab is Partial<TerminalTab> & { id: string; title: string } => (
+          typeof tab === 'object' &&
+          tab !== null &&
+          typeof (tab as Partial<TerminalTab>).id === 'string' &&
+          SAFE_TAB_ID.test((tab as Partial<TerminalTab>).id ?? '') &&
+          typeof (tab as Partial<TerminalTab>).title === 'string' &&
+          ((tab as Partial<TerminalTab>).title ?? '').trim().length > 0
+        ))
+        .map((tab) => ({
+          id: tab.id,
+          title: tab.title.trim().slice(0, 80),
+          status: isTerminalStatus(tab.status) ? tab.status : 'disconnected',
+        }))
+    : [];
+
+  if (tabs.length === 0) {
+    return EMPTY_TABS_STATE;
   }
 
-  if (typeof window === 'undefined' || typeof document === 'undefined') {
-    return '';
+  const activeId = typeof raw.activeId === 'string' && tabs.some((tab) => tab.id === raw.activeId)
+    ? raw.activeId
+    : tabs[0].id;
+  const nextIndex = typeof raw.nextIndex === 'number' && raw.nextIndex > 0
+    ? raw.nextIndex
+    : tabs.length + 1;
+
+  return { tabs, activeId, nextIndex };
+}
+
+async function requestTabsState(path: string, authToken: string, init?: RequestInit) {
+  const response = await fetch(path, {
+    ...init,
+    headers: authHeaders(authToken, init?.headers),
+  });
+  if (!response.ok) {
+    throw new Error(`Tab request failed: ${response.status}`);
   }
 
-  const candidatePaths = [
-    { kind: 'manifest' as const, value: document.querySelector('link[rel="manifest"]')?.getAttribute('href') },
-    { kind: 'script' as const, value: document.querySelector('script[type="module"][src]')?.getAttribute('src') },
-    ...Array.from(
-      document.querySelectorAll(
-        'link[rel~="icon"][href], link[rel="apple-touch-icon"][href], link[rel="apple-touch-icon-precomposed"][href], link[rel="mask-icon"][href]'
-      )
-    ).map((node) => ({
-      kind: 'icon' as const,
-      value: node.getAttribute('href'),
-    })),
-  ].filter((candidate): candidate is { kind: 'manifest' | 'script' | 'icon'; value: string } => Boolean(candidate.value));
+  const payload = await response.json() as { state?: unknown };
+  return normalizeTabsState(payload.state);
+}
 
-  let detectedBasename = '';
-  for (const candidate of candidatePaths) {
-    try {
-      const candidateUrl = new URL(candidate.value, document.baseURI || window.location.href);
-      if (candidateUrl.origin !== window.location.origin) {
-        continue;
-      }
-
-      const pathname = candidateUrl.pathname;
-      const normalizedPathname = pathname.replace(/\/+$/, '');
-
-      let normalized = '';
-      if (candidate.kind === 'script') {
-        const match = normalizedPathname.match(/^(.*)\/assets\//);
-        normalized = match?.[1] ? match[1].replace(/\/+$/, '') : '';
-      } else {
-        const manifestMatch = normalizedPathname.match(/^(.*)\/(?:manifest\.json|site\.webmanifest)$/);
-        const iconMatch = normalizedPathname.match(
-          /^(.*)\/(?:favicon(?:\.[^/]+)?|apple-touch-icon(?:-[^/]+)?(?:\.[^/]+)?|mask-icon(?:\.[^/]+)?|[^/]*icon[^/]*)$/
-        );
-        const match = candidate.kind === 'manifest' ? manifestMatch : iconMatch;
-        if (match?.[1]) {
-          const segments = match[1].split('/').filter(Boolean);
-
-          // Strip directories that describe where static files live, not where
-          // the app is mounted. This must also run for a single segment:
-          //   /icons/icon-192x192.png       -> ''
-          //   /ai/icons/icon-192x192.png    -> '/ai'
-          // The previous implementation only stripped while more than one
-          // segment remained, which incorrectly turned root deployments into a
-          // Router basename of /icons and caused a blank page after login.
-          while (segments.length > 0 && DEPLOYMENT_ASSET_DIRECTORIES.has(segments[segments.length - 1])) {
-            segments.pop();
-          }
-
-          normalized = segments.length > 0 ? `/${segments.join('/')}` : '';
-        }
-      }
-
-      if (normalized.length > detectedBasename.length) {
-        detectedBasename = normalized;
-      }
-    } catch {
-      // Ignore invalid candidate URLs and continue checking other hints.
+// Strip C0 control characters (0x00–0x1F) and DEL (0x7F) from a terminal-set
+// title, keeping printable and non-ASCII (e.g. CJK) characters intact.
+function cleanTerminalTitle(title: string) {
+  let cleaned = '';
+  for (const char of title) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code >= 0x20 && code !== 0x7f) {
+      cleaned += char;
     }
   }
+  return cleaned.trim().slice(0, 80);
+}
 
-  return detectedBasename;
+function clampFontSize(value: unknown) {
+  const size = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(size)) {
+    return DEFAULT_PREFERENCES.fontSize;
+  }
+
+  return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, Math.round(size)));
+}
+
+function readPreferences(): TerminalPreferences {
+  try {
+    const stored = localStorage.getItem('terminal-preferences');
+    if (!stored) {
+      return DEFAULT_PREFERENCES;
+    }
+    const parsed = JSON.parse(stored) as Partial<TerminalPreferences>;
+    return {
+      fontSize: clampFontSize(parsed.fontSize),
+    };
+  } catch {
+    return DEFAULT_PREFERENCES;
+  }
+}
+
+function statusLabel(status: TerminalStatus) {
+  if (status === 'connected') return '已连接';
+  if (status === 'connecting') return '连接中';
+  if (status === 'exited') return '已退出';
+  if (status === 'error') return '错误';
+  return '已断开';
+}
+
+function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
+  const [tabsState, setTabsState] = useState<TerminalTabsState>(EMPTY_TABS_STATE);
+  const [preferences, setPreferences] = useState<TerminalPreferences>(readPreferences);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const tabsStateRef = useRef(tabsState);
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const settingsPanelRef = useRef<HTMLDivElement | null>(null);
+
+  const { tabs, activeId } = tabsState;
+
+  useEffect(() => {
+    tabsStateRef.current = tabsState;
+  }, [tabsState]);
+
+  const applyTabsState = useCallback((state: TerminalTabsState) => {
+    setTabsState(normalizeTabsState(state));
+  }, []);
+
+  const sendTabsMutation = useCallback((path: string, init?: RequestInit) => {
+    void requestTabsState(path, authToken, init)
+      .then(applyTabsState)
+      .catch(() => {});
+  }, [applyTabsState, authToken]);
+
+  useEffect(() => {
+    localStorage.removeItem('terminal-tabs-state');
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('terminal-preferences', JSON.stringify(preferences));
+  }, [preferences]);
+
+  // Flag active window resizes so heavy backdrop-filter chrome can drop to
+  // opaque while dragging — re-blurring the backdrop every frame tears and
+  // flickers in Chromium/Electron. The flag clears once the resize settles.
+  useEffect(() => {
+    const root = document.documentElement;
+    let settleTimer = 0;
+    const onResize = () => {
+      root.classList.add('is-resizing');
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(() => {
+        root.classList.remove('is-resizing');
+      }, 180);
+    };
+
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.clearTimeout(settleTimer);
+      root.classList.remove('is-resizing');
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer = 0;
+
+    const loadTabs = () => {
+      void requestTabsState('/api/terminal/tabs', authToken)
+        .then((state) => {
+          if (!disposed) {
+            applyTabsState(state);
+          }
+        })
+        .catch(() => {});
+    };
+
+    const connect = () => {
+      socket = new WebSocket(createTabsWebSocketUrl(authToken));
+      socket.addEventListener('message', (event) => {
+        const message = parseTabsMessage(event.data);
+        if (message?.type === 'tabs') {
+          applyTabsState(normalizeTabsState(message.state));
+        }
+      });
+      socket.addEventListener('close', () => {
+        if (!disposed) {
+          reconnectTimer = window.setTimeout(connect, 1000);
+        }
+      });
+    };
+
+    loadTabs();
+    connect();
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [applyTabsState, authToken]);
+
+  const activeTab = useMemo(
+    () => tabs.find((tab) => tab.id === activeId) ?? tabs[0],
+    [activeId, tabs],
+  );
+
+  const updateTabStatus = useCallback((tabId: string, status: TerminalStatus) => {
+    setTabsState((current) => ({
+      ...current,
+      tabs: current.tabs.map((tab) => (
+        tab.id === tabId ? { ...tab, status } : tab
+      )),
+    }));
+  }, []);
+
+  const updateTabTitle = useCallback((tabId: string, rawTitle: string) => {
+    const title = cleanTerminalTitle(rawTitle);
+    if (!title) {
+      return;
+    }
+
+    const currentTitle = tabsStateRef.current.tabs.find((tab) => tab.id === tabId)?.title;
+    if (currentTitle === title) {
+      return;
+    }
+
+    setTabsState((current) => ({
+      ...current,
+      tabs: current.tabs.map((tab) => (
+        tab.id === tabId ? { ...tab, title } : tab
+      )),
+    }));
+    sendTabsMutation(`/api/terminal/tabs/${encodeURIComponent(tabId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    });
+  }, [sendTabsMutation]);
+
+  const updateFontSize = useCallback((value: number | string) => {
+    setPreferences((current) => ({
+      ...current,
+      fontSize: clampFontSize(value),
+    }));
+  }, []);
+
+  const addTab = useCallback(() => {
+    sendTabsMutation('/api/terminal/tabs', { method: 'POST' });
+  }, [sendTabsMutation]);
+
+  const selectTab = useCallback((tabId: string) => {
+    if (!SAFE_TAB_ID.test(tabId)) {
+      return;
+    }
+
+    setTabsState((current) => ({ ...current, activeId: tabId }));
+    sendTabsMutation('/api/terminal/tabs/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activeId: tabId }),
+    });
+  }, [sendTabsMutation]);
+
+  const closeTab = useCallback((tabId: string) => {
+    if (tabs.length <= 1) {
+      return;
+    }
+
+    sendTabsMutation(`/api/terminal/tabs/${encodeURIComponent(tabId)}`, { method: 'DELETE' });
+  }, [sendTabsMutation, tabs.length]);
+
+  const restartActiveTab = useCallback(() => {
+    if (!activeTab) {
+      return;
+    }
+
+    sendTabsMutation(`/api/terminal/tabs/${encodeURIComponent(activeTab.id)}/restart`, {
+      method: 'POST',
+    });
+  }, [activeTab, sendTabsMutation]);
+
+  useEffect(() => {
+    document.title = activeTab?.title
+      ? `${activeTab.title} - CloudCLI Terminal`
+      : 'CloudCLI Terminal';
+  }, [activeTab?.title]);
+
+  // The settings popover floats over the terminal, so opening it never changes
+  // the terminal's size (which would otherwise trigger a reflow / PTY resize).
+  // Dismiss it on outside-click or Escape, like any menu.
+  useEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (
+        !target ||
+        settingsPanelRef.current?.contains(target) ||
+        settingsButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setSettingsOpen(false);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSettingsOpen(false);
+        settingsButtonRef.current?.focus();
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [settingsOpen]);
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark">
+            <TerminalIcon size={15} aria-hidden="true" />
+          </span>
+          <span className="brand-name">CloudCLI Terminal</span>
+        </div>
+
+        <nav className="tabs" aria-label="终端标签">
+          {tabs.map((tab) => {
+            const isActive = tab.id === activeTab?.id;
+            return (
+              <div className={`tab ${isActive ? 'active' : ''}`} key={tab.id}>
+                <button
+                  type="button"
+                  className="tab-main"
+                  onClick={() => selectTab(tab.id)}
+                  aria-current={isActive ? 'page' : undefined}
+                  title={`${tab.title} - ${statusLabel(tab.status)}`}
+                >
+                  <span className={`status-dot ${tab.status}`} aria-hidden="true" />
+                  <span className="tab-title">{tab.title}</span>
+                </button>
+                {tabs.length > 1 && (
+                  <button
+                    type="button"
+                    className="tab-close"
+                    onClick={() => closeTab(tab.id)}
+                    title={`关闭 ${tab.title}`}
+                    aria-label={`关闭 ${tab.title}`}
+                  >
+                    <X size={13} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </nav>
+
+        <div className="toolbar">
+          <button type="button" className="icon-button" onClick={addTab} title="新增终端" aria-label="新增终端">
+            <Plus size={16} aria-hidden="true" />
+          </button>
+          <button type="button" className="icon-button" onClick={restartActiveTab} title="重启当前终端" aria-label="重启当前终端">
+            <RotateCcw size={15} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            ref={settingsButtonRef}
+            className={`icon-button ${settingsOpen ? 'active' : ''}`}
+            onClick={() => setSettingsOpen((open) => !open)}
+            title="终端设置"
+            aria-label="终端设置"
+            aria-haspopup="dialog"
+            aria-expanded={settingsOpen}
+          >
+            <Settings size={16} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() => { void onLogout(); }}
+            title={`退出 ${user.username}`}
+            aria-label={`退出 ${user.username}`}
+          >
+            <LogOut size={16} aria-hidden="true" />
+          </button>
+        </div>
+      </header>
+
+      <section className="terminal-stack">
+        {tabs.map((tab) => (
+          <div
+            key={tab.id}
+            className={`terminal-layer ${tab.id === activeTab?.id ? 'visible' : ''}`}
+          >
+            <TerminalPane
+              tab={tab}
+              active={tab.id === activeTab?.id}
+              authToken={authToken}
+              preferences={preferences}
+              onStatusChange={updateTabStatus}
+              onTitleChange={updateTabTitle}
+            />
+          </div>
+        ))}
+      </section>
+
+      {settingsOpen && (
+        <div
+          ref={settingsPanelRef}
+          className="settings-popover"
+          role="dialog"
+          aria-label="终端设置"
+        >
+          <div className="settings-control">
+            <span>字号</span>
+            <div className="font-stepper" role="group" aria-label="字号">
+              <button
+                type="button"
+                className="step-button"
+                onClick={() => updateFontSize(preferences.fontSize - 1)}
+                disabled={preferences.fontSize <= MIN_FONT_SIZE}
+                title="减小字号"
+                aria-label="减小字号"
+              >
+                <Minus size={14} aria-hidden="true" />
+              </button>
+              <strong>{preferences.fontSize}px</strong>
+              <button
+                type="button"
+                className="step-button"
+                onClick={() => updateFontSize(preferences.fontSize + 1)}
+                disabled={preferences.fontSize >= MAX_FONT_SIZE}
+                title="增大字号"
+                aria-label="增大字号"
+              >
+                <Plus size={14} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+  );
 }
 
 export default function App() {
-  const routerBasename = detectRouterBasename();
-
   return (
-    <I18nextProvider i18n={i18n}>
-      <ThemeProvider>
-        <AuthProvider>
-          <WebSocketProvider>
-            <PluginsProvider>
-              <TasksSettingsProvider>
-                <TaskMasterProvider>
-                <ProtectedRoute>
-                  <Router basename={routerBasename}>
-                    <Routes>
-                      <Route path="/" element={<AppContent />} />
-                      <Route path="/session/:sessionId" element={<AppContent />} />
-                    </Routes>
-                  </Router>
-                </ProtectedRoute>
-                </TaskMasterProvider>
-              </TasksSettingsProvider>
-            </PluginsProvider>
-          </WebSocketProvider>
-        </AuthProvider>
-      </ThemeProvider>
-    </I18nextProvider>
+    <AuthGate>
+      {({ token, user, logout }) => (
+        <TerminalApp authToken={token} user={user} onLogout={logout} />
+      )}
+    </AuthGate>
   );
 }

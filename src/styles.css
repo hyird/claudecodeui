@@ -1,0 +1,1138 @@
+/* ==========================================================================
+   CloudCLI Terminal — "Frosted Glass"
+   Translucent frosted chrome · a terminal that floats on ambient light ·
+   one cool-blue accent. Glass only reads as glass when there is colour
+   behind it, so the canvas carries a soft, cool ambient gradient for the
+   frosted surfaces to refract.
+   ========================================================================== */
+
+:root {
+  color-scheme: dark;
+
+  /* Opaque anchors — the terminal stays solid for crisp glyphs + perf */
+  --bg-canvas: #0a0b10;        /* fallback flat canvas colour              */
+  --bg-terminal: #0a0c11;      /* MUST match xterm theme background         */
+
+  /* Frosted surfaces — translucent, meant to sit over the ambient canvas.
+     backdrop-filter does the blur; the rgba fill tints the frost.          */
+  --glass-chrome: rgba(17, 19, 26, 0.55);   /* topbar / settings panel      */
+  --glass-elevated: rgba(255, 255, 255, 0.07); /* active tab, stepper, chip */
+  --glass-hover: rgba(255, 255, 255, 0.055);
+  --frost: saturate(185%) blur(26px);       /* the one frost recipe         */
+
+  /* Edges — glass catches light on its top lip, shadow beneath */
+  --edge-hairline: rgba(255, 255, 255, 0.08);
+  --edge-strong: rgba(255, 255, 255, 0.16);
+  --edge-highlight: rgba(255, 255, 255, 0.11); /* inset top light           */
+
+  /* Text tiers */
+  --text-primary: #eaecf2;
+  --text-secondary: #a3aab8;
+  --text-muted: #697182;
+  --text-disabled: #474d58;
+
+  /* Accent — one, cool, sparing */
+  --accent: #6ea1ff;
+  --accent-strong: #93bbff;
+  --accent-soft: rgba(110, 161, 255, 0.14);
+  --accent-ring: rgba(110, 161, 255, 0.5);
+  --accent-glow: rgba(110, 161, 255, 0.4);
+
+  /* Semantic */
+  --success: #45d183;
+  --success-glow: rgba(69, 209, 131, 0.22);
+  --warning: #e8b555;
+  --warning-glow: rgba(232, 181, 85, 0.24);
+  --danger: #f47180;
+  --danger-soft: rgba(244, 113, 128, 0.14);
+
+  /* Shape & rhythm */
+  --radius-sm: 7px;
+  --radius-md: 9px;
+  --radius-lg: 12px;
+  --radius-frame: 14px;
+  --topbar-h: 46px;
+
+  /* Type */
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC",
+    system-ui, sans-serif;
+
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* --------------------------------------------------------------------------
+   Reset / base
+   -------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+select,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: rgba(110, 161, 255, 0.32);
+  color: #f2f5fa;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   Auth screens
+   -------------------------------------------------------------------------- */
+
+.auth-screen {
+  position: relative;
+  min-height: 100%;
+  overflow-y: auto;
+  --auth-background: 44 22% 96%;
+  --auth-foreground: 36 25% 4%;
+  --auth-card: 0 0% 100%;
+  --auth-muted: 44 15% 91%;
+  --auth-muted-foreground: 40 5% 44%;
+  --auth-primary: 221.2 83.2% 53.3%;
+  --auth-primary-foreground: 210 40% 98%;
+  --auth-border: 44 14% 87%;
+  --auth-destructive: 0 84.2% 60.2%;
+  --auth-ring: 221.2 83.2% 53.3%;
+  background:
+    radial-gradient(820px 520px at 50% -18%, hsl(var(--auth-primary) / 0.10), transparent 68%),
+    hsl(var(--auth-background));
+  color: hsl(var(--auth-foreground));
+  font-family:
+    "Encode Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.auth-screen::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(hsl(var(--auth-foreground) / 0.04) 1px, transparent 1px);
+  background-size: 22px 22px;
+  opacity: 0.6;
+}
+
+.auth-shell {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  min-height: 100vh;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+}
+
+.auth-card {
+  width: min(100%, 430px);
+  padding: 34px 32px 28px;
+  border: 1px solid hsl(var(--auth-border) / 0.7);
+  border-radius: 16px;
+  background: hsl(var(--auth-card) / 0.90);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  box-shadow:
+    0 0 0 1px hsl(var(--auth-foreground) / 0.05),
+    0 24px 60px -20px hsl(var(--auth-foreground) / 0.18);
+}
+
+.auth-heading {
+  text-align: center;
+}
+
+.auth-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 20px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, hsl(var(--auth-primary)), hsl(var(--auth-primary) / 0.80));
+  box-shadow:
+    inset 0 0 0 1px hsl(0 0% 100% / 0.20),
+    0 10px 24px -10px hsl(var(--auth-primary) / 0.45);
+}
+
+.auth-logo img {
+  width: 36px;
+  height: 36px;
+  display: block;
+}
+
+.auth-heading h1,
+.auth-loading h1 {
+  margin: 0;
+  color: hsl(var(--auth-foreground));
+  font-family: Merriweather, Georgia, Cambria, "Times New Roman", serif;
+  font-size: 28px;
+  line-height: 1.18;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.auth-heading p {
+  max-width: 310px;
+  margin: 10px auto 0;
+  color: hsl(var(--auth-muted-foreground));
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.auth-body {
+  margin-top: 30px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 16px;
+}
+
+.auth-field {
+  display: grid;
+  gap: 7px;
+}
+
+.auth-field label {
+  color: hsl(var(--auth-foreground));
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.auth-input-wrap {
+  position: relative;
+}
+
+.auth-input-wrap input {
+  width: 100%;
+  height: 42px;
+  border: 1px solid hsl(var(--auth-border));
+  border-radius: 12px;
+  background: hsl(var(--auth-background) / 0.60);
+  color: hsl(var(--auth-foreground));
+  padding: 0 13px;
+  box-shadow: 0 1px 2px hsl(var(--auth-foreground) / 0.04);
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    background-color 150ms ease;
+}
+
+.auth-input-wrap input.has-leading-icon {
+  padding-left: 40px;
+}
+
+.auth-input-wrap input.has-trailing-button {
+  padding-right: 44px;
+}
+
+.auth-input-wrap input::placeholder {
+  color: hsl(var(--auth-muted-foreground) / 0.60);
+}
+
+.auth-input-wrap input:hover {
+  border-color: hsl(var(--auth-foreground) / 0.20);
+}
+
+.auth-input-wrap input:focus {
+  border-color: hsl(var(--auth-primary));
+  outline: none;
+  background: hsl(var(--auth-card) / 0.94);
+  box-shadow:
+    0 0 0 3px hsl(var(--auth-ring) / 0.30),
+    0 1px 2px hsl(var(--auth-foreground) / 0.04);
+}
+
+.auth-input-wrap input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.auth-input-icon {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  color: hsl(var(--auth-muted-foreground));
+  pointer-events: none;
+  transform: translateY(-50%);
+  transition: color 150ms ease;
+}
+
+.auth-input-wrap:focus-within .auth-input-icon {
+  color: hsl(var(--auth-primary));
+}
+
+.auth-input-action {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: hsl(var(--auth-muted-foreground));
+  transform: translateY(-50%);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.auth-input-action:hover:not(:disabled) {
+  background: hsl(var(--auth-muted));
+  color: hsl(var(--auth-foreground));
+}
+
+.auth-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid hsl(var(--auth-destructive) / 0.30);
+  border-radius: 12px;
+  background: hsl(var(--auth-destructive) / 0.10);
+  color: hsl(var(--auth-destructive));
+}
+
+.auth-error svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.auth-error p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.auth-hint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: -2px 0 0;
+  color: hsl(var(--auth-muted-foreground));
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.auth-hint svg {
+  flex: 0 0 auto;
+  color: hsl(var(--auth-primary));
+}
+
+.auth-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  width: 100%;
+  gap: 9px;
+  border: 1px solid hsl(var(--auth-primary));
+  border-radius: 12px;
+  background: hsl(var(--auth-primary));
+  color: hsl(var(--auth-primary-foreground));
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 12px 24px -12px hsl(var(--auth-primary) / 0.45);
+  transition:
+    filter 150ms ease,
+    transform 80ms ease,
+    box-shadow 150ms ease;
+}
+
+.auth-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 14px 26px -12px hsl(var(--auth-primary) / 0.50);
+}
+
+.auth-submit:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.auth-submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.auth-footer {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid hsl(var(--auth-border) / 0.60);
+  text-align: center;
+}
+
+.auth-footer p {
+  margin: 0;
+  color: hsl(var(--auth-muted-foreground));
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.auth-loading-screen {
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.auth-loading {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+}
+
+.auth-loading .auth-logo {
+  margin-bottom: 18px;
+}
+
+.auth-loading-dots {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.auth-loading-dots span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: hsl(var(--auth-primary));
+  animation: auth-dot-bounce 900ms ease-in-out infinite;
+}
+
+.auth-spin {
+  animation: auth-spin 800ms linear infinite;
+}
+
+@keyframes auth-dot-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.48;
+  }
+  50% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}
+
+@keyframes auth-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Shell — carries the ambient light the frost refracts
+   -------------------------------------------------------------------------- */
+
+.app-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  isolation: isolate;
+  background:
+    radial-gradient(1150px 640px at 10% -12%, rgba(110, 161, 255, 0.16), transparent 60%),
+    radial-gradient(880px 600px at 106% 2%, rgba(86, 202, 231, 0.09), transparent 55%),
+    radial-gradient(1050px 720px at 84% 120%, rgba(150, 126, 255, 0.10), transparent 60%),
+    linear-gradient(180deg, #0d0f15 0%, #0a0b10 55%, #08090d 100%);
+}
+
+/* A whisper of animated drift keeps the ambient light from feeling like a
+   static wallpaper. Slow, low-amplitude — never distracting. */
+.app-shell::before {
+  content: "";
+  position: absolute;
+  inset: -10%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(620px 620px at 22% 18%, rgba(110, 161, 255, 0.08), transparent 60%),
+    radial-gradient(520px 520px at 80% 72%, rgba(150, 126, 255, 0.06), transparent 60%);
+  opacity: 0.9;
+  animation: ambient-drift 26s ease-in-out infinite alternate;
+}
+
+@keyframes ambient-drift {
+  from {
+    transform: translate3d(-1.5%, -1%, 0) scale(1.02);
+  }
+  to {
+    transform: translate3d(2%, 1.5%, 0) scale(1.06);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Topbar — frosted chrome
+   -------------------------------------------------------------------------- */
+
+.topbar {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  height: var(--topbar-h);
+  flex: 0 0 auto;
+  padding: 0 11px;
+  background: var(--glass-chrome);
+  -webkit-backdrop-filter: var(--frost);
+  backdrop-filter: var(--frost);
+  border-bottom: 1px solid var(--edge-hairline);
+  box-shadow:
+    inset 0 1px 0 var(--edge-highlight),
+    0 1px 12px rgba(0, 0, 0, 0.28);
+}
+
+/* --------------------------------------------------------------------------
+   Brand
+   -------------------------------------------------------------------------- */
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding-right: 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  color: var(--accent-strong);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0)),
+    var(--accent-soft);
+  border: 1px solid var(--edge-hairline);
+  box-shadow:
+    inset 0 1px 0 var(--edge-highlight),
+    0 0 16px -4px var(--accent-glow);
+}
+
+.brand-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------------------
+   Tabs — translucent glass pills over the frosted bar
+   -------------------------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+.tabs::-webkit-scrollbar {
+  height: 3px;
+}
+
+.tabs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tabs::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+.tabs:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 120px;
+  max-width: 228px;
+  height: 32px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease;
+}
+
+.tab:not(.active):hover {
+  background: var(--glass-hover);
+  color: var(--text-primary);
+}
+
+.tab.active {
+  background: var(--glass-elevated);
+  border-color: var(--edge-strong);
+  color: var(--text-primary);
+  box-shadow:
+    inset 0 1px 0 var(--edge-highlight),
+    0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+/* Luminous baseline — the one place the accent speaks. Always present so
+   activation animates in both directions; gradient ends fade into the pill. */
+.tab::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent) 30%,
+    var(--accent) 70%,
+    transparent
+  );
+  opacity: 0;
+  transform: scaleX(0.4);
+  pointer-events: none;
+  box-shadow: 0 0 10px var(--accent-glow);
+  transition:
+    opacity 170ms ease,
+    transform 220ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.tab.active::after {
+  opacity: 0.95;
+  transform: scaleX(1);
+}
+
+.tab:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-ring);
+}
+
+.tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  height: 100%;
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0 11px;
+  font-size: 13px;
+}
+
+.tab-main:focus-visible {
+  outline: none; /* ring rendered by .tab:focus-within */
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status dot — semantic session state */
+.status-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted); /* default: disconnected */
+  transition: background-color 200ms ease, box-shadow 200ms ease;
+}
+
+.status-dot.connected {
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-glow);
+}
+
+.status-dot.connecting {
+  background: var(--warning);
+  animation: status-pulse 1.3s ease-in-out infinite;
+}
+
+.status-dot.error {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px rgba(244, 113, 128, 0.2);
+}
+
+/* Exited is shape-coded (hollow ring), not just colour-coded */
+.status-dot.exited {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--warning-glow);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(232, 181, 85, 0);
+    opacity: 0.65;
+  }
+}
+
+/* Close button — hidden until relevant */
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  opacity: 0;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close,
+.tab-close:focus-visible {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.tab-close:active {
+  background: rgba(244, 113, 128, 0.2);
+}
+
+/* --------------------------------------------------------------------------
+   Toolbar
+   -------------------------------------------------------------------------- */
+
+.toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 11px;
+  border-left: 1px solid var(--edge-hairline);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 31px;
+  height: 31px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  transition:
+    background-color 130ms ease,
+    border-color 130ms ease,
+    color 130ms ease,
+    box-shadow 130ms ease,
+    transform 80ms ease;
+}
+
+.icon-button:hover {
+  background: var(--glass-elevated);
+  border-color: var(--edge-hairline);
+  color: var(--text-primary);
+  box-shadow: inset 0 1px 0 var(--edge-highlight);
+}
+
+.icon-button:active {
+  transform: scale(0.94);
+}
+
+.icon-button.active {
+  background: var(--accent-soft);
+  border-color: rgba(110, 161, 255, 0.4);
+  color: var(--accent-strong);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 14px -4px var(--accent-glow);
+}
+
+/* --------------------------------------------------------------------------
+   Settings panel — a frosted shelf
+   -------------------------------------------------------------------------- */
+
+/* Floating glass card — anchored under the settings button, overlaying the
+   terminal. Because it is out of layout flow, opening it never resizes the
+   terminal (which would otherwise trigger a reflow / PTY resize). */
+.settings-popover {
+  position: absolute;
+  top: calc(var(--topbar-h) + 8px);
+  right: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 16px;
+  background: var(--glass-chrome);
+  -webkit-backdrop-filter: var(--frost);
+  backdrop-filter: var(--frost);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-lg);
+  box-shadow:
+    inset 0 1px 0 var(--edge-highlight),
+    0 18px 42px -18px rgba(0, 0, 0, 0.82),
+    0 6px 16px -10px rgba(0, 0, 0, 0.55);
+  animation: settings-in 160ms cubic-bezier(0.2, 0, 0, 1);
+  transform-origin: top right;
+}
+
+@keyframes settings-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.settings-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.settings-popover strong {
+  min-width: 44px;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  font-size: 13px;
+}
+
+.font-stepper {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  overflow: hidden;
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-md);
+  background: var(--glass-elevated);
+  box-shadow: inset 0 1px 0 var(--edge-highlight);
+}
+
+.step-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.step-button:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.step-button:active:not(:disabled) {
+  background: rgba(110, 161, 255, 0.2);
+}
+
+.step-button:disabled {
+  cursor: default;
+  color: var(--text-disabled);
+}
+
+.step-button:focus-visible {
+  outline-offset: -2px; /* keep the ring inside the stepper's overflow:hidden */
+}
+
+/* --------------------------------------------------------------------------
+   Terminal — a solid panel floating on the ambient canvas
+   -------------------------------------------------------------------------- */
+
+.terminal-stack {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  min-height: 0;
+  background: transparent; /* let the ambient canvas show around the frame */
+}
+
+/* Hidden layers must be display:none so inactive terminals keep zero size */
+.terminal-layer {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+
+.terminal-layer.visible {
+  display: block;
+}
+
+.terminal-pane {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+/* The floating panel: solid terminal fill (for readable glyphs), a bright
+   glass lip up top, a soft drop shadow so it hovers over the ambient light.
+   Background MUST equal the xterm theme background. */
+.terminal-frame {
+  position: absolute;
+  inset: 10px 12px 12px;
+  overflow: hidden;
+  padding: 10px 6px 10px 12px; /* FitAddon subtracts parent padding */
+  border: 1px solid var(--edge-hairline);
+  border-radius: var(--radius-frame);
+  background: var(--bg-terminal);
+  box-shadow:
+    inset 0 1px 0 var(--edge-highlight),
+    0 1px 0 rgba(0, 0, 0, 0.4),
+    0 26px 55px -26px rgba(0, 0, 0, 0.8),
+    0 6px 20px -12px rgba(0, 0, 0, 0.55);
+}
+
+.terminal-pane .xterm {
+  height: 100%;
+}
+
+.terminal-pane .xterm-screen {
+  transform-origin: 0 0;
+  transition: transform 90ms cubic-bezier(0.2, 0, 0, 1);
+  will-change: transform;
+}
+
+/* Slim scroll affordance — only present when there is scrollback to reach.
+   xterm.css forces `overflow-y: scroll` (a permanent track, even in an
+   alternate-screen TUI like Claude with no scrollback); `auto` hides it
+   whenever the buffer fits the viewport. */
+.terminal-pane .xterm-viewport {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+
+.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* --------------------------------------------------------------------------
+   Graceful fallback — no backdrop-filter (older engines): use opaque chrome
+   so the frost never collapses into a muddy translucent slab.
+   -------------------------------------------------------------------------- */
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .topbar,
+  .settings-popover {
+    background: #14161d;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Motion preferences
+   -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  /* Designed static fallbacks, not frozen frames */
+  .app-shell::before {
+    animation: none;
+  }
+
+  .status-dot.connecting {
+    animation: none;
+    box-shadow: 0 0 0 3px var(--warning-glow);
+  }
+
+  .settings-popover {
+    animation: none;
+  }
+
+  .auth-loading-dots span,
+  .auth-spin {
+    animation: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Responsive (<= 720px)
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 720px) {
+  .auth-shell {
+    align-items: flex-start;
+    padding: 24px 12px;
+  }
+
+  .auth-card {
+    padding: 28px 20px 22px;
+  }
+
+  .auth-heading h1,
+  .auth-loading h1 {
+    font-size: 25px;
+  }
+
+  .topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    height: auto;
+    min-height: 46px;
+    padding: 6px 9px;
+    gap: 8px;
+  }
+
+  .brand {
+    display: none;
+  }
+
+  .tabs {
+    order: 1;
+  }
+
+  .toolbar {
+    order: 2;
+  }
+
+  .tab {
+    min-width: 108px;
+  }
+
+  .settings-popover {
+    top: calc(var(--topbar-h) + 6px);
+    right: 8px;
+  }
+
+  .terminal-frame {
+    inset: 7px;
+    padding: 8px 4px 8px 8px;
+    border-radius: var(--radius-md);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Resize flicker guard — backdrop-filter re-blurs the whole backdrop on every
+   frame of a window resize, which tears/flickers in Chromium/Electron. While
+   the window is actively resizing, swap the frost for opaque chrome and freeze
+   the ambient drift; the frost returns the moment the resize settles.
+   -------------------------------------------------------------------------- */
+
+:root.is-resizing .topbar,
+:root.is-resizing .settings-popover {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: #14161d;
+}
+
+:root.is-resizing .app-shell::before {
+  animation-play-state: paused;
+}
