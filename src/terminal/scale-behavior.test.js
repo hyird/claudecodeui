@@ -106,16 +106,25 @@ test('terminal wheel events pass through when mouse tracking is enabled', () => 
   );
 });
 
-test('terminal output and scroll events schedule a full renderer refresh', () => {
-  assert.match(source, /renderRefreshFrameRef/);
-  assert.match(source, /const scheduleRenderRefresh = useCallback/);
+test('terminal output and scroll events force a synchronous full-range renderer refresh', () => {
+  // Ghost/dirty rows appeared because the forced full refresh was deferred to a
+  // separate, deduped rAF: a partial WebGL render (a streaming write, or a baseY-trim
+  // scroll while the user is scrolled up) could commit first, and the full refresh
+  // landed a frame late or was dropped mid-burst. It must be synchronous so it unions
+  // into xterm's current render frame, which the RenderDebouncer coalesces to one paint.
+  assert.match(source, /const forceFullRefresh = useCallback/);
   assert.match(source, /terminal\.refresh\(0, Math\.max\(0, terminal\.rows - 1\)\)/);
-  assert.match(source, /resizeAfterLayoutSettles\(\);\s+scheduleRenderRefresh\(\);\s+return;/);
-  assert.match(source, /terminal\.write\(message\.data, \(\) => \{\s+scheduleRenderRefresh\(\);\s+\}\)/);
+  // No deferred/deduped rAF indirection for the render refresh anymore.
+  assert.equal(source.includes('renderRefreshFrameRef'), false);
+  assert.equal(source.includes('scheduleRenderRefresh'), false);
+  // Forced on reconnect replay, on every output write, and on terminal change events
+  // (onScroll/onWriteParsed/onResize) — the paths where xterm issues no full refresh.
+  assert.match(source, /resizeAfterLayoutSettles\(\);\s+forceFullRefresh\(\);\s+return;/);
+  assert.match(source, /terminal\.write\(message\.data, \(\) => \{\s+forceFullRefresh\(\);\s+\}\)/);
   assert.match(source, /terminal\.onScroll\(\(\) => \{/);
   assert.match(source, /terminal\.onWriteParsed\(\(\) => \{/);
   assert.match(source, /terminal\.onResize\(\(\) => \{/);
-  assert.match(source, /scheduleRenderRefresh\(\)/);
+  assert.match(source, /forceFullRefresh\(\)/);
 });
 
 test('terminal uses only the WebGL renderer', () => {

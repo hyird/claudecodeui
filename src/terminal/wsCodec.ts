@@ -1,7 +1,14 @@
-import type { TerminalServerMessage } from './types';
+import { cloudcli } from '../../proto/messages.js';
 
-export const TERMINAL_OUTPUT_TEXT = 1;
-export const TERMINAL_OUTPUT_COMPRESSED = 2;
+import type { TerminalServerMessage, TerminalTabsServerMessage } from './types';
+
+const {
+  TerminalClientMessage,
+  TerminalServerMessage: TerminalServerMessageProto,
+  TabsClientMessage,
+  TabsServerMessage,
+  AuthServerMessage,
+} = cloudcli;
 
 type DecompressionStreamConstructor = new (
   format: 'deflate'
@@ -9,23 +16,31 @@ type DecompressionStreamConstructor = new (
 
 const textDecoder = new TextDecoder();
 
-function parseJsonMessage(raw: string): TerminalServerMessage | null {
-  try {
-    return JSON.parse(raw) as TerminalServerMessage;
-  } catch {
-    return null;
-  }
-}
+export type TerminalClientMessage =
+  | { type: 'init'; sessionId: string; cols: number; rows: number; cwd?: string; forceRestart?: boolean }
+  | { type: 'input'; data: string }
+  | { type: 'resize'; cols: number; rows: number }
+  | { type: 'close' }
+  | { type: 'ping' };
 
-async function toBytes(raw: MessageEvent['data']) {
+export type TabsClientMessage =
+  | { type: 'ping' }
+  | { type: 'add-tab' }
+  | { type: 'set-active'; activeId: string }
+  | { type: 'update-title'; tabId: string; title: string }
+  | { type: 'restart-tab'; tabId: string }
+  | { type: 'close-tab'; tabId: string };
+
+async function toBytes(raw: MessageEvent['data']): Promise<Uint8Array | null> {
+  if (raw instanceof Uint8Array) {
+    return raw;
+  }
   if (raw instanceof ArrayBuffer) {
     return new Uint8Array(raw);
   }
-
   if (raw instanceof Blob) {
     return new Uint8Array(await raw.arrayBuffer());
   }
-
   return null;
 }
 
@@ -46,36 +61,153 @@ async function inflateDeflate(payload: Uint8Array) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function decodeBinaryOutput(raw: MessageEvent['data']): Promise<TerminalServerMessage | null> {
-  const bytes = await toBytes(raw);
-  if (!bytes || bytes.length === 0) {
-    return null;
+// ---- /terminal ----------------------------------------------------------
+export function encodeTerminalClientMessage(message: TerminalClientMessage): Uint8Array {
+  switch (message.type) {
+    case 'init':
+      return TerminalClientMessage.encode({
+        init: {
+          sessionId: message.sessionId,
+          cols: message.cols,
+          rows: message.rows,
+          cwd: message.cwd ?? '',
+          forceRestart: message.forceRestart ?? false,
+        },
+      }).finish();
+    case 'input':
+      return TerminalClientMessage.encode({ input: { data: message.data } }).finish();
+    case 'resize':
+      return TerminalClientMessage.encode({ resize: { cols: message.cols, rows: message.rows } }).finish();
+    case 'close':
+      return TerminalClientMessage.encode({ close: {} }).finish();
+    case 'ping':
+      return TerminalClientMessage.encode({ ping: {} }).finish();
   }
-
-  const frameType = bytes[0];
-  const payload = bytes.subarray(1);
-
-  if (frameType === TERMINAL_OUTPUT_TEXT) {
-    return { type: 'output', data: textDecoder.decode(payload) };
-  }
-
-  if (frameType === TERMINAL_OUTPUT_COMPRESSED) {
-    try {
-      return { type: 'output', data: textDecoder.decode(await inflateDeflate(payload)) };
-    } catch {
-      return { type: 'error', message: 'Unable to decode compressed terminal output' };
-    }
-  }
-
-  return null;
 }
 
 export async function decodeTerminalServerMessage(
   raw: MessageEvent['data']
 ): Promise<TerminalServerMessage | null> {
-  if (typeof raw === 'string') {
-    return parseJsonMessage(raw);
+  const bytes = await toBytes(raw);
+  if (!bytes) {
+    return null;
   }
 
-  return decodeBinaryOutput(raw);
+  let message: cloudcli.TerminalServerMessage;
+  try {
+    message = TerminalServerMessageProto.decode(bytes);
+  } catch {
+    return null;
+  }
+
+  switch (message.body) {
+    case 'ready':
+      return { type: 'ready', cwd: message.ready!.cwd, sessionId: message.ready!.sessionId };
+    case 'output': {
+      const output = message.output!;
+      const payload = output.data ?? new Uint8Array(0);
+      try {
+        const data = output.compressed ? await inflateDeflate(payload) : payload;
+        return { type: 'output', data: textDecoder.decode(data) };
+      } catch {
+        return { type: 'error', message: 'Unable to decode compressed terminal output' };
+      }
+    }
+    case 'exit':
+      return { type: 'exit', exitCode: message.exit!.exitCode, signal: message.exit!.signal || null };
+    case 'error':
+      return { type: 'error', message: message.error!.message };
+    case 'pong':
+      return { type: 'pong' };
+    default:
+      return null;
+  }
+}
+
+// ---- /terminal/tabs -----------------------------------------------------
+export function encodeTabsClientMessage(message: TabsClientMessage): Uint8Array {
+  switch (message.type) {
+    case 'ping':
+      return TabsClientMessage.encode({ ping: {} }).finish();
+    case 'add-tab':
+      return TabsClientMessage.encode({ addTab: {} }).finish();
+    case 'set-active':
+      return TabsClientMessage.encode({ setActive: { activeId: message.activeId } }).finish();
+    case 'update-title':
+      return TabsClientMessage.encode({ updateTitle: { tabId: message.tabId, title: message.title } }).finish();
+    case 'restart-tab':
+      return TabsClientMessage.encode({ restartTab: { tabId: message.tabId } }).finish();
+    case 'close-tab':
+      return TabsClientMessage.encode({ closeTab: { tabId: message.tabId } }).finish();
+  }
+}
+
+export async function decodeTabsServerMessage(
+  raw: MessageEvent['data']
+): Promise<TerminalTabsServerMessage | null> {
+  const bytes = await toBytes(raw);
+  if (!bytes) {
+    return null;
+  }
+
+  let message: cloudcli.TabsServerMessage;
+  try {
+    message = TabsServerMessage.decode(bytes);
+  } catch {
+    return null;
+  }
+
+  switch (message.body) {
+    case 'tabs': {
+      const state = message.tabs!;
+      // The caller re-validates via normalizeTabsState, so a structural cast
+      // here mirrors the old JSON.parse path.
+      return {
+        type: 'tabs',
+        state: {
+          tabs: (state.tabs ?? []).map((tab) => ({
+            id: tab.id,
+            title: tab.title,
+            status: tab.status,
+          })),
+          activeId: state.activeId,
+          nextIndex: state.nextIndex,
+        },
+      } as TerminalTabsServerMessage;
+    }
+    case 'error':
+      return { type: 'error', message: message.error!.message };
+    case 'pong':
+      return { type: 'pong' };
+    default:
+      return null;
+  }
+}
+
+// ---- /auth/session ------------------------------------------------------
+export async function decodeAuthServerMessage(
+  raw: MessageEvent['data']
+): Promise<{ type: string } | null> {
+  const bytes = await toBytes(raw);
+  if (!bytes) {
+    return null;
+  }
+
+  let message: cloudcli.AuthServerMessage;
+  try {
+    message = AuthServerMessage.decode(bytes);
+  } catch {
+    return null;
+  }
+
+  switch (message.body) {
+    case 'sessionActive':
+      return { type: 'session-active' };
+    case 'sessionInvalidated':
+      return { type: 'session-invalidated' };
+    case 'pong':
+      return { type: 'pong' };
+    default:
+      return null;
+  }
 }

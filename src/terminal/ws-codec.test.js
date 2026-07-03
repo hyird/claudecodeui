@@ -7,14 +7,20 @@ const codecSource = fs.existsSync(new URL('./wsCodec.ts', import.meta.url))
   : '';
 const paneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
 
-test('terminal websocket codec decodes binary text and deflate output frames', () => {
-  assert.match(codecSource, /TERMINAL_OUTPUT_TEXT/);
-  assert.match(codecSource, /TERMINAL_OUTPUT_COMPRESSED/);
+test('terminal websocket codec decodes protobuf server frames and inflates compressed output', () => {
+  assert.match(codecSource, /TerminalServerMessage/);
+  assert.match(codecSource, /output\.compressed/);
   assert.match(codecSource, /DecompressionStream/);
   assert.match(codecSource, /decodeTerminalServerMessage/);
 });
 
+test('terminal client input is protobuf-encoded before sending', () => {
+  assert.match(codecSource, /encodeTerminalClientMessage/);
+  assert.match(codecSource, /TerminalClientMessage\.encode/);
+});
+
 test('terminal pane routes websocket messages through async binary-aware decoder', () => {
   assert.match(paneSource, /decodeTerminalServerMessage/);
+  assert.match(paneSource, /encodeTerminalClientMessage/);
   assert.match(paneSource, /socket\.binaryType = 'arraybuffer'/);
 });

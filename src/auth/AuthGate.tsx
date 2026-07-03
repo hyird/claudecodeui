@@ -15,6 +15,8 @@ import AuthLoadingScreen from './AuthLoadingScreen';
 import LoginForm from './LoginForm';
 import SetupForm from './SetupForm';
 import type { AuthActionResult, AuthGateProps, AuthSession, AuthUser } from './types';
+import { decodeAuthServerMessage } from '../terminal/wsCodec';
+import { websocketUrl } from '../wsHost';
 
 type AuthMode = 'loading' | 'setup' | 'login' | 'authenticated';
 
@@ -45,18 +47,7 @@ function clearStoredTokenIfCurrent(token: string) {
 }
 
 function createAuthSessionWebSocketUrl(token: string) {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = new URL(`${protocol}//${window.location.host}/auth/session`);
-  url.searchParams.set('token', token);
-  return url.toString();
-}
-
-function parseAuthSessionMessage(raw: MessageEvent['data']): { type?: string } | null {
-  try {
-    return JSON.parse(String(raw)) as { type?: string };
-  } catch {
-    return null;
-  }
+  return websocketUrl('/auth/session', token);
 }
 
 export default function AuthGate({ children }: AuthGateProps) {
@@ -152,11 +143,14 @@ export default function AuthGate({ children }: AuthGateProps) {
     };
     const connect = () => {
       socket = new WebSocket(createAuthSessionWebSocketUrl(state.token));
+      socket.binaryType = 'arraybuffer';
       socket.addEventListener('message', (event) => {
-        const message = parseAuthSessionMessage(event.data);
-        if (message?.type === 'session-invalidated') {
-          invalidateSession();
-        }
+        void (async () => {
+          const message = await decodeAuthServerMessage(event.data);
+          if (message?.type === 'session-invalidated') {
+            invalidateSession();
+          }
+        })();
       });
       socket.addEventListener('close', (event) => {
         if (disposed) {

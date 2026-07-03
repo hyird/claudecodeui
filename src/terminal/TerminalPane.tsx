@@ -15,7 +15,8 @@ import type {
   TerminalStatus,
   TerminalTab,
 } from './types';
-import { decodeTerminalServerMessage } from './wsCodec';
+import { decodeTerminalServerMessage, encodeTerminalClientMessage } from './wsCodec';
+import { websocketUrl } from '../wsHost';
 
 type TerminalPaneProps = {
   tab: TerminalTab;
@@ -35,10 +36,7 @@ const MIN_TERMINAL_COLS = 2;
 const MIN_TERMINAL_ROWS = 1;
 
 function createWebSocketUrl(authToken: string) {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = new URL(`${protocol}//${window.location.host}/terminal`);
-  url.searchParams.set('token', authToken);
-  return url.toString();
+  return websocketUrl('/terminal', authToken);
 }
 
 export default function TerminalPane({
@@ -56,7 +54,6 @@ export default function TerminalPane({
   const activeRef = useRef(active);
   const resizeTimersRef = useRef<number[]>([]);
   const resizeFrameRef = useRef(0);
-  const renderRefreshFrameRef = useRef(0);
   const lastSizeRef = useRef({ cols: 0, rows: 0 });
 
   useEffect(() => {
@@ -69,10 +66,6 @@ export default function TerminalPane({
     if (resizeFrameRef.current) {
       window.cancelAnimationFrame(resizeFrameRef.current);
       resizeFrameRef.current = 0;
-    }
-    if (renderRefreshFrameRef.current) {
-      window.cancelAnimationFrame(renderRefreshFrameRef.current);
-      renderRefreshFrameRef.current = 0;
     }
   }, []);
 
@@ -151,7 +144,7 @@ export default function TerminalPane({
     }
 
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
+      socket.send(encodeTerminalClientMessage({
         type: 'resize',
         cols: dims.cols,
         rows: dims.rows,
@@ -162,7 +155,7 @@ export default function TerminalPane({
   const sendInput = useCallback((data: string) => {
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({ type: 'input', data }));
+      socket.send(encodeTerminalClientMessage({ type: 'input', data }));
     }
   }, []);
 
@@ -187,20 +180,25 @@ export default function TerminalPane({
     viewport.classList.toggle('has-scrollback', terminal.buffer.active.baseY > 0);
   }, []);
 
-  const scheduleRenderRefresh = useCallback(() => {
-    if (renderRefreshFrameRef.current) {
+  // A scroll or an in-place TUI repaint changes what each viewport row should show,
+  // but xterm's WebGL renderer only rewrites the rows in the committed dirty range —
+  // its glyph model is keyed by viewport row, so any row left out keeps the previous
+  // frame's glyphs at the new offset and paints as a dirty/ghost row. Claude Code hits
+  // exactly the paths where xterm issues no full-viewport refresh of its own: it
+  // repaints in place (alt-screen / mouse tracking), and while the user is scrolled up
+  // it keeps streaming so the buffer scrolls under a fixed viewport (baseY-trim scroll,
+  // which fires onScroll but not the viewport's own full refresh). Force a full-range
+  // refresh SYNCHRONOUSLY so it unions into xterm's current render frame (its
+  // RenderDebouncer already coalesces to one paint per frame). The previous version
+  // deferred this to a separate, deduped rAF, so a partial frame committed first (or the
+  // refresh was dropped mid-burst) and flashed ghost rows before the full refresh landed.
+  const forceFullRefresh = useCallback(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) {
       return;
     }
 
-    renderRefreshFrameRef.current = window.requestAnimationFrame(() => {
-      const terminal = terminalRef.current;
-      renderRefreshFrameRef.current = 0;
-      if (!terminal) {
-        return;
-      }
-
-      terminal.refresh(0, Math.max(0, terminal.rows - 1));
-    });
+    terminal.refresh(0, Math.max(0, terminal.rows - 1));
   }, []);
 
   // Resize only on whole-cell boundaries. Any sub-cell remainder stays blank.
@@ -322,7 +320,7 @@ export default function TerminalPane({
         terminal.resize(dims.cols, dims.rows);
         lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
       }
-      socket.send(JSON.stringify({
+      socket.send(encodeTerminalClientMessage({
         type: 'init',
         sessionId: tab.id,
         cols: terminal.cols,
@@ -345,13 +343,13 @@ export default function TerminalPane({
           onStatusChange(tab.id, 'connected');
           updateScrollbackAffordance();
           resizeAfterLayoutSettles();
-          scheduleRenderRefresh();
+          forceFullRefresh();
           return;
         }
 
         if (message.type === 'output' && typeof message.data === 'string') {
           terminal.write(message.data, () => {
-            scheduleRenderRefresh();
+            forceFullRefresh();
           });
           return;
         }
@@ -382,7 +380,7 @@ export default function TerminalPane({
     });
     const refreshAfterTerminalChange = () => {
       updateScrollbackAffordance();
-      scheduleRenderRefresh();
+      forceFullRefresh();
     };
     const scrollSubscription = terminal.onScroll(() => {
       refreshAfterTerminalChange();
@@ -442,7 +440,7 @@ export default function TerminalPane({
     proposeFrameDimensions,
     resizeAfterLayoutSettles,
     resizeDuringDrag,
-    scheduleRenderRefresh,
+    forceFullRefresh,
     sendInput,
     updateScrollbackAffordance,
     authToken,

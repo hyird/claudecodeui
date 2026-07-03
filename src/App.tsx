@@ -8,9 +8,10 @@ import type {
   TerminalPreferences,
   TerminalStatus,
   TerminalTab,
-  TerminalTabsServerMessage,
   TerminalTabsState,
 } from './terminal/types';
+import { decodeTabsServerMessage, encodeTabsClientMessage } from './terminal/wsCodec';
+import { websocketUrl } from './wsHost';
 
 const DEFAULT_PREFERENCES: TerminalPreferences = {
   fontSize: 14,
@@ -48,18 +49,7 @@ type TabsClientCommand =
   | { type: 'close-tab'; tabId: string };
 
 function createTabsWebSocketUrl(authToken: string) {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = new URL(`${protocol}//${window.location.host}/terminal/tabs`);
-  url.searchParams.set('token', authToken);
-  return url.toString();
-}
-
-function parseTabsMessage(raw: MessageEvent['data']): TerminalTabsServerMessage | null {
-  try {
-    return JSON.parse(String(raw)) as TerminalTabsServerMessage;
-  } catch {
-    return null;
-  }
+  return websocketUrl('/terminal/tabs', authToken);
 }
 
 function isTerminalStatus(value: unknown): value is TerminalStatus {
@@ -191,7 +181,7 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
   const sendTabsCommand = useCallback((command: TabsClientCommand) => {
     const socket = tabsSocketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(command));
+      socket.send(encodeTabsClientMessage(command));
       return;
     }
 
@@ -252,6 +242,7 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
 
     const connect = () => {
       socket = new WebSocket(createTabsWebSocketUrl(authToken));
+      socket.binaryType = 'arraybuffer';
       tabsSocketRef.current = socket;
       socket.addEventListener('open', () => {
         if (tabsSocketRef.current !== socket) {
@@ -260,14 +251,16 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
         const pendingCommands = pendingTabsCommandsRef.current;
         pendingTabsCommandsRef.current = [];
         for (const command of pendingCommands) {
-          socket?.send(JSON.stringify(command));
+          socket?.send(encodeTabsClientMessage(command));
         }
       });
       socket.addEventListener('message', (event) => {
-        const message = parseTabsMessage(event.data);
-        if (message?.type === 'tabs') {
-          applyTabsState(normalizeTabsState(message.state));
-        }
+        void (async () => {
+          const message = await decodeTabsServerMessage(event.data);
+          if (message?.type === 'tabs') {
+            applyTabsState(normalizeTabsState(message.state));
+          }
+        })();
       });
       socket.addEventListener('close', () => {
         if (tabsSocketRef.current === socket) {

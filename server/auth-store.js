@@ -3,8 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import 'reflect-metadata';
-import { DataSource, EntitySchema } from 'typeorm';
+import { Database } from 'bun:sqlite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -13,89 +12,110 @@ const DB_PATH = process.env.CLOUDCLI_DB_PATH || DEFAULT_DB_PATH;
 const TOKEN_BYTES = 32;
 const PASSWORD_KEY_LENGTH = 64;
 
-const UserEntity = new EntitySchema({
-  name: 'User',
-  tableName: 'users',
-  columns: {
-    id: {
-      primary: true,
-      type: 'int',
-      generated: true,
-    },
-    username: {
-      type: 'varchar',
-      length: 80,
-      unique: true,
-    },
-    passwordHash: {
-      name: 'password_hash',
-      type: 'varchar',
-      length: 160,
-    },
-    passwordSalt: {
-      name: 'password_salt',
-      type: 'varchar',
-      length: 64,
-    },
-    createdAt: {
-      name: 'created_at',
-      type: 'varchar',
-      length: 32,
-    },
-    updatedAt: {
-      name: 'updated_at',
-      type: 'varchar',
-      length: 32,
-    },
-    lastLoginAt: {
-      name: 'last_login_at',
-      type: 'varchar',
-      length: 32,
-      nullable: true,
-    },
-  },
-});
-
-const AuthSessionEntity = new EntitySchema({
-  name: 'AuthSession',
-  tableName: 'auth_sessions',
-  columns: {
-    id: {
-      primary: true,
-      type: 'int',
-      generated: true,
-    },
-    tokenHash: {
-      name: 'token_hash',
-      type: 'varchar',
-      length: 96,
-      unique: true,
-    },
-    userId: {
-      name: 'user_id',
-      type: 'int',
-    },
-    createdAt: {
-      name: 'created_at',
-      type: 'varchar',
-      length: 32,
-    },
-    lastSeenAt: {
-      name: 'last_seen_at',
-      type: 'varchar',
-      length: 32,
-    },
-  },
-});
-
-const authDataSource = new DataSource({
-  type: 'better-sqlite3',
-  database: DB_PATH,
-  synchronize: true,
-  logging: false,
-  entities: [UserEntity, AuthSessionEntity],
-});
 const sessionInvalidationListeners = new Set();
+
+/** @type {import('bun:sqlite').Database | null} */
+let db = null;
+
+function requireDb() {
+  if (!db) {
+    throw new Error('Auth store has not been initialized');
+  }
+  return db;
+}
+
+function mapUser(row) {
+  if (!row) {
+    return null;
+  }
+  return {
+    id: row.id,
+    username: row.username,
+    passwordHash: row.password_hash,
+    passwordSalt: row.password_salt,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    lastLoginAt: row.last_login_at,
+  };
+}
+
+function mapSession(row) {
+  if (!row) {
+    return null;
+  }
+  return {
+    id: row.id,
+    tokenHash: row.token_hash,
+    userId: row.user_id,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+  };
+}
+
+function countUsers() {
+  return requireDb().query('SELECT COUNT(*) AS total FROM users').get().total;
+}
+
+function insertUser(username, passwordHash, passwordSalt, timestamp) {
+  return requireDb()
+    .query(
+      `INSERT INTO users (username, password_hash, password_salt, created_at, updated_at, last_login_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(username, passwordHash, passwordSalt, timestamp, timestamp, timestamp);
+}
+
+function findUserByUsername(username) {
+  return mapUser(requireDb().query('SELECT * FROM users WHERE username = ?').get(username));
+}
+
+function findUserById(id) {
+  return mapUser(requireDb().query('SELECT * FROM users WHERE id = ?').get(id));
+}
+
+function touchUserLogin(id, timestamp) {
+  requireDb()
+    .query('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?')
+    .run(timestamp, timestamp, id);
+}
+
+function findSessionsByUserId(userId) {
+  return requireDb()
+    .query('SELECT * FROM auth_sessions WHERE user_id = ?')
+    .all(userId)
+    .map(mapSession);
+}
+
+function deleteSessionsByUserId(userId) {
+  requireDb().query('DELETE FROM auth_sessions WHERE user_id = ?').run(userId);
+}
+
+function insertSession(tokenHash, userId, timestamp) {
+  requireDb()
+    .query(
+      `INSERT INTO auth_sessions (token_hash, user_id, created_at, last_seen_at)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(tokenHash, userId, timestamp, timestamp);
+}
+
+function findSessionByTokenHash(tokenHash) {
+  return mapSession(
+    requireDb().query('SELECT * FROM auth_sessions WHERE token_hash = ?').get(tokenHash),
+  );
+}
+
+function touchSessionLastSeen(id, timestamp) {
+  requireDb().query('UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?').run(timestamp, id);
+}
+
+function deleteSessionByTokenHash(tokenHash) {
+  return requireDb().query('DELETE FROM auth_sessions WHERE token_hash = ?').run(tokenHash).changes;
+}
+
+function deleteSessionById(id) {
+  requireDb().query('DELETE FROM auth_sessions WHERE id = ?').run(id);
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -139,28 +159,17 @@ function notifySessionInvalidated(tokenHash) {
   }
 }
 
-function readRepositories(manager = authDataSource.manager) {
-  return {
-    users: manager.getRepository('User'),
-    sessions: manager.getRepository('AuthSession'),
-  };
-}
-
-async function createSessionForUser(user, manager = authDataSource.manager) {
-  const { sessions } = readRepositories(manager);
+// Rotates the single active session for a user: records the tokens that are
+// being replaced so callers can notify listeners once the write has committed.
+function createSessionForUser(userId, invalidated) {
   const token = crypto.randomBytes(TOKEN_BYTES).toString('base64url');
   const timestamp = nowIso();
-  const existingSessions = await sessions.find({ where: { userId: user.id } });
+  const existingSessions = findSessionsByUserId(userId);
 
-  await sessions.delete({ userId: user.id });
-  await sessions.save({
-    tokenHash: hashToken(token),
-    userId: user.id,
-    createdAt: timestamp,
-    lastSeenAt: timestamp,
-  });
+  deleteSessionsByUserId(userId);
+  insertSession(hashToken(token), userId, timestamp);
   for (const session of existingSessions) {
-    notifySessionInvalidated(session.tokenHash);
+    invalidated.push(session.tokenHash);
   }
 
   return token;
@@ -185,14 +194,37 @@ export async function initializeAuthStore() {
   const directory = path.dirname(DB_PATH);
   fs.mkdirSync(directory, { recursive: true });
 
-  if (!authDataSource.isInitialized) {
-    await authDataSource.initialize();
+  if (db) {
+    return;
   }
+
+  db = new Database(DB_PATH, { create: true });
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username VARCHAR(80) NOT NULL UNIQUE,
+      password_hash VARCHAR(160) NOT NULL,
+      password_salt VARCHAR(64) NOT NULL,
+      created_at VARCHAR(32) NOT NULL,
+      updated_at VARCHAR(32) NOT NULL,
+      last_login_at VARCHAR(32)
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_hash VARCHAR(96) NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL,
+      created_at VARCHAR(32) NOT NULL,
+      last_seen_at VARCHAR(32) NOT NULL
+    )
+  `);
 }
 
 export async function hasUsers() {
-  const { users } = readRepositories();
-  return (await users.count()) > 0;
+  return countUsers() > 0;
 }
 
 export async function registerUser(usernameInput, password) {
@@ -205,30 +237,30 @@ export async function registerUser(usernameInput, password) {
     throw createHttpError(400, 'Username must be at least 3 characters, password at least 6 characters');
   }
 
-  return authDataSource.transaction(async (manager) => {
-    const { users } = readRepositories(manager);
-    if ((await users.count()) > 0) {
+  const invalidated = [];
+  const register = requireDb().transaction(() => {
+    if (countUsers() > 0) {
       throw createHttpError(403, 'User already exists. This is a single-user system.');
     }
 
     const timestamp = nowIso();
     const passwordParts = hashPassword(password);
-    const user = await users.save({
-      username,
-      passwordHash: passwordParts.hash,
-      passwordSalt: passwordParts.salt,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      lastLoginAt: timestamp,
-    });
-    const token = await createSessionForUser(user, manager);
+    const inserted = insertUser(username, passwordParts.hash, passwordParts.salt, timestamp);
+    const userId = Number(inserted.lastInsertRowid);
+    const token = createSessionForUser(userId, invalidated);
 
     return {
       success: true,
-      user: toPublicUser(user),
+      user: { id: userId, username },
       token,
     };
   });
+
+  const result = register();
+  for (const tokenHash of invalidated) {
+    notifySessionInvalidated(tokenHash);
+  }
+  return result;
 }
 
 export async function loginUser(usernameInput, password) {
@@ -237,20 +269,23 @@ export async function loginUser(usernameInput, password) {
     throw createHttpError(400, 'Username and password are required');
   }
 
-  const { users } = readRepositories();
-  const user = await users.findOneBy({ username });
+  const user = findUserByUsername(username);
   if (!user || !verifyPassword(password, user)) {
     throw createHttpError(401, 'Invalid username or password');
   }
 
-  user.lastLoginAt = nowIso();
-  user.updatedAt = user.lastLoginAt;
-  await users.save(user);
+  touchUserLogin(user.id, nowIso());
+
+  const invalidated = [];
+  const token = createSessionForUser(user.id, invalidated);
+  for (const tokenHash of invalidated) {
+    notifySessionInvalidated(tokenHash);
+  }
 
   return {
     success: true,
     user: toPublicUser(user),
-    token: await createSessionForUser(user),
+    token,
   };
 }
 
@@ -259,20 +294,18 @@ export async function authenticateToken(token) {
     return null;
   }
 
-  const { users, sessions } = readRepositories();
-  const session = await sessions.findOneBy({ tokenHash: hashToken(token) });
+  const session = findSessionByTokenHash(hashToken(token));
   if (!session) {
     return null;
   }
 
-  const user = await users.findOneBy({ id: session.userId });
+  const user = findUserById(session.userId);
   if (!user) {
-    await sessions.delete({ id: session.id });
+    deleteSessionById(session.id);
     return null;
   }
 
-  session.lastSeenAt = nowIso();
-  await sessions.save(session);
+  touchSessionLastSeen(session.id, nowIso());
   return toPublicUser(user);
 }
 
@@ -281,13 +314,12 @@ export async function logoutToken(token) {
     return false;
   }
 
-  const { sessions } = readRepositories();
   const tokenHash = hashToken(token);
-  const result = await sessions.delete({ tokenHash });
-  if (result.affected > 0) {
+  const removed = deleteSessionByTokenHash(tokenHash);
+  if (removed > 0) {
     notifySessionInvalidated(tokenHash);
   }
-  return result.affected > 0;
+  return removed > 0;
 }
 
 export function readBearerToken(value) {

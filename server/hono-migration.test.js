@@ -4,10 +4,61 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { after, before, test } from 'node:test';
+import { afterAll as after, beforeAll as before, test } from 'bun:test';
 
 import { WebSocket } from 'ws';
-import packageJson from '../package.json' with { type: 'json' };
+import { cloudcli } from '../proto/messages.js';
+
+const { TabsClientMessage, TabsServerMessage, AuthServerMessage } = cloudcli;
+
+function toUint8(raw) {
+  return raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+}
+
+// The test is a browser-side client of the server, so it encodes client frames
+// and decodes server frames straight off the shared protobuf schema.
+function encodeTabsClientMessage(message) {
+  if (message.type === 'update-title') {
+    return TabsClientMessage.encode({ updateTitle: { tabId: message.tabId, title: message.title } }).finish();
+  }
+  throw new Error(`Unsupported tabs client message in test: ${message.type}`);
+}
+
+function decodeTabsServerMessage(raw) {
+  const message = TabsServerMessage.decode(toUint8(raw));
+  if (message.body === 'tabs') {
+    const state = message.tabs;
+    return {
+      type: 'tabs',
+      state: {
+        tabs: (state.tabs ?? []).map((tab) => ({ id: tab.id, title: tab.title, status: tab.status })),
+        activeId: state.activeId,
+        nextIndex: state.nextIndex,
+      },
+    };
+  }
+  if (message.body === 'error') {
+    return { type: 'error', message: message.error.message };
+  }
+  if (message.body === 'pong') {
+    return { type: 'pong' };
+  }
+  return null;
+}
+
+function decodeAuthServerMessage(raw) {
+  const message = AuthServerMessage.decode(toUint8(raw));
+  if (message.body === 'sessionActive') {
+    return { type: 'session-active' };
+  }
+  if (message.body === 'sessionInvalidated') {
+    return { type: 'session-invalidated' };
+  }
+  if (message.body === 'pong') {
+    return { type: 'pong' };
+  }
+  return null;
+}
 
 let serverProcess;
 let baseUrl;
@@ -35,6 +86,40 @@ function getFreePort() {
   });
 }
 
+// Bun's built-in `ws` client does not surface the rejected handshake's HTTP
+// status in its error, so read the status line straight off the socket.
+function wsHandshakeStatus(pathname, token) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(baseUrl);
+    const query = token ? `?token=${encodeURIComponent(token)}` : '';
+    const socket = net.connect(Number(target.port), target.hostname, () => {
+      socket.write(
+        `GET ${pathname}${query} HTTP/1.1\r\n` +
+        `Host: ${target.host}\r\n` +
+        'Upgrade: websocket\r\n' +
+        'Connection: Upgrade\r\n' +
+        'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
+        'Sec-WebSocket-Version: 13\r\n' +
+        '\r\n',
+      );
+    });
+    let buffer = '';
+    socket.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      const match = buffer.match(/^HTTP\/1\.1 (\d{3})/);
+      if (match) {
+        socket.destroy();
+        resolve(Number(match[1]));
+      }
+    });
+    socket.once('error', reject);
+    socket.setTimeout(5000, () => {
+      socket.destroy();
+      reject(new Error('Timed out waiting for websocket handshake status'));
+    });
+  });
+}
+
 async function waitForHealth(url) {
   const deadline = Date.now() + 10_000;
   let lastError;
@@ -55,12 +140,12 @@ async function waitForHealth(url) {
   throw lastError ?? new Error('Timed out waiting for health endpoint');
 }
 
-function readJsonWebSocketMessage(ws, predicate, description) {
+function readTabsWebSocketMessage(ws, predicate, description) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), 5000);
     const onMessage = (raw) => {
-      const message = JSON.parse(String(raw));
-      if (!predicate || predicate(message)) {
+      const message = decodeTabsServerMessage(raw);
+      if (message && (!predicate || predicate(message))) {
         clearTimeout(timeout);
         ws.off('message', onMessage);
         ws.off('error', onError);
@@ -110,16 +195,6 @@ after(async () => {
   if (testDbPath && fs.existsSync(testDbPath)) {
     fs.rmSync(testDbPath, { force: true });
   }
-});
-
-test('server runtime dependencies use Hono instead of Express', () => {
-  assert.ok(packageJson.dependencies.hono, 'hono dependency is required');
-  assert.ok(packageJson.dependencies['@hono/node-server'], '@hono/node-server dependency is required');
-  assert.ok(packageJson.dependencies.typeorm, 'typeorm dependency is required');
-  assert.ok(packageJson.dependencies['better-sqlite3'], 'better-sqlite3 SQLite driver is required');
-  assert.ok(packageJson.dependencies['reflect-metadata'], 'reflect-metadata dependency is required by TypeORM');
-  assert.equal(packageJson.dependencies.express, undefined, 'express must be removed');
-  assert.equal(packageJson.devDependencies['@types/express'], undefined, '@types/express must be removed');
 });
 
 test('auth API creates the first user in SQLite and returns tokens for login', async () => {
@@ -176,8 +251,8 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
   const invalidationNotice = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Timed out waiting for session invalidation notice')), 5000);
     authSessionSocket.on('message', (raw) => {
-      const message = JSON.parse(String(raw));
-      if (message.type === 'session-invalidated') {
+      const message = decodeAuthServerMessage(raw);
+      if (message?.type === 'session-invalidated') {
         clearTimeout(timeout);
         resolve(message);
       }
@@ -225,15 +300,7 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
   assert.equal(displacedTabs.status, 403);
   assert.deepEqual(await displacedTabs.json(), { error: 'Invalid token' });
 
-  const displacedTabsSocket = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(registrationToken)}`);
-  const displacedTabsSocketError = await new Promise((resolve) => {
-    displacedTabsSocket.once('error', resolve);
-    displacedTabsSocket.once('open', () => {
-      displacedTabsSocket.close();
-      resolve(new Error('Unexpected displaced websocket open'));
-    });
-  });
-  assert.match(String(displacedTabsSocketError.message), /403/);
+  assert.equal(await wsHandshakeStatus('/terminal/tabs', registrationToken), 403);
 
   const activeUser = await fetch(`${baseUrl}/api/auth/user`, {
     headers: { authorization: `Bearer ${authToken}` },
@@ -269,15 +336,10 @@ test('terminal tab HTTP API preserves existing behavior', async () => {
 });
 
 test('terminal tab WebSocket requires and accepts auth token', async () => {
-  const unauthenticated = new WebSocket(`${wsBaseUrl}/terminal/tabs`);
-  const unauthorizedError = await new Promise((resolve) => {
-    unauthenticated.once('error', resolve);
-    unauthenticated.once('open', () => resolve(new Error('Unexpected unauthenticated websocket open')));
-  });
-  assert.match(String(unauthorizedError.message), /401/);
+  assert.equal(await wsHandshakeStatus('/terminal/tabs'), 401);
 
   const authenticated = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
-  const firstMessage = await readJsonWebSocketMessage(
+  const firstMessage = await readTabsWebSocketMessage(
     authenticated,
     (message) => message.type === 'tabs',
     'tabs websocket message',
@@ -286,8 +348,8 @@ test('terminal tab WebSocket requires and accepts auth token', async () => {
   assert.ok(Array.isArray(firstMessage.state.tabs));
   const tabId = firstMessage.state.tabs[0].id;
 
-  authenticated.send(JSON.stringify({ type: 'update-title', tabId, title: '\u2819 Ruvia' }));
-  const titleUpdate = await readJsonWebSocketMessage(
+  authenticated.send(encodeTabsClientMessage({ type: 'update-title', tabId, title: '\u2819 Ruvia' }));
+  const titleUpdate = await readTabsWebSocketMessage(
     authenticated,
     (message) => (
       message.type === 'tabs' &&

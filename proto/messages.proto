@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package cloudcli;
+
+// Shared ------------------------------------------------------------------
+message Ping {}
+message Pong {}
+message ErrorMessage { string message = 1; }
+
+// /terminal (client -> server) --------------------------------------------
+message TerminalInit {
+  string session_id = 1;
+  uint32 cols = 2;
+  uint32 rows = 3;
+  string cwd = 4;
+  bool force_restart = 5;
+}
+message TerminalInput { string data = 1; }
+message TerminalResize { uint32 cols = 1; uint32 rows = 2; }
+message TerminalClose {}
+
+message TerminalClientMessage {
+  oneof body {
+    TerminalInit init = 1;
+    TerminalInput input = 2;
+    TerminalResize resize = 3;
+    TerminalClose close = 4;
+    Ping ping = 5;
+  }
+}
+
+// /terminal (server -> client) --------------------------------------------
+message TerminalReady { string cwd = 1; string session_id = 2; }
+// data holds the terminal bytes; when compressed is true it is raw DEFLATE.
+message TerminalOutput { bytes data = 1; bool compressed = 2; }
+message TerminalExit { int32 exit_code = 1; string signal = 2; }
+
+message TerminalServerMessage {
+  oneof body {
+    TerminalReady ready = 1;
+    TerminalOutput output = 2;
+    TerminalExit exit = 3;
+    ErrorMessage error = 4;
+    Pong pong = 5;
+  }
+}
+
+// /terminal/tabs (client -> server) ---------------------------------------
+message AddTab {}
+message SetActive { string active_id = 1; }
+message UpdateTitle { string tab_id = 1; string title = 2; }
+message RestartTab { string tab_id = 1; }
+message CloseTab { string tab_id = 1; }
+
+message TabsClientMessage {
+  oneof body {
+    Ping ping = 1;
+    AddTab add_tab = 2;
+    SetActive set_active = 3;
+    UpdateTitle update_title = 4;
+    RestartTab restart_tab = 5;
+    CloseTab close_tab = 6;
+  }
+}
+
+// /terminal/tabs (server -> client) ---------------------------------------
+message Tab { string id = 1; string title = 2; string status = 3; }
+message TabsState {
+  repeated Tab tabs = 1;
+  string active_id = 2;
+  uint32 next_index = 3;
+}
+
+message TabsServerMessage {
+  oneof body {
+    TabsState tabs = 1;
+    ErrorMessage error = 2;
+    Pong pong = 3;
+  }
+}
+
+// /auth/session -----------------------------------------------------------
+message AuthClientMessage {
+  oneof body { Ping ping = 1; }
+}
+
+message SessionActive {}
+message SessionInvalidated {}
+message AuthServerMessage {
+  oneof body {
+    SessionActive session_active = 1;
+    SessionInvalidated session_invalidated = 2;
+    Pong pong = 3;
+  }
+}
