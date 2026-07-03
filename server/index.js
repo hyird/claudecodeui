@@ -21,6 +21,7 @@ import {
   registerUser,
   toAuthErrorResponse,
 } from './auth-store.js';
+import { sendTerminalOutput } from './terminal-ws-codec.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -31,9 +32,16 @@ const BUFFER_LIMIT = 5000;
 const SAFE_ID = /^[a-zA-Z0-9_.:-]+$/;
 
 const app = new Hono();
-const authSessionWss = new WebSocketServer({ noServer: true });
-const terminalWss = new WebSocketServer({ noServer: true });
-const tabsWss = new WebSocketServer({ noServer: true });
+const webSocketServerOptions = {
+  noServer: true,
+  perMessageDeflate: {
+    threshold: 512,
+    zlibDeflateOptions: { level: 3 },
+  },
+};
+const authSessionWss = new WebSocketServer(webSocketServerOptions);
+const terminalWss = new WebSocketServer(webSocketServerOptions);
+const tabsWss = new WebSocketServer(webSocketServerOptions);
 
 const sessions = new Map();
 const authSessionSubscribers = new Map();
@@ -380,7 +388,7 @@ function createSession(sessionId, options) {
     session.buffer.push(chunk);
 
     if (session.socket?.readyState === WebSocket.OPEN) {
-      session.socket.send(JSON.stringify({ type: 'output', data: chunk }));
+      sendTerminalOutput(session.socket, chunk);
     }
   });
 
@@ -389,7 +397,7 @@ function createSession(sessionId, options) {
     const suffix = signal ? ` (${signal})` : '';
     const message = `\r\n\x1b[33mProcess exited with code ${exitCode}${suffix}\x1b[0m\r\n`;
     if (session.socket?.readyState === WebSocket.OPEN) {
-      session.socket.send(JSON.stringify({ type: 'output', data: message }));
+      sendTerminalOutput(session.socket, message);
       session.socket.send(JSON.stringify({ type: 'exit', exitCode, signal }));
     }
     session.socket = null;
@@ -410,7 +418,7 @@ function attachSocket(ws, session) {
 
   ws.send(JSON.stringify({ type: 'ready', cwd: session.cwd, sessionId: session.id }));
   for (const chunk of session.buffer) {
-    ws.send(JSON.stringify({ type: 'output', data: chunk }));
+    sendTerminalOutput(ws, chunk);
   }
   broadcastTabsState();
 }

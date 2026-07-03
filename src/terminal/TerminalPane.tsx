@@ -7,10 +7,10 @@ import { useCallback, useEffect, useRef } from 'react';
 import { terminalTheme } from './themes';
 import type {
   TerminalPreferences,
-  TerminalServerMessage,
   TerminalStatus,
   TerminalTab,
 } from './types';
+import { decodeTerminalServerMessage } from './wsCodec';
 
 type TerminalPaneProps = {
   tab: TerminalTab;
@@ -28,14 +28,6 @@ function createWebSocketUrl(authToken: string) {
   const url = new URL(`${protocol}//${window.location.host}/terminal`);
   url.searchParams.set('token', authToken);
   return url.toString();
-}
-
-function parseServerMessage(raw: MessageEvent['data']): TerminalServerMessage | null {
-  try {
-    return JSON.parse(String(raw)) as TerminalServerMessage;
-  } catch {
-    return null;
-  }
 }
 
 function isPasteShortcut(event: KeyboardEvent) {
@@ -259,6 +251,7 @@ export default function TerminalPane({
     terminal.writeln('\x1b[90mConnecting...\x1b[0m');
 
     const socket = new WebSocket(createWebSocketUrl(authToken));
+    socket.binaryType = 'arraybuffer';
     socketRef.current = socket;
     onStatusChange(tab.id, 'connecting');
 
@@ -281,34 +274,36 @@ export default function TerminalPane({
     });
 
     socket.addEventListener('message', (event) => {
-      const message = parseServerMessage(event.data);
-      if (!message) {
-        return;
-      }
+      void (async () => {
+        const message = await decodeTerminalServerMessage(event.data);
+        if (!message) {
+          return;
+        }
 
-      if (message.type === 'ready') {
-        terminal.clear();
-        terminal.writeln(`\x1b[36mSession ${message.sessionId}\x1b[0m`);
-        terminal.writeln(`\x1b[90m${message.cwd}\x1b[0m\r\n`);
-        onStatusChange(tab.id, 'connected');
-        resizeAfterLayoutSettles();
-        return;
-      }
+        if (message.type === 'ready') {
+          terminal.clear();
+          terminal.writeln(`\x1b[36mSession ${message.sessionId}\x1b[0m`);
+          terminal.writeln(`\x1b[90m${message.cwd}\x1b[0m\r\n`);
+          onStatusChange(tab.id, 'connected');
+          resizeAfterLayoutSettles();
+          return;
+        }
 
-      if (message.type === 'output' && typeof message.data === 'string') {
-        terminal.write(message.data);
-        return;
-      }
+        if (message.type === 'output' && typeof message.data === 'string') {
+          terminal.write(message.data);
+          return;
+        }
 
-      if (message.type === 'error' && typeof message.message === 'string') {
-        terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
-        onStatusChange(tab.id, 'error');
-        return;
-      }
+        if (message.type === 'error' && typeof message.message === 'string') {
+          terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
+          onStatusChange(tab.id, 'error');
+          return;
+        }
 
-      if (message.type === 'exit') {
-        onStatusChange(tab.id, 'exited');
-      }
+        if (message.type === 'exit') {
+          onStatusChange(tab.id, 'exited');
+        }
+      })();
     });
 
     socket.addEventListener('close', () => {
