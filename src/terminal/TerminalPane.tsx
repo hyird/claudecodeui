@@ -231,7 +231,8 @@ export default function TerminalPane({
 
     const terminal = new Terminal({
       allowProposedApi: true,
-      cursorBlink: true,
+      cursorBlink: false,
+      cursorInactiveStyle: 'none',
       cursorStyle: 'bar',
       fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, monospace',
       fontSize: preferences.fontSize,
@@ -383,6 +384,8 @@ export default function TerminalPane({
     if (active) {
       resizeAfterLayoutSettles();
       terminal.focus();
+    } else {
+      terminal.blur();
     }
   }, [active, preferences.fontSize, resizeAfterLayoutSettles]);
 
