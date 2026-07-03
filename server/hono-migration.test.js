@@ -142,6 +142,27 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
     user: { id: registered.user.id, username: TEST_USERNAME },
   });
 
+  const authSessionSocket = new WebSocket(`${wsBaseUrl}/auth/session?token=${encodeURIComponent(registrationToken)}`);
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for auth session websocket')), 5000);
+    authSessionSocket.once('open', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    authSessionSocket.once('error', reject);
+  });
+  const invalidationNotice = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for session invalidation notice')), 5000);
+    authSessionSocket.on('message', (raw) => {
+      const message = JSON.parse(String(raw));
+      if (message.type === 'session-invalidated') {
+        clearTimeout(timeout);
+        resolve(message);
+      }
+    });
+    authSessionSocket.once('error', reject);
+  });
+
   const duplicateRegister = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -168,6 +189,7 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
   assert.equal(typeof loggedIn.token, 'string');
   assert.notEqual(loggedIn.token, registrationToken);
   authToken = loggedIn.token;
+  assert.deepEqual(await invalidationNotice, { type: 'session-invalidated' });
 
   const displacedUser = await fetch(`${baseUrl}/api/auth/user`, {
     headers: { authorization: `Bearer ${registrationToken}` },

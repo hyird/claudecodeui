@@ -11,10 +11,12 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 import {
   authenticateToken,
+  hashSessionToken,
   hasUsers,
   initializeAuthStore,
   loginUser,
   logoutToken,
+  onSessionInvalidated,
   readBearerToken,
   registerUser,
   toAuthErrorResponse,
@@ -29,10 +31,12 @@ const BUFFER_LIMIT = 5000;
 const SAFE_ID = /^[a-zA-Z0-9_.:-]+$/;
 
 const app = new Hono();
+const authSessionWss = new WebSocketServer({ noServer: true });
 const terminalWss = new WebSocketServer({ noServer: true });
 const tabsWss = new WebSocketServer({ noServer: true });
 
 const sessions = new Map();
+const authSessionSubscribers = new Map();
 const tabSubscribers = new Set();
 const tabsState = createInitialTabsState();
 
@@ -115,8 +119,43 @@ async function authenticateUpgrade(request, socket) {
     return null;
   }
 
-  return { url, user };
+  return { url, user, token, tokenHash: hashSessionToken(token) };
 }
+
+function addAuthSessionSubscriber(tokenHash, ws) {
+  let subscribers = authSessionSubscribers.get(tokenHash);
+  if (!subscribers) {
+    subscribers = new Set();
+    authSessionSubscribers.set(tokenHash, subscribers);
+  }
+  subscribers.add(ws);
+
+  ws.on('close', () => {
+    subscribers.delete(ws);
+    if (subscribers.size === 0) {
+      authSessionSubscribers.delete(tokenHash);
+    }
+  });
+}
+
+onSessionInvalidated((tokenHash) => {
+  const subscribers = authSessionSubscribers.get(tokenHash);
+  if (!subscribers) {
+    return;
+  }
+
+  const payload = JSON.stringify({ type: 'session-invalidated' });
+  for (const ws of subscribers) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload, () => {
+        ws.close(4001, 'Session invalidated');
+      });
+    } else {
+      subscribers.delete(ws);
+    }
+  }
+  authSessionSubscribers.delete(tokenHash);
+});
 
 function createTab(index) {
   const entropy = Math.random().toString(36).slice(2, 8);
@@ -495,6 +534,18 @@ tabsWss.on('connection', (ws) => {
   });
 });
 
+authSessionWss.on('connection', (ws, request, auth) => {
+  addAuthSessionSubscriber(auth.tokenHash, ws);
+  ws.send(JSON.stringify({ type: 'session-active' }));
+
+  ws.on('message', (raw) => {
+    const message = parseMessage(raw);
+    if (message?.type === 'ping') {
+      ws.send(JSON.stringify({ type: 'pong' }));
+    }
+  });
+});
+
 async function handleUpgrade(request, socket, head) {
   const auth = await authenticateUpgrade(request, socket);
   if (!auth) {
@@ -502,6 +553,13 @@ async function handleUpgrade(request, socket, head) {
   }
 
   const { pathname } = auth.url;
+  if (pathname === '/auth/session') {
+    authSessionWss.handleUpgrade(request, socket, head, (ws) => {
+      authSessionWss.emit('connection', ws, request, auth);
+    });
+    return;
+  }
+
   if (pathname === '/terminal') {
     terminalWss.handleUpgrade(request, socket, head, (ws) => {
       terminalWss.emit('connection', ws, request);
@@ -516,10 +574,7 @@ async function handleUpgrade(request, socket, head) {
     return;
   }
 
-  if (pathname !== '/terminal') {
-    socket.destroy();
-    return;
-  }
+  socket.destroy();
 }
 
 app.get('/api/health', (c) => c.json({ ok: true, sessions: sessions.size }));

@@ -29,7 +29,6 @@ const loadingState: AuthState = {
   token: '',
   user: null,
 };
-const AUTH_SESSION_RECHECK_INTERVAL_MS = 2000;
 
 function authenticatedState(session: AuthSession): AuthState {
   return {
@@ -42,6 +41,21 @@ function authenticatedState(session: AuthSession): AuthState {
 function clearStoredTokenIfCurrent(token: string) {
   if (!token || readStoredToken() === token) {
     clearStoredToken();
+  }
+}
+
+function createAuthSessionWebSocketUrl(token: string) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url = new URL(`${protocol}//${window.location.host}/auth/session`);
+  url.searchParams.set('token', token);
+  return url.toString();
+}
+
+function parseAuthSessionMessage(raw: MessageEvent['data']): { type?: string } | null {
+  try {
+    return JSON.parse(String(raw)) as { type?: string };
+  } catch {
+    return null;
   }
 }
 
@@ -125,6 +139,52 @@ export default function AuthGate({ children }: AuthGateProps) {
     }
 
     let disposed = false;
+    let reconnectTimer = 0;
+    let socket: WebSocket | null = null;
+    const invalidateSession = () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      window.clearTimeout(reconnectTimer);
+      socket?.close();
+      handleAuthInvalidated(state.token);
+    };
+    const connect = () => {
+      socket = new WebSocket(createAuthSessionWebSocketUrl(state.token));
+      socket.addEventListener('message', (event) => {
+        const message = parseAuthSessionMessage(event.data);
+        if (message?.type === 'session-invalidated') {
+          invalidateSession();
+        }
+      });
+      socket.addEventListener('close', (event) => {
+        if (disposed) {
+          return;
+        }
+        if (event.code === 4001) {
+          invalidateSession();
+          return;
+        }
+        reconnectTimer = window.setTimeout(connect, 5000);
+      });
+    };
+
+    connect();
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [handleAuthInvalidated, state.mode, state.token]);
+
+  useEffect(() => {
+    if (state.mode !== 'authenticated' || !state.token) {
+      return;
+    }
+
+    let disposed = false;
     let validating = false;
     const validateCurrentToken = () => {
       if (validating) {
@@ -147,14 +207,11 @@ export default function AuthGate({ children }: AuthGateProps) {
       }
     };
 
-    const interval = window.setInterval(validateCurrentToken, AUTH_SESSION_RECHECK_INTERVAL_MS);
     window.addEventListener('focus', validateCurrentToken);
     document.addEventListener('visibilitychange', validateWhenVisible);
-    validateCurrentToken();
 
     return () => {
       disposed = true;
-      window.clearInterval(interval);
       window.removeEventListener('focus', validateCurrentToken);
       document.removeEventListener('visibilitychange', validateWhenVisible);
     };

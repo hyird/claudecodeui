@@ -95,6 +95,7 @@ const authDataSource = new DataSource({
   logging: false,
   entities: [UserEntity, AuthSessionEntity],
 });
+const sessionInvalidationListeners = new Set();
 
 function nowIso() {
   return new Date().toISOString();
@@ -132,6 +133,12 @@ function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+function notifySessionInvalidated(tokenHash) {
+  for (const listener of sessionInvalidationListeners) {
+    listener(tokenHash);
+  }
+}
+
 function readRepositories(manager = authDataSource.manager) {
   return {
     users: manager.getRepository('User'),
@@ -143,6 +150,7 @@ async function createSessionForUser(user, manager = authDataSource.manager) {
   const { sessions } = readRepositories(manager);
   const token = crypto.randomBytes(TOKEN_BYTES).toString('base64url');
   const timestamp = nowIso();
+  const existingSessions = await sessions.find({ where: { userId: user.id } });
 
   await sessions.delete({ userId: user.id });
   await sessions.save({
@@ -151,12 +159,26 @@ async function createSessionForUser(user, manager = authDataSource.manager) {
     createdAt: timestamp,
     lastSeenAt: timestamp,
   });
+  for (const session of existingSessions) {
+    notifySessionInvalidated(session.tokenHash);
+  }
 
   return token;
 }
 
 export function getDatabasePath() {
   return DB_PATH;
+}
+
+export function hashSessionToken(token) {
+  return hashToken(token);
+}
+
+export function onSessionInvalidated(listener) {
+  sessionInvalidationListeners.add(listener);
+  return () => {
+    sessionInvalidationListeners.delete(listener);
+  };
 }
 
 export async function initializeAuthStore() {
@@ -260,7 +282,11 @@ export async function logoutToken(token) {
   }
 
   const { sessions } = readRepositories();
-  const result = await sessions.delete({ tokenHash: hashToken(token) });
+  const tokenHash = hashToken(token);
+  const result = await sessions.delete({ tokenHash });
+  if (result.affected > 0) {
+    notifySessionInvalidated(tokenHash);
+  }
   return result.affected > 0;
 }
 
