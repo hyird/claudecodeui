@@ -30,6 +30,7 @@ const distDir = path.join(rootDir, 'dist');
 const PORT = Number(process.env.PORT || 3001);
 const BUFFER_LIMIT = 5000;
 const SAFE_ID = /^[a-zA-Z0-9_.:-]+$/;
+const SPINNER_TITLE_PREFIX = /^[\u2800-\u28ff]+[\s:·.-]*/u;
 
 const app = new Hono();
 const webSocketServerOptions = {
@@ -186,6 +187,8 @@ function cleanTerminalTitle(title) {
   return readString(title)
     .replace(/[\u0000-\u001F\u007F]/g, '')
     .trim()
+    .replace(SPINNER_TITLE_PREFIX, '')
+    .trim()
     .slice(0, 80);
 }
 
@@ -217,6 +220,7 @@ function serializeTabsState() {
   return {
     tabs: tabsState.tabs.map((tab) => ({
       ...tab,
+      title: cleanTerminalTitle(tab.title) || tab.title,
       status: getTabStatus(tab.id),
     })),
     activeId: tabsState.activeId,
@@ -417,8 +421,9 @@ function attachSocket(ws, session) {
   }
 
   ws.send(JSON.stringify({ type: 'ready', cwd: session.cwd, sessionId: session.id }));
-  for (const chunk of session.buffer) {
-    sendTerminalOutput(ws, chunk);
+  const bufferedOutput = session.buffer.join('');
+  if (bufferedOutput) {
+    sendTerminalOutput(ws, bufferedOutput);
   }
   broadcastTabsState();
 }

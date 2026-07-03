@@ -18,7 +18,9 @@ const DEFAULT_PREFERENCES: TerminalPreferences = {
 
 const MIN_FONT_SIZE = 11;
 const MAX_FONT_SIZE = 22;
+const TITLE_SYNC_DELAY_MS = 500;
 const SAFE_TAB_ID = /^[a-zA-Z0-9_.:-]+$/;
+const SPINNER_TITLE_PREFIX = /^[\u2800-\u28ff]+[\s:·.-]*/u;
 const EMPTY_TABS_STATE: TerminalTabsState = {
   tabs: [],
   activeId: '',
@@ -73,7 +75,7 @@ function normalizeTabsState(value: unknown): TerminalTabsState {
         ))
         .map((tab) => ({
           id: tab.id,
-          title: tab.title.trim().slice(0, 80),
+          title: cleanTerminalTitle(tab.title),
           status: isTerminalStatus(tab.status) ? tab.status : 'disconnected',
         }))
     : [];
@@ -115,7 +117,7 @@ function cleanTerminalTitle(title: string) {
       cleaned += char;
     }
   }
-  return cleaned.trim().slice(0, 80);
+  return cleaned.trim().replace(SPINNER_TITLE_PREFIX, '').trim().slice(0, 80);
 }
 
 function clampFontSize(value: unknown) {
@@ -155,6 +157,8 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
   const [preferences, setPreferences] = useState<TerminalPreferences>(readPreferences);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const tabsStateRef = useRef(tabsState);
+  const pendingTitlesRef = useRef<Record<string, string>>({});
+  const titleSyncTimersRef = useRef<Record<string, number>>({});
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const settingsPanelRef = useRef<HTMLDivElement | null>(null);
 
@@ -163,6 +167,12 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
   useEffect(() => {
     tabsStateRef.current = tabsState;
   }, [tabsState]);
+
+  useEffect(() => () => {
+    Object.values(titleSyncTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+    titleSyncTimersRef.current = {};
+    pendingTitlesRef.current = {};
+  }, []);
 
   const applyTabsState = useCallback((state: TerminalTabsState) => {
     setTabsState(normalizeTabsState(state));
@@ -275,10 +285,12 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
       return;
     }
 
-    const currentTitle = tabsStateRef.current.tabs.find((tab) => tab.id === tabId)?.title;
+    const currentTitle = pendingTitlesRef.current[tabId]
+      ?? tabsStateRef.current.tabs.find((tab) => tab.id === tabId)?.title;
     if (currentTitle === title) {
       return;
     }
+    pendingTitlesRef.current[tabId] = title;
 
     setTabsState((current) => ({
       ...current,
@@ -286,11 +298,25 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
         tab.id === tabId ? { ...tab, title } : tab
       )),
     }));
-    sendTabsMutation(`/api/terminal/tabs/${encodeURIComponent(tabId)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
-    });
+
+    const existingTimer = titleSyncTimersRef.current[tabId];
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+    }
+    titleSyncTimersRef.current[tabId] = window.setTimeout(() => {
+      delete titleSyncTimersRef.current[tabId];
+      const pendingTitle = pendingTitlesRef.current[tabId];
+      delete pendingTitlesRef.current[tabId];
+      if (!pendingTitle) {
+        return;
+      }
+
+      sendTabsMutation(`/api/terminal/tabs/${encodeURIComponent(tabId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: pendingTitle }),
+      });
+    }, TITLE_SYNC_DELAY_MS);
   }, [sendTabsMutation]);
 
   const updateFontSize = useCallback((value: number | string) => {
@@ -449,21 +475,21 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
       </header>
 
       <section className="terminal-stack">
-        {tabs.map((tab) => (
+        {activeTab && (
           <div
-            key={tab.id}
-            className={`terminal-layer ${tab.id === activeTab?.id ? 'visible' : ''}`}
+            key={activeTab.id}
+            className="terminal-layer visible"
           >
             <TerminalPane
-              tab={tab}
-              active={tab.id === activeTab?.id}
+              tab={activeTab}
+              active
               authToken={authToken}
               preferences={preferences}
               onStatusChange={updateTabStatus}
               onTitleChange={updateTabTitle}
             />
           </div>
-        ))}
+        )}
       </section>
 
       {settingsOpen && (
