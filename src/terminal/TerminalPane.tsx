@@ -1,5 +1,6 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useRef } from 'react';
 
@@ -266,6 +267,7 @@ export default function TerminalPane({
     fitAddonRef.current = fitAddon;
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
+    terminal.loadAddon(new WebglAddon());
     terminal.attachCustomKeyEventHandler((event) => {
       if (isCopyShortcut(event) && copyTerminalSelection(terminal, event)) {
         return false;
