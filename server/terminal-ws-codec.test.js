@@ -38,15 +38,18 @@ test('small terminal output uses a compact binary text frame instead of larger d
   assert.equal(decodeTerminalOutputFrame(frame), output);
 });
 
-test('terminal output strips OSC 52 clipboard writes before framing', () => {
+test('terminal output preserves OSC 52 clipboard sequences before framing', () => {
   const frame = encodeTerminalOutputFrame(
     'before\x1b]52;c;SGVsbG8=\x07middle\x1b]52;c;V29ybGQ=\x1b\\after'
   );
 
-  assert.equal(decodeTerminalOutputFrame(frame), 'beforemiddleafter');
+  assert.equal(
+    decodeTerminalOutputFrame(frame),
+    'before\x1b]52;c;SGVsbG8=\x07middle\x1b]52;c;V29ybGQ=\x1b\\after',
+  );
 });
 
-test('terminal websocket output strips OSC 52 writes split across chunks', () => {
+test('terminal websocket output preserves split OSC 52 sequences', () => {
   const sent = [];
   const ws = {
     send(frame) {
@@ -59,18 +62,24 @@ test('terminal websocket output strips OSC 52 writes split across chunks', () =>
   sendTerminalOutput(ws, '\x07b\x1b]52;c;V29ybGQ=\x1b');
   sendTerminalOutput(ws, '\\c');
 
-  assert.equal(sent.map(decodeTerminalOutputFrame).join(''), 'abc');
+  assert.equal(
+    sent.map(decodeTerminalOutputFrame).join(''),
+    'a\x1b]52;c;SGVsbG8=\x07b\x1b]52;c;V29ybGQ=\x1b\\c',
+  );
 });
 
-test('terminal output strips mouse tracking enable sequences before framing', () => {
+test('terminal output preserves mouse tracking mode sequences', () => {
   const frame = encodeTerminalOutputFrame(
     'before\x1b[?1000hmiddle\x1b[?1000;1002;1006hafter\x1b[?25h\x1b[?1000l'
   );
 
-  assert.equal(decodeTerminalOutputFrame(frame), 'beforemiddleafter\x1b[?25h\x1b[?1000l');
+  assert.equal(
+    decodeTerminalOutputFrame(frame),
+    'before\x1b[?1000hmiddle\x1b[?1000;1002;1006hafter\x1b[?25h\x1b[?1000l',
+  );
 });
 
-test('terminal websocket output strips mouse tracking enables split across chunks', () => {
+test('terminal websocket output preserves split mouse tracking mode sequences', () => {
   const sent = [];
   const ws = {
     send(frame) {
@@ -83,5 +92,5 @@ test('terminal websocket output strips mouse tracking enables split across chunk
   sendTerminalOutput(ws, '0;1002;1006h');
   sendTerminalOutput(ws, 'b');
 
-  assert.equal(sent.map(decodeTerminalOutputFrame).join(''), 'ab');
+  assert.equal(sent.map(decodeTerminalOutputFrame).join(''), 'a\x1b[?1000;1002;1006hb');
 });

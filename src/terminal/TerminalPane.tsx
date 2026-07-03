@@ -42,6 +42,37 @@ function isPasteShortcut(event: KeyboardEvent) {
     && !event.altKey;
 }
 
+function isCopyShortcut(event: KeyboardEvent) {
+  return event.type === 'keydown'
+    && event.key.toLowerCase() === 'c'
+    && (event.ctrlKey || event.metaKey)
+    && !event.altKey;
+}
+
+function copyTerminalSelection(terminal: Terminal, event: ClipboardEvent | KeyboardEvent) {
+  if (!terminal.hasSelection()) {
+    return false;
+  }
+
+  const selection = terminal.getSelection();
+  if (!selection) {
+    return false;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  if ('clipboardData' in event && event.clipboardData) {
+    event.clipboardData.setData('text/plain', selection);
+    return true;
+  }
+
+  if (navigator.clipboard) {
+    void navigator.clipboard.writeText(selection).catch(() => undefined);
+  }
+  return true;
+}
+
 export default function TerminalPane({
   tab,
   active,
@@ -258,7 +289,20 @@ export default function TerminalPane({
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
     terminal.attachCustomKeyEventHandler((event) => {
+      if (isCopyShortcut(event) && copyTerminalSelection(terminal, event)) {
+        return false;
+      }
+
       if (isPasteShortcut(event)) {
+        return false;
+      }
+
+      return true;
+    });
+    terminal.attachCustomWheelEventHandler((event) => {
+      if (terminal.buffer.active.baseY <= 0) {
+        event.preventDefault();
+        event.stopPropagation();
         return false;
       }
 
@@ -353,6 +397,10 @@ export default function TerminalPane({
       sendInput(data);
     };
     container.addEventListener('paste', pasteHandler);
+    const copyHandler = (event: ClipboardEvent) => {
+      copyTerminalSelection(terminal, event);
+    };
+    container.addEventListener('copy', copyHandler, true);
 
     const resizeObserver = new ResizeObserver(() => {
       if (activeRef.current) {
@@ -370,6 +418,7 @@ export default function TerminalPane({
       writeParsedSubscription.dispose();
       resizeSubscription.dispose();
       container.removeEventListener('paste', pasteHandler);
+      container.removeEventListener('copy', copyHandler, true);
       resizeObserver.disconnect();
       socket.close();
       terminal.dispose();

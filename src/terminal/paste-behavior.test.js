@@ -19,3 +19,12 @@ test('ctrl-v is reserved for browser paste instead of terminal control input', (
   assert.match(source, /isPasteShortcut/);
   assert.match(source, /return false;/);
 });
+
+test('selected terminal text is copied in the frontend instead of sent as ctrl-c', () => {
+  assert.match(source, /isCopyShortcut/);
+  assert.match(source, /terminal\.hasSelection\(\)/);
+  assert.match(source, /terminal\.getSelection\(\)/);
+  assert.match(source, /navigator\.clipboard\.writeText/);
+  assert.match(source, /addEventListener\('copy', copyHandler, true\)/);
+  assert.match(source, /event\.stopPropagation\(\)/);
+});

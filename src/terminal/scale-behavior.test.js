@@ -78,3 +78,12 @@ test('terminal viewport scroll affordance follows xterm scrollback state', () =>
   assert.match(source, /terminal\.onScroll\(updateScrollbackAffordance\)/);
   assert.match(source, /terminal\.onWriteParsed\(updateScrollbackAffordance\)/);
 });
+
+test('terminal wheel events are not converted to arrow keys without scrollback', () => {
+  assert.match(source, /terminal\.attachCustomWheelEventHandler/);
+  assert.match(source, /terminal\.buffer\.active\.baseY <= 0/);
+  assert.match(source, /event\.preventDefault\(\)/);
+  assert.match(source, /event\.stopPropagation\(\)/);
+  assert.match(source, /return false/);
+  assert.match(source, /return true/);
+});
