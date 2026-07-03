@@ -176,6 +176,9 @@ export default function TerminalPane({
 
   // Resize only on whole-cell boundaries. Any sub-cell remainder stays blank.
   const resizeAfterLayoutSettles = useCallback(() => {
+    fitAndResize();
+    clearScreenTransform();
+
     // Coalesce a burst of ResizeObserver ticks into at most one fit per frame
     // so a live drag stays responsive without thrashing layout.
     if (resizeFrameRef.current) {
@@ -199,6 +202,9 @@ export default function TerminalPane({
   // During a window drag, keep fitting to whole cells. Any sub-cell remainder
   // stays as blank space instead of scaling or clipping the character grid.
   const resizeDuringDrag = useCallback(() => {
+    fitAndResize();
+    clearScreenTransform();
+
     if (resizeFrameRef.current) {
       window.cancelAnimationFrame(resizeFrameRef.current);
     }

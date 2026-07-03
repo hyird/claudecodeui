@@ -29,6 +29,20 @@ test('terminal screen fits whole cells without scale transforms', () => {
   assert.equal(settledResize.includes('clampScaleToFrame'), false);
 });
 
+test('terminal resize fits before the next animation frame', () => {
+  const settledResize = extractCallback('resizeAfterLayoutSettles');
+  const dragResize = extractCallback('resizeDuringDrag');
+
+  assert.ok(
+    settledResize.indexOf('fitAndResize();') < settledResize.indexOf('window.requestAnimationFrame'),
+    'settled resize should fit synchronously before scheduling rAF',
+  );
+  assert.ok(
+    dragResize.indexOf('fitAndResize();') < dragResize.indexOf('window.requestAnimationFrame'),
+    'drag resize should fit synchronously before scheduling rAF',
+  );
+});
+
 test('terminal screen does not force transform styling while idle', () => {
   const screenRule = styles.match(/\.terminal-pane \.xterm-screen \{[\s\S]*?\}/);
   const rule = screenRule?.[0] ?? '';
