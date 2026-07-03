@@ -725,6 +725,7 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {number|null} [rows] TerminalInit rows
          * @property {string|null} [cwd] TerminalInit cwd
          * @property {boolean|null} [forceRestart] TerminalInit forceRestart
+         * @property {number|null} [lastSeq] TerminalInit lastSeq
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -797,6 +798,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalInit.prototype.forceRestart = false;
 
         /**
+         * TerminalInit lastSeq.
+         * @member {number} lastSeq
+         * @memberof cloudcli.TerminalInit
+         * @instance
+         */
+        TerminalInit.prototype.lastSeq = 0;
+
+        /**
          * Creates a new TerminalInit instance using the specified properties.
          * @function create
          * @memberof cloudcli.TerminalInit
@@ -838,6 +847,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 writer.uint32(/* id 4, wireType 2 =*/34).string(message.cwd);
             if (message.forceRestart != null && $Object.hasOwnProperty.call(message, "forceRestart") && message.forceRestart !== false)
                 writer.uint32(/* id 5, wireType 0 =*/40).bool(message.forceRestart);
+            if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq") && message.lastSeq !== 0)
+                writer.uint32(/* id 6, wireType 0 =*/48).uint32(message.lastSeq);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -930,6 +941,15 @@ export const cloudcli = $root.cloudcli = (() => {
                             delete message.forceRestart;
                         continue;
                     }
+                case 6: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.lastSeq = value;
+                        else
+                            delete message.lastSeq;
+                        continue;
+                    }
                 }
                 reader.skipType(wireType, _depth, tag);
                 if (!reader.discardUnknown) {
@@ -988,6 +1008,9 @@ export const cloudcli = $root.cloudcli = (() => {
             if (message.forceRestart != null && $Object.hasOwnProperty.call(message, "forceRestart"))
                 if (typeof message.forceRestart !== "boolean")
                     return "forceRestart: boolean expected";
+            if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq"))
+                if (!$util.isInteger(message.lastSeq))
+                    return "lastSeq: integer expected";
             return null;
         };
 
@@ -1024,6 +1047,9 @@ export const cloudcli = $root.cloudcli = (() => {
             if (object.forceRestart != null)
                 if (object.forceRestart)
                     message.forceRestart = $Boolean(object.forceRestart);
+            if (object.lastSeq != null)
+                if ($Number(object.lastSeq) !== 0)
+                    message.lastSeq = object.lastSeq >>> 0;
             return message;
         };
 
@@ -1050,6 +1076,7 @@ export const cloudcli = $root.cloudcli = (() => {
                 object.rows = 0;
                 object.cwd = "";
                 object.forceRestart = false;
+                object.lastSeq = 0;
             }
             if (message.sessionId != null && $Object.hasOwnProperty.call(message, "sessionId"))
                 object.sessionId = message.sessionId;
@@ -1061,6 +1088,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 object.cwd = message.cwd;
             if (message.forceRestart != null && $Object.hasOwnProperty.call(message, "forceRestart"))
                 object.forceRestart = message.forceRestart;
+            if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq"))
+                object.lastSeq = message.lastSeq;
             return object;
         };
 
@@ -2311,6 +2340,9 @@ export const cloudcli = $root.cloudcli = (() => {
          * @typedef {Object} cloudcli.TerminalReady.$Properties
          * @property {string|null} [cwd] TerminalReady cwd
          * @property {string|null} [sessionId] TerminalReady sessionId
+         * @property {boolean|null} [reset] TerminalReady reset
+         * @property {boolean|null} [gap] TerminalReady gap
+         * @property {number|null} [lastSeq] TerminalReady lastSeq
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -2359,6 +2391,30 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalReady.prototype.sessionId = "";
 
         /**
+         * TerminalReady reset.
+         * @member {boolean} reset
+         * @memberof cloudcli.TerminalReady
+         * @instance
+         */
+        TerminalReady.prototype.reset = false;
+
+        /**
+         * TerminalReady gap.
+         * @member {boolean} gap
+         * @memberof cloudcli.TerminalReady
+         * @instance
+         */
+        TerminalReady.prototype.gap = false;
+
+        /**
+         * TerminalReady lastSeq.
+         * @member {number} lastSeq
+         * @memberof cloudcli.TerminalReady
+         * @instance
+         */
+        TerminalReady.prototype.lastSeq = 0;
+
+        /**
          * Creates a new TerminalReady instance using the specified properties.
          * @function create
          * @memberof cloudcli.TerminalReady
@@ -2394,6 +2450,12 @@ export const cloudcli = $root.cloudcli = (() => {
                 writer.uint32(/* id 1, wireType 2 =*/10).string(message.cwd);
             if (message.sessionId != null && $Object.hasOwnProperty.call(message, "sessionId") && message.sessionId !== "")
                 writer.uint32(/* id 2, wireType 2 =*/18).string(message.sessionId);
+            if (message.reset != null && $Object.hasOwnProperty.call(message, "reset") && message.reset !== false)
+                writer.uint32(/* id 3, wireType 0 =*/24).bool(message.reset);
+            if (message.gap != null && $Object.hasOwnProperty.call(message, "gap") && message.gap !== false)
+                writer.uint32(/* id 4, wireType 0 =*/32).bool(message.gap);
+            if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq") && message.lastSeq !== 0)
+                writer.uint32(/* id 5, wireType 0 =*/40).uint32(message.lastSeq);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -2459,6 +2521,33 @@ export const cloudcli = $root.cloudcli = (() => {
                             delete message.sessionId;
                         continue;
                     }
+                case 3: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.bool())
+                            message.reset = value;
+                        else
+                            delete message.reset;
+                        continue;
+                    }
+                case 4: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.bool())
+                            message.gap = value;
+                        else
+                            delete message.gap;
+                        continue;
+                    }
+                case 5: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.lastSeq = value;
+                        else
+                            delete message.lastSeq;
+                        continue;
+                    }
                 }
                 reader.skipType(wireType, _depth, tag);
                 if (!reader.discardUnknown) {
@@ -2508,6 +2597,15 @@ export const cloudcli = $root.cloudcli = (() => {
             if (message.sessionId != null && $Object.hasOwnProperty.call(message, "sessionId"))
                 if (!$util.isString(message.sessionId))
                     return "sessionId: string expected";
+            if (message.reset != null && $Object.hasOwnProperty.call(message, "reset"))
+                if (typeof message.reset !== "boolean")
+                    return "reset: boolean expected";
+            if (message.gap != null && $Object.hasOwnProperty.call(message, "gap"))
+                if (typeof message.gap !== "boolean")
+                    return "gap: boolean expected";
+            if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq"))
+                if (!$util.isInteger(message.lastSeq))
+                    return "lastSeq: integer expected";
             return null;
         };
 
@@ -2535,6 +2633,15 @@ export const cloudcli = $root.cloudcli = (() => {
             if (object.sessionId != null)
                 if (typeof object.sessionId !== "string" || object.sessionId.length)
                     message.sessionId = $String(object.sessionId);
+            if (object.reset != null)
+                if (object.reset)
+                    message.reset = $Boolean(object.reset);
+            if (object.gap != null)
+                if (object.gap)
+                    message.gap = $Boolean(object.gap);
+            if (object.lastSeq != null)
+                if ($Number(object.lastSeq) !== 0)
+                    message.lastSeq = object.lastSeq >>> 0;
             return message;
         };
 
@@ -2558,11 +2665,20 @@ export const cloudcli = $root.cloudcli = (() => {
             if (options.defaults) {
                 object.cwd = "";
                 object.sessionId = "";
+                object.reset = false;
+                object.gap = false;
+                object.lastSeq = 0;
             }
             if (message.cwd != null && $Object.hasOwnProperty.call(message, "cwd"))
                 object.cwd = message.cwd;
             if (message.sessionId != null && $Object.hasOwnProperty.call(message, "sessionId"))
                 object.sessionId = message.sessionId;
+            if (message.reset != null && $Object.hasOwnProperty.call(message, "reset"))
+                object.reset = message.reset;
+            if (message.gap != null && $Object.hasOwnProperty.call(message, "gap"))
+                object.gap = message.gap;
+            if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq"))
+                object.lastSeq = message.lastSeq;
             return object;
         };
 
@@ -3193,6 +3309,7 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {cloudcli.TerminalExit.$Properties|null} [exit] TerminalServerMessage exit
          * @property {cloudcli.ErrorMessage.$Properties|null} [error] TerminalServerMessage error
          * @property {cloudcli.Pong.$Properties|null} [pong] TerminalServerMessage pong
+         * @property {number|null} [seq] TerminalServerMessage seq
          * @property {"ready"|"output"|"exit"|"error"|"pong"} [body] TerminalServerMessage body
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
@@ -3213,6 +3330,7 @@ export const cloudcli = $root.cloudcli = (() => {
          *   exit?: cloudcli.TerminalExit.$Shape|null;
          *   error?: cloudcli.ErrorMessage.$Shape|null;
          *   pong?: cloudcli.Pong.$Shape|null;
+         *   seq?: number|null;
          *   $unknowns?: Array.<Uint8Array>;
          * } & (
          *   ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape })
@@ -3274,6 +3392,14 @@ export const cloudcli = $root.cloudcli = (() => {
          */
         TerminalServerMessage.prototype.pong = null;
 
+        /**
+         * TerminalServerMessage seq.
+         * @member {number} seq
+         * @memberof cloudcli.TerminalServerMessage
+         * @instance
+         */
+        TerminalServerMessage.prototype.seq = 0;
+
         // OneOf field names bound to virtual getters and setters
         let $oneOfFields;
 
@@ -3330,6 +3456,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 $root.cloudcli.ErrorMessage.encode(message.error, writer.uint32(/* id 4, wireType 2 =*/34).fork(), _depth + 1).ldelim();
             if (message.pong != null && $Object.hasOwnProperty.call(message, "pong"))
                 $root.cloudcli.Pong.encode(message.pong, writer.uint32(/* id 5, wireType 2 =*/42).fork(), _depth + 1).ldelim();
+            if (message.seq != null && $Object.hasOwnProperty.call(message, "seq") && message.seq !== 0)
+                writer.uint32(/* id 100, wireType 0 =*/800).uint32(message.seq);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -3367,7 +3495,7 @@ export const cloudcli = $root.cloudcli = (() => {
                 _depth = 0;
             if (_depth > $Reader.recursionLimit)
                 throw $Error("max depth exceeded");
-            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.TerminalServerMessage();
+            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.TerminalServerMessage(), value;
             while (reader.pos < end) {
                 let start = reader.pos;
                 let tag = reader.tag();
@@ -3410,6 +3538,15 @@ export const cloudcli = $root.cloudcli = (() => {
                             break;
                         message.pong = $root.cloudcli.Pong.decode(reader, reader.uint32(), $undefined, _depth + 1, message.pong);
                         message.body = "pong";
+                        continue;
+                    }
+                case 100: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.seq = value;
+                        else
+                            delete message.seq;
                         continue;
                     }
                 }
@@ -3504,6 +3641,9 @@ export const cloudcli = $root.cloudcli = (() => {
                         return "pong." + error;
                 }
             }
+            if (message.seq != null && $Object.hasOwnProperty.call(message, "seq"))
+                if (!$util.isInteger(message.seq))
+                    return "seq: integer expected";
             return null;
         };
 
@@ -3550,6 +3690,9 @@ export const cloudcli = $root.cloudcli = (() => {
                     throw $TypeError(".cloudcli.TerminalServerMessage.pong: object expected");
                 message.pong = $root.cloudcli.Pong.fromObject(object.pong, _depth + 1);
             }
+            if (object.seq != null)
+                if ($Number(object.seq) !== 0)
+                    message.seq = object.seq >>> 0;
             return message;
         };
 
@@ -3570,6 +3713,8 @@ export const cloudcli = $root.cloudcli = (() => {
             if (_depth > $util.recursionLimit)
                 throw $Error("max depth exceeded");
             let object = {};
+            if (options.defaults)
+                object.seq = 0;
             if (message.ready != null && $Object.hasOwnProperty.call(message, "ready")) {
                 object.ready = $root.cloudcli.TerminalReady.toObject(message.ready, options, _depth + 1);
                 if (options.oneofs)
@@ -3595,6 +3740,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 if (options.oneofs)
                     object.body = "pong";
             }
+            if (message.seq != null && $Object.hasOwnProperty.call(message, "seq"))
+                object.seq = message.seq;
             return object;
         };
 

@@ -377,6 +377,9 @@ export namespace cloudcli {
         /** TerminalInit forceRestart. */
         forceRestart: boolean;
 
+        /** TerminalInit lastSeq. */
+        lastSeq: number;
+
         /**
          * Creates a new TerminalInit instance using the specified properties.
          * @param [properties] Properties to set
@@ -475,6 +478,9 @@ export namespace cloudcli {
 
             /** TerminalInit forceRestart */
             forceRestart?: (boolean|null);
+
+            /** TerminalInit lastSeq */
+            lastSeq?: (number|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -1016,6 +1022,15 @@ export namespace cloudcli {
         /** TerminalReady sessionId. */
         sessionId: string;
 
+        /** TerminalReady reset. */
+        reset: boolean;
+
+        /** TerminalReady gap. */
+        gap: boolean;
+
+        /** TerminalReady lastSeq. */
+        lastSeq: number;
+
         /**
          * Creates a new TerminalReady instance using the specified properties.
          * @param [properties] Properties to set
@@ -1105,6 +1120,15 @@ export namespace cloudcli {
 
             /** TerminalReady sessionId */
             sessionId?: (string|null);
+
+            /** TerminalReady reset */
+            reset?: (boolean|null);
+
+            /** TerminalReady gap */
+            gap?: (boolean|null);
+
+            /** TerminalReady lastSeq */
+            lastSeq?: (number|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -1394,6 +1418,9 @@ export namespace cloudcli {
         /** TerminalServerMessage pong. */
         pong?: (cloudcli.Pong.$Properties|null);
 
+        /** TerminalServerMessage seq. */
+        seq: number;
+
         /** TerminalServerMessage body. */
         body?: ("ready"|"output"|"exit"|"error"|"pong");
 
@@ -1496,6 +1523,9 @@ export namespace cloudcli {
             /** TerminalServerMessage pong */
             pong?: (cloudcli.Pong.$Properties|null);
 
+            /** TerminalServerMessage seq */
+            seq?: (number|null);
+
             /** TerminalServerMessage body */
             body?: ("ready"|"output"|"exit"|"error"|"pong");
 
@@ -1510,6 +1540,7 @@ export namespace cloudcli {
           exit?: cloudcli.TerminalExit.$Shape|null;
           error?: cloudcli.ErrorMessage.$Shape|null;
           pong?: cloudcli.Pong.$Shape|null;
+          seq?: number|null;
           $unknowns?: Uint8Array[];
         } & (
           ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape })

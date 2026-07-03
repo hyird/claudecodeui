@@ -32,6 +32,11 @@ import {
   encodeTerminalServerMessage,
   sendTerminalOutput,
 } from './wire.js';
+import {
+  createTerminalEventLog,
+  getTerminalReplayPlan,
+  recordTerminalEvent,
+} from './terminal-stream.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -459,6 +464,25 @@ function resizeSession(session, cols, rows) {
   readTerminalSnapshot(session);
 }
 
+function sendTerminalEvent(ws, event) {
+  if (ws?.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  if (event.type === 'output') {
+    sendTerminalOutput(ws, event.data, event.seq);
+    return;
+  }
+
+  ws.send(encodeTerminalServerMessage(event));
+}
+
+function recordAndSendTerminalEvent(session, event) {
+  const sequencedEvent = recordTerminalEvent(session.terminalEvents, event);
+  sendTerminalEvent(session.socket, sequencedEvent);
+  return sequencedEvent;
+}
+
 function createSession(sessionId, options) {
   const cwd = resolveCwd(options.cwd);
   const shell = resolveShell();
@@ -485,25 +509,22 @@ function createSession(sessionId, options) {
     terminalSnapshot: terminalSnapshot.terminalSnapshot,
     snapshotDirty: false,
     socket: null,
+    terminalEvents: createTerminalEventLog(),
     closed: false,
   };
 
   shellProcess.onData((chunk) => {
     writeTerminalSnapshot(session, chunk);
 
-    if (session.socket?.readyState === WebSocket.OPEN) {
-      sendTerminalOutput(session.socket, chunk);
-    }
+    recordAndSendTerminalEvent(session, { type: 'output', data: chunk });
   });
 
   shellProcess.onExit(({ exitCode, signal }) => {
     session.closed = true;
     const suffix = signal ? ` (${signal})` : '';
     const message = `\r\n\x1b[33mProcess exited with code ${exitCode}${suffix}\x1b[0m\r\n`;
-    if (session.socket?.readyState === WebSocket.OPEN) {
-      sendTerminalOutput(session.socket, message);
-      session.socket.send(encodeTerminalServerMessage({ type: 'exit', exitCode, signal }));
-    }
+    recordAndSendTerminalEvent(session, { type: 'output', data: message });
+    recordAndSendTerminalEvent(session, { type: 'exit', exitCode, signal });
     session.socket = null;
     sessions.delete(sessionId);
     broadcastTabsState();
@@ -513,17 +534,32 @@ function createSession(sessionId, options) {
   return session;
 }
 
-function attachSocket(ws, session) {
+function attachSocket(ws, session, lastSeq = 0) {
   const oldSocket = session.socket;
   session.socket = ws;
   if (oldSocket && oldSocket !== ws && oldSocket.readyState === WebSocket.OPEN) {
     oldSocket.close(1000, 'Replaced by newer terminal view');
   }
 
-  ws.send(encodeTerminalServerMessage({ type: 'ready', cwd: session.cwd, sessionId: session.id }));
-  const terminalSnapshot = readTerminalSnapshot(session);
-  if (terminalSnapshot) {
-    sendTerminalOutput(ws, terminalSnapshot);
+  const replayPlan = getTerminalReplayPlan(session.terminalEvents, lastSeq);
+  ws.send(encodeTerminalServerMessage({
+    type: 'ready',
+    cwd: session.cwd,
+    sessionId: session.id,
+    reset: replayPlan.mode === 'reset',
+    gap: replayPlan.gap,
+    lastSeq: replayPlan.lastSeq,
+  }));
+
+  if (replayPlan.mode === 'replay') {
+    for (const event of replayPlan.events) {
+      sendTerminalEvent(ws, event);
+    }
+  } else {
+    const terminalSnapshot = readTerminalSnapshot(session);
+    if (terminalSnapshot) {
+      sendTerminalOutput(ws, terminalSnapshot);
+    }
   }
   broadcastTabsState();
 }
@@ -561,6 +597,7 @@ function handleInit(ws, message) {
   const cols = readNumber(message.cols, 100);
   const rows = readNumber(message.rows, 30);
   const forceRestart = message.forceRestart === true;
+  const lastSeq = readNumber(message.lastSeq, 0);
 
   if (forceRestart) {
     closeSession(sessionId, false);
@@ -573,7 +610,7 @@ function handleInit(ws, message) {
   });
 
   resizeSession(session, cols, rows);
-  attachSocket(ws, session);
+  attachSocket(ws, session, lastSeq);
   return session;
 }
 

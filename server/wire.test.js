@@ -8,6 +8,7 @@ import {
   decodeTerminalClientMessage,
   encodeTabsServerMessage,
   encodeTerminalOutput,
+  encodeTerminalServerMessage,
   sendTerminalOutput,
 } from './wire.js';
 
@@ -22,9 +23,10 @@ function decodeOutputFrame(frame) {
 
 test('terminal output uses a compressed protobuf frame when deflate reduces payload size', () => {
   const output = `\x1b[32m${'build output '.repeat(400)}\x1b[0m\r\n`;
-  const frame = encodeTerminalOutput(output);
+  const frame = encodeTerminalOutput(output, 7);
   const message = TerminalServerMessage.decode(frame);
 
+  assert.equal(message.seq, 7);
   assert.equal(message.output.compressed, true);
   assert.ok(frame.length < Buffer.byteLength(output));
   assert.equal(decodeOutputFrame(frame), output);
@@ -40,9 +42,10 @@ test('small terminal output stays uncompressed inside the protobuf frame', () =>
 
 test('terminal output below the compression threshold skips deflate even when repetitive', () => {
   const output = 'x'.repeat(256);
-  const frame = encodeTerminalOutput(output);
+  const frame = encodeTerminalOutput(output, 12);
   const message = TerminalServerMessage.decode(frame);
 
+  assert.equal(message.seq, 12);
   assert.equal(message.output.compressed, false);
   assert.equal(Buffer.from(message.output.data).toString('utf8'), output);
 });
@@ -80,7 +83,7 @@ test('empty terminal output is not framed or sent', () => {
 
 test('terminal client messages round-trip through protobuf', () => {
   const init = TerminalClientMessage.encode({
-    init: { sessionId: 'terminal-1', cols: 120, rows: 40, cwd: '/tmp', forceRestart: true },
+    init: { sessionId: 'terminal-1', cols: 120, rows: 40, cwd: '/tmp', forceRestart: true, lastSeq: 9 },
   }).finish();
   assert.deepEqual(decodeTerminalClientMessage(init), {
     type: 'init',
@@ -89,6 +92,7 @@ test('terminal client messages round-trip through protobuf', () => {
     rows: 40,
     cwd: '/tmp',
     forceRestart: true,
+    lastSeq: 9,
   });
 
   const input = TerminalClientMessage.encode({ input: { data: 'ls\r' } }).finish();
@@ -96,6 +100,25 @@ test('terminal client messages round-trip through protobuf', () => {
 
   const resize = TerminalClientMessage.encode({ resize: { cols: 80, rows: 24 } }).finish();
   assert.deepEqual(decodeTerminalClientMessage(resize), { type: 'resize', cols: 80, rows: 24 });
+});
+
+test('terminal ready frames carry replay reset metadata', () => {
+  const frame = encodeTerminalServerMessage({
+    type: 'ready',
+    cwd: '/tmp/project',
+    sessionId: 'terminal-1',
+    reset: true,
+    gap: true,
+    lastSeq: 21,
+  });
+  const message = TerminalServerMessage.decode(frame);
+
+  assert.equal(message.body, 'ready');
+  assert.equal(message.ready.cwd, '/tmp/project');
+  assert.equal(message.ready.sessionId, 'terminal-1');
+  assert.equal(message.ready.reset, true);
+  assert.equal(message.ready.gap, true);
+  assert.equal(message.ready.lastSeq, 21);
 });
 
 test('tabs client hyphenated commands map back from protobuf oneof fields', () => {

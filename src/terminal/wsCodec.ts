@@ -17,7 +17,7 @@ type DecompressionStreamConstructor = new (
 const textDecoder = new TextDecoder();
 
 export type TerminalClientMessage =
-  | { type: 'init'; sessionId: string; cols: number; rows: number; cwd?: string; forceRestart?: boolean }
+  | { type: 'init'; sessionId: string; cols: number; rows: number; cwd?: string; forceRestart?: boolean; lastSeq?: number }
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'close' }
@@ -72,6 +72,7 @@ export function encodeTerminalClientMessage(message: TerminalClientMessage): Uin
           rows: message.rows,
           cwd: message.cwd ?? '',
           forceRestart: message.forceRestart ?? false,
+          lastSeq: message.lastSeq ?? 0,
         },
       }).finish();
     case 'input':
@@ -102,23 +103,31 @@ export async function decodeTerminalServerMessage(
 
   switch (message.body) {
     case 'ready':
-      return { type: 'ready', cwd: message.ready!.cwd, sessionId: message.ready!.sessionId };
+      return {
+        type: 'ready',
+        cwd: message.ready!.cwd,
+        sessionId: message.ready!.sessionId,
+        reset: message.ready!.reset,
+        gap: message.ready!.gap,
+        lastSeq: message.ready!.lastSeq,
+        seq: message.seq,
+      };
     case 'output': {
       const output = message.output!;
       const payload = output.data ?? new Uint8Array(0);
       try {
         const data = output.compressed ? await inflateDeflate(payload) : payload;
-        return { type: 'output', data: textDecoder.decode(data) };
+        return { type: 'output', data: textDecoder.decode(data), seq: message.seq };
       } catch {
-        return { type: 'error', message: 'Unable to decode compressed terminal output' };
+        return { type: 'error', message: 'Unable to decode compressed terminal output', seq: message.seq };
       }
     }
     case 'exit':
-      return { type: 'exit', exitCode: message.exit!.exitCode, signal: message.exit!.signal || null };
+      return { type: 'exit', exitCode: message.exit!.exitCode, signal: message.exit!.signal || null, seq: message.seq };
     case 'error':
-      return { type: 'error', message: message.error!.message };
+      return { type: 'error', message: message.error!.message, seq: message.seq };
     case 'pong':
-      return { type: 'pong' };
+      return { type: 'pong', seq: message.seq };
     default:
       return null;
   }

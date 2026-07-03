@@ -120,7 +120,8 @@ test('terminal output and scroll events force a synchronous full-range renderer 
   // Forced on reconnect replay, on every output write, and on terminal change events
   // (onScroll/onWriteParsed/onResize) — the paths where xterm issues no full refresh.
   assert.match(source, /resizeAfterLayoutSettles\(\);\s+forceFullRefresh\(\);\s+return;/);
-  assert.match(source, /terminal\.write\(message\.data, \(\) => \{\s+forceFullRefresh\(\);\s+\}\)/);
+  assert.match(source, /const writeTerminalData = \(data: string\) => new Promise/);
+  assert.match(source, /terminal\.write\(data, \(\) => \{\s+forceFullRefresh\(\);\s+resolve\(\);\s+\}\)/);
   assert.match(source, /terminal\.onScroll\(\(\) => \{/);
   assert.match(source, /terminal\.onWriteParsed\(\(\) => \{/);
   assert.match(source, /terminal\.onResize\(\(\) => \{/);

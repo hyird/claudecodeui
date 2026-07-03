@@ -280,6 +280,23 @@ button:focus-visible {
     0 1px 2px hsl(var(--auth-foreground) / 0.04);
 }
 
+.auth-input-wrap input:-webkit-autofill,
+.auth-input-wrap input:-webkit-autofill:hover,
+.auth-input-wrap input:-webkit-autofill:focus {
+  -webkit-text-fill-color: hsl(var(--auth-foreground));
+  caret-color: hsl(var(--auth-foreground));
+  box-shadow:
+    0 0 0 1000px hsl(var(--auth-card) / 0.94) inset,
+    0 1px 2px hsl(var(--auth-foreground) / 0.04);
+}
+
+.auth-input-wrap input:-webkit-autofill:focus {
+  box-shadow:
+    0 0 0 1000px hsl(var(--auth-card) / 0.94) inset,
+    0 0 0 3px hsl(var(--auth-ring) / 0.30),
+    0 1px 2px hsl(var(--auth-foreground) / 0.04);
+}
+
 .auth-input-wrap input:disabled {
   cursor: not-allowed;
   opacity: 0.6;

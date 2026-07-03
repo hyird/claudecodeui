@@ -14,6 +14,7 @@ message TerminalInit {
   uint32 rows = 3;
   string cwd = 4;
   bool force_restart = 5;
+  uint32 last_seq = 6;
 }
 message TerminalInput { string data = 1; }
 message TerminalResize { uint32 cols = 1; uint32 rows = 2; }
@@ -30,7 +31,13 @@ message TerminalClientMessage {
 }
 
 // /terminal (server -> client) --------------------------------------------
-message TerminalReady { string cwd = 1; string session_id = 2; }
+message TerminalReady {
+  string cwd = 1;
+  string session_id = 2;
+  bool reset = 3;
+  bool gap = 4;
+  uint32 last_seq = 5;
+}
 // data holds the terminal bytes; when compressed is true it is raw DEFLATE.
 message TerminalOutput { bytes data = 1; bool compressed = 2; }
 message TerminalExit { int32 exit_code = 1; string signal = 2; }
@@ -43,6 +50,7 @@ message TerminalServerMessage {
     ErrorMessage error = 4;
     Pong pong = 5;
   }
+  uint32 seq = 100;
 }
 
 // /terminal/tabs (client -> server) ---------------------------------------

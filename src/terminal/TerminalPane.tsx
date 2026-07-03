@@ -12,6 +12,7 @@ import {
 import { terminalTheme } from './themes';
 import type {
   TerminalPreferences,
+  TerminalServerMessage,
   TerminalStatus,
   TerminalTab,
 } from './types';
@@ -301,16 +302,48 @@ export default function TerminalPane({
     terminal.writeln('\x1b[36mCloudCLI Terminal\x1b[0m');
     terminal.writeln('\x1b[90mConnecting...\x1b[0m');
 
-    const handleTerminalServerMessage = async (socket: WebSocket, raw: MessageEvent['data']) => {
-      const message = await decodeTerminalServerMessage(raw);
-      if (!message || socketRef.current !== socket) {
+    let lastAppliedTerminalSeq = 0;
+    const pendingTerminalMessages = new Map<number, TerminalServerMessage>();
+    let terminalResyncTimer = 0;
+
+    const writeTerminalData = (data: string) => new Promise<void>((resolve) => {
+      terminal.write(data, () => {
+        forceFullRefresh();
+        resolve();
+      });
+    });
+
+    function clearTerminalResyncTimer() {
+      if (terminalResyncTimer) {
+        window.clearTimeout(terminalResyncTimer);
+        terminalResyncTimer = 0;
+      }
+    }
+
+    function scheduleTerminalResync(socket: WebSocket) {
+      if (terminalResyncTimer) {
         return;
       }
 
+      terminalResyncTimer = window.setTimeout(() => {
+        terminalResyncTimer = 0;
+        if (socketRef.current === socket) {
+          pendingTerminalMessages.clear();
+          lastAppliedTerminalSeq = 0;
+          socket.close(1011, 'Terminal sequence gap');
+        }
+      }, 250);
+    }
+
+    const applyTerminalServerMessage = async (socket: WebSocket, message: TerminalServerMessage) => {
       if (message.type === 'ready') {
-        terminal.clear();
-        terminal.writeln(`\x1b[36mSession ${message.sessionId}\x1b[0m`);
-        terminal.writeln(`\x1b[90m${message.cwd}\x1b[0m\r\n`);
+        if (message.reset) {
+          pendingTerminalMessages.clear();
+          lastAppliedTerminalSeq = typeof message.lastSeq === 'number' ? message.lastSeq : 0;
+          terminal.clear();
+          terminal.writeln(`\x1b[36mSession ${message.sessionId}\x1b[0m`);
+          terminal.writeln(`\x1b[90m${message.cwd}\x1b[0m\r\n`);
+        }
         onStatusChange(tab.id, 'connected');
         updateScrollbackAffordance();
         resizeAfterLayoutSettles();
@@ -319,9 +352,7 @@ export default function TerminalPane({
       }
 
       if (message.type === 'output' && typeof message.data === 'string') {
-        terminal.write(message.data, () => {
-          forceFullRefresh();
-        });
+        await writeTerminalData(message.data);
         return;
       }
 
@@ -340,6 +371,47 @@ export default function TerminalPane({
         clearPongTimer();
         return;
       }
+    };
+
+    const applyOrderedTerminalServerMessage = async (socket: WebSocket, message: TerminalServerMessage) => {
+      if (typeof message.seq !== 'number' || message.seq <= 0 || message.type === 'ready') {
+        await applyTerminalServerMessage(socket, message);
+        return;
+      }
+
+      if (message.seq <= lastAppliedTerminalSeq) {
+        return;
+      }
+
+      if (message.seq > lastAppliedTerminalSeq + 1) {
+        pendingTerminalMessages.set(message.seq, message);
+        scheduleTerminalResync(socket);
+        return;
+      }
+
+      await applyTerminalServerMessage(socket, message);
+      lastAppliedTerminalSeq = message.seq;
+
+      while (pendingTerminalMessages.has(lastAppliedTerminalSeq + 1)) {
+        const nextSeq = lastAppliedTerminalSeq + 1;
+        const nextMessage = pendingTerminalMessages.get(nextSeq)!;
+        pendingTerminalMessages.delete(nextSeq);
+        await applyTerminalServerMessage(socket, nextMessage);
+        lastAppliedTerminalSeq = nextSeq;
+      }
+
+      if (pendingTerminalMessages.size === 0) {
+        clearTerminalResyncTimer();
+      }
+    };
+
+    const handleTerminalServerMessage = async (socket: WebSocket, raw: MessageEvent['data']) => {
+      const message = await decodeTerminalServerMessage(raw);
+      if (!message || socketRef.current !== socket) {
+        return;
+      }
+
+      await applyOrderedTerminalServerMessage(socket, message);
     };
 
     let disposed = false;
@@ -408,6 +480,7 @@ export default function TerminalPane({
           sessionId: tab.id,
           cols: terminal.cols,
           rows: terminal.rows,
+          lastSeq: lastAppliedTerminalSeq,
         }));
         resizeAfterLayoutSettles();
       });
@@ -426,6 +499,7 @@ export default function TerminalPane({
         if (socketRef.current === socket) {
           socketRef.current = null;
           clearPongTimer();
+          clearTerminalResyncTimer();
           scheduleReconnect();
         }
       });
@@ -524,6 +598,7 @@ export default function TerminalPane({
       clearResizeTimers();
       clearReconnectTimer();
       clearPongTimer();
+      clearTerminalResyncTimer();
       clearScreenTransform();
       dataSubscription.dispose();
       titleSubscription.dispose();

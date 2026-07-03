@@ -42,6 +42,7 @@ export function decodeTerminalClientMessage(raw) {
         rows: init.rows,
         cwd: init.cwd,
         forceRestart: init.forceRestart,
+        lastSeq: init.lastSeq,
       };
     }
     case 'input':
@@ -62,7 +63,15 @@ export function encodeTerminalServerMessage(message) {
   let payload;
   switch (message.type) {
     case 'ready':
-      payload = { ready: { cwd: message.cwd ?? '', sessionId: message.sessionId ?? '' } };
+      payload = {
+        ready: {
+          cwd: message.cwd ?? '',
+          sessionId: message.sessionId ?? '',
+          reset: message.reset === true,
+          gap: message.gap === true,
+          lastSeq: message.lastSeq ?? 0,
+        },
+      };
       break;
     case 'exit':
       payload = {
@@ -81,12 +90,15 @@ export function encodeTerminalServerMessage(message) {
     default:
       throw new Error(`Unknown terminal server message: ${message.type}`);
   }
+  if (Number.isFinite(message.seq) && message.seq > 0) {
+    payload.seq = Math.floor(message.seq);
+  }
   return TerminalServerMessage.encode(payload).finish();
 }
 
 // Terminal output is the hot path, so it keeps the raw-DEFLATE compression the
 // old codec used — the bytes just travel inside the protobuf output field now.
-export function encodeTerminalOutput(text) {
+export function encodeTerminalOutput(text, seq = 0) {
   const raw = Buffer.from(String(text), 'utf8');
   let payload = raw;
   let useCompressed = false;
@@ -99,17 +111,21 @@ export function encodeTerminalOutput(text) {
     }
   }
 
-  return TerminalServerMessage.encode({
+  const message = {
     output: { data: payload, compressed: useCompressed },
-  }).finish();
+  };
+  if (Number.isFinite(seq) && seq > 0) {
+    message.seq = Math.floor(seq);
+  }
+  return TerminalServerMessage.encode(message).finish();
 }
 
-export function sendTerminalOutput(ws, text) {
+export function sendTerminalOutput(ws, text, seq = 0) {
   const value = String(text);
   if (!value) {
     return;
   }
-  ws.send(encodeTerminalOutput(value));
+  ws.send(encodeTerminalOutput(value, seq));
 }
 
 // ---- /terminal/tabs : client -> server ----------------------------------
