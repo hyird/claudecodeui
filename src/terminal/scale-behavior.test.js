@@ -50,3 +50,11 @@ test('terminal screen does not force transform styling while idle', () => {
   assert.equal(rule.includes('transform-origin'), false);
   assert.equal(rule.includes('transition: transform'), false);
 });
+
+test('terminal viewport scrollbar appears only when scrollback overflows', () => {
+  const viewportRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport \{[\s\S]*?\}/);
+  const rule = viewportRule?.[0] ?? '';
+
+  assert.match(rule, /overflow-y:\s*auto\s*!important/);
+  assert.equal(rule.includes('overflow-y: scroll'), false);
+});

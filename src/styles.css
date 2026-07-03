@@ -999,27 +999,27 @@ button:focus-visible {
    xterm.css forces `overflow-y: scroll` (a permanent track, even in an
    alternate-screen TUI like Claude with no scrollback); `auto` hides it
    whenever the buffer fits the viewport. */
-.terminal-pane .xterm-viewport {
-  overflow-y: auto;
+.terminal-pane .xterm .xterm-viewport {
+  overflow-y: auto !important;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
 }
 
-.terminal-pane .xterm-viewport::-webkit-scrollbar {
+.terminal-pane .xterm .xterm-viewport::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
-.terminal-pane .xterm-viewport::-webkit-scrollbar-track {
+.terminal-pane .xterm .xterm-viewport::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb {
+.terminal-pane .xterm .xterm-viewport::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.14);
   border-radius: 999px;
 }
 
-.terminal-pane .xterm-viewport::-webkit-scrollbar-thumb:hover {
+.terminal-pane .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.28);
 }
 
