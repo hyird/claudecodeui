@@ -7,7 +7,8 @@ import { useCallback, useEffect, useRef } from 'react';
 import {
   copyTerminalSelection,
   isCopyShortcut,
-  isPasteShortcut,
+  pasteTerminalClipboard,
+  pasteTerminalText,
 } from './clipboard';
 import { terminalTheme } from './themes';
 import type {
@@ -276,7 +277,7 @@ export default function TerminalPane({
         return false;
       }
 
-      if (isPasteShortcut(event)) {
+      if (pasteTerminalClipboard(terminal, event)) {
         return false;
       }
 
@@ -577,8 +578,7 @@ export default function TerminalPane({
       }
 
       event.preventDefault();
-      terminal.focus();
-      sendInput(data);
+      pasteTerminalText(terminal, data);
     };
     container.addEventListener('paste', pasteHandler);
     const copyHandler = (event: ClipboardEvent) => {

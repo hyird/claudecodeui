@@ -1,6 +1,7 @@
 import type { Terminal } from '@xterm/xterm';
 
 type SelectionTerminal = Pick<Terminal, 'getSelection' | 'hasSelection'>;
+type PasteTerminal = Pick<Terminal, 'focus' | 'paste'>;
 
 function isModifiedKeyShortcut(event: KeyboardEvent, key: string) {
   return event.type === 'keydown'
@@ -15,6 +16,29 @@ export function isPasteShortcut(event: KeyboardEvent) {
 
 export function isCopyShortcut(event: KeyboardEvent) {
   return isModifiedKeyShortcut(event, 'c');
+}
+
+export function pasteTerminalText(terminal: PasteTerminal, text: string) {
+  if (!text) {
+    return false;
+  }
+
+  terminal.focus();
+  terminal.paste(text);
+  return true;
+}
+
+export function pasteTerminalClipboard(terminal: PasteTerminal, event: KeyboardEvent) {
+  if (!isPasteShortcut(event) || !navigator.clipboard?.readText) {
+    return false;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  void navigator.clipboard.readText()
+    .then((text) => pasteTerminalText(terminal, text))
+    .catch(() => undefined);
+  return true;
 }
 
 export function copyTerminalSelection(
