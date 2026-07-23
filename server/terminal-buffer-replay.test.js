@@ -36,7 +36,10 @@ test('serialized tab titles are stripped of volatile spinner prefixes', () => {
   assert.match(source, /title:\s*cleanTerminalTitle\(tab\.title\) \|\| tab\.title/);
 });
 
-test('terminal websocket disables transport compression for already-compressed output frames', () => {
-  assert.match(source, /const terminalWebSocketServerOptions = \{\s+noServer:\s*true,\s+perMessageDeflate:\s*false,\s+\}/);
-  assert.match(source, /const terminalWss = new WebSocketServer\(terminalWebSocketServerOptions\)/);
+test('terminal websocket leaves transport compression off for already-compressed output frames', () => {
+  // encodeTerminalOutput already deflates output payloads, so enabling websocket
+  // transport compression would only re-compress them. Bun.serve leaves compression
+  // off unless perMessageDeflate is opted into, so assert it never is.
+  assert.match(source, /websocket:\s*websocketHandlers/);
+  assert.equal(/perMessageDeflate/.test(source), false);
 });

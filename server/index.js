@@ -110,17 +110,19 @@ async function requireAuth(c, next) {
   await next();
 }
 
+// Mirrors the HTTP guard's status codes: a missing token is 401, while a token that no
+// longer resolves to a live session (e.g. displaced by a newer login) is 403.
 async function authenticateUpgrade(request) {
   const url = new URL(request.url);
   const token = readBearerToken(request.headers.get('authorization')) || readString(url.searchParams.get('token'));
 
   if (!token) {
-    return null;
+    return { rejectStatus: 401, rejectMessage: 'Unauthorized' };
   }
 
   const user = await authenticateToken(token);
   if (!user) {
-    return null;
+    return { rejectStatus: 403, rejectMessage: 'Forbidden' };
   }
 
   return { url, user, token, tokenHash: hashSessionToken(token) };
@@ -818,8 +820,8 @@ const server = Bun.serve({
     const kind = WS_ROUTES[new URL(request.url).pathname];
     if (kind) {
       const auth = await authenticateUpgrade(request);
-      if (!auth) {
-        return new Response('Unauthorized', { status: 401 });
+      if (auth.rejectStatus) {
+        return new Response(auth.rejectMessage, { status: auth.rejectStatus });
       }
       const data = kind === 'terminal'
         ? { kind, activeSession: null }

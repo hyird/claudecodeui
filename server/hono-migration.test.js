@@ -5,9 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { after, before, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { WebSocket } from 'ws';
 import { cloudcli } from '../proto/messages.js';
+
+// This suite runs under node:test (Bun's runner cannot host node:test files), but the
+// server under test is Bun-only: it imports bun:sqlite and bun-pty. So it is launched
+// with Bun rather than the current interpreter. Set BUN_BIN if bun is not on PATH.
+const BUN_BIN = process.env.BUN_BIN || 'bun';
 
 const { TabsClientMessage, TabsServerMessage, AuthServerMessage } = cloudcli;
 
@@ -61,6 +67,7 @@ function decodeAuthServerMessage(raw) {
 }
 
 let serverProcess;
+let serverOutput = '';
 let baseUrl;
 let wsBaseUrl;
 let testDbPath;
@@ -137,7 +144,11 @@ async function waitForHealth(url) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
-  throw lastError ?? new Error('Timed out waiting for health endpoint');
+  throw new Error(
+    `Timed out waiting for the Bun server on ${url}.\n`
+    + `Last error: ${lastError?.message ?? 'none'}\n`
+    + `Server output:\n${serverOutput || '(none)'}`,
+  );
 }
 
 function readTabsWebSocketMessage(ws, predicate, description) {
@@ -167,8 +178,8 @@ before(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
   wsBaseUrl = `ws://127.0.0.1:${port}`;
   testDbPath = path.join(os.tmpdir(), `cloudcli-auth-${process.pid}-${Date.now()}.sqlite`);
-  serverProcess = spawn(process.execPath, ['server/index.js'], {
-    cwd: new URL('..', import.meta.url),
+  serverProcess = spawn(BUN_BIN, ['server/index.js'], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
     env: {
       ...process.env,
       PORT: String(port),
@@ -176,6 +187,13 @@ before(async () => {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  // Keep the server's own output so a failed boot reports the real cause instead of
+  // just a health-check timeout.
+  serverProcess.once('error', (error) => {
+    serverOutput += `failed to spawn "${BUN_BIN}": ${error.message}\n`;
+  });
+  serverProcess.stdout.on('data', (chunk) => { serverOutput += chunk.toString('utf8'); });
+  serverProcess.stderr.on('data', (chunk) => { serverOutput += chunk.toString('utf8'); });
 
   await waitForHealth(baseUrl);
 });
