@@ -1,15 +1,9 @@
 import { FitAddon } from '@xterm/addon-fit';
+import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useRef } from 'react';
 
-import {
-  copyTerminalSelection,
-  isCopyShortcut,
-  pasteTerminalClipboard,
-  pasteTerminalText,
-} from './clipboard';
 import { terminalTheme } from './themes';
 import type {
   TerminalPreferences,
@@ -41,6 +35,25 @@ const TERMINAL_RESUME_PONG_TIMEOUT_MS = 2500;
 
 function createWebSocketUrl(authToken: string) {
   return websocketUrl('/terminal', authToken);
+}
+
+function fallbackCopy(text: string) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.cssText = 'position:fixed;top:-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
+}
+
+function copyText(text: string) {
+  if (!text) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+  } else {
+    fallbackCopy(text);
+  }
 }
 
 export default function TerminalPane({
@@ -271,16 +284,38 @@ export default function TerminalPane({
     fitAddonRef.current = fitAddon;
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
-    terminal.loadAddon(new WebglAddon());
+    terminal.loadAddon(new ClipboardAddon());
+
+    terminal.open(container);
+    // xterm 6.0.0's bundled DECRPM handler throws while Vim probes terminal
+    // modes. Handle the probes first so xterm's write queue stays alive.
+    const registerModeReportGuard = (ansi: boolean) => terminal.parser.registerCsiHandler({
+      prefix: ansi ? undefined : '?',
+      intermediates: '$',
+      final: 'p',
+    }, (params) => {
+      const value = params[0];
+      const mode = typeof value === 'number' ? value : (value?.[0] ?? 0);
+      terminal.input(`\x1b[${ansi ? '' : '?'}${mode};0$y`, false);
+      return true;
+    });
+    const ansiModeReportGuard = registerModeReportGuard(true);
+    const privateModeReportGuard = registerModeReportGuard(false);
+
+    // Input handling mirrors cloudcli-plugin-terminal's TerminalSession.
     terminal.attachCustomKeyEventHandler((event) => {
-      if (isCopyShortcut(event) && copyTerminalSelection(terminal, event)) {
+      if (event.type !== 'keydown') return true;
+      const mod = event.ctrlKey || event.metaKey;
+      if (mod && event.key.toLowerCase() === 'c' && terminal.hasSelection()) {
+        event.preventDefault();
+        copyText(terminal.getSelection());
         return false;
       }
-
-      if (pasteTerminalClipboard(terminal, event)) {
+      if (mod && event.key.toLowerCase() === 'v') {
+        event.preventDefault();
+        navigator.clipboard?.readText?.().then((text) => text && sendInput(text)).catch(() => {});
         return false;
       }
-
       return true;
     });
     terminal.attachCustomWheelEventHandler((event) => {
@@ -298,7 +333,6 @@ export default function TerminalPane({
       return true;
     });
 
-    terminal.open(container);
     updateScrollbackAffordance();
     terminal.writeln('\x1b[36mCloudCLI Terminal\x1b[0m');
     terminal.writeln('\x1b[90mConnecting...\x1b[0m');
@@ -307,12 +341,14 @@ export default function TerminalPane({
     const pendingTerminalMessages = new Map<number, TerminalServerMessage>();
     let terminalResyncTimer = 0;
 
-    const writeTerminalData = (data: string) => new Promise<void>((resolve) => {
-      terminal.write(data, () => {
+    const writeTerminalData = (data: string) => {
+      terminal.write(data);
+      try {
         forceFullRefresh();
-        resolve();
-      });
-    });
+      } catch {
+        // Rendering is best-effort and must never block later terminal frames.
+      }
+    };
 
     function clearTerminalResyncTimer() {
       if (terminalResyncTimer) {
@@ -353,7 +389,7 @@ export default function TerminalPane({
       }
 
       if (message.type === 'output' && typeof message.data === 'string') {
-        await writeTerminalData(message.data);
+        writeTerminalData(message.data);
         return;
       }
 
@@ -571,21 +607,6 @@ export default function TerminalPane({
     const resizeSubscription = terminal.onResize(() => {
       refreshAfterTerminalChange();
     });
-    const pasteHandler = (event: ClipboardEvent) => {
-      const data = event.clipboardData?.getData('text/plain');
-      if (!data) {
-        return;
-      }
-
-      event.preventDefault();
-      pasteTerminalText(terminal, data);
-    };
-    container.addEventListener('paste', pasteHandler);
-    const copyHandler = (event: ClipboardEvent) => {
-      copyTerminalSelection(terminal, event);
-    };
-    container.addEventListener('copy', copyHandler, true);
-
     const resizeObserver = new ResizeObserver(() => {
       if (activeRef.current) {
         resizeDuringDrag();
@@ -605,8 +626,8 @@ export default function TerminalPane({
       scrollSubscription.dispose();
       writeParsedSubscription.dispose();
       resizeSubscription.dispose();
-      container.removeEventListener('paste', pasteHandler);
-      container.removeEventListener('copy', copyHandler, true);
+      ansiModeReportGuard.dispose();
+      privateModeReportGuard.dispose();
       document.removeEventListener('visibilitychange', probeConnectionAfterResume);
       window.removeEventListener('focus', probeConnectionAfterResume);
       resizeObserver.disconnect();

@@ -106,7 +106,7 @@ test('terminal wheel events pass through when mouse tracking is enabled', () => 
   );
 });
 
-test('terminal output and scroll events force a synchronous full-range renderer refresh', () => {
+test('terminal output and scroll events refresh without blocking later frames', () => {
   // Ghost/dirty rows appeared because the forced full refresh was deferred to a
   // separate, deduped rAF: a partial WebGL render (a streaming write, or a baseY-trim
   // scroll while the user is scrolled up) could commit first, and the full refresh
@@ -120,17 +120,17 @@ test('terminal output and scroll events force a synchronous full-range renderer 
   // Forced on reconnect replay, on every output write, and on terminal change events
   // (onScroll/onWriteParsed/onResize) — the paths where xterm issues no full refresh.
   assert.match(source, /resizeAfterLayoutSettles\(\);\s+forceFullRefresh\(\);\s+return;/);
-  assert.match(source, /const writeTerminalData = \(data: string\) => new Promise/);
-  assert.match(source, /terminal\.write\(data, \(\) => \{\s+forceFullRefresh\(\);\s+resolve\(\);\s+\}\)/);
+  assert.match(source, /const writeTerminalData = \(data: string\) => \{/);
+  assert.match(source, /terminal\.write\(data\)/);
+  assert.doesNotMatch(source, /new Promise<void>/);
   assert.match(source, /terminal\.onScroll\(\(\) => \{/);
   assert.match(source, /terminal\.onWriteParsed\(\(\) => \{/);
   assert.match(source, /terminal\.onResize\(\(\) => \{/);
   assert.match(source, /forceFullRefresh\(\)/);
 });
 
-test('terminal uses WebGL renderer while preserving compact-grid alignment', () => {
+test('terminal uses xterm default renderer for reliable in-place TUI updates', () => {
   assert.match(styles, /\.terminal-frame \{\s+inset:\s*6px;/);
   assert.equal(styles.includes('inset: 7px;'), false);
-  assert.match(source, /import \{ WebglAddon \} from '@xterm\/addon-webgl'/);
-  assert.match(source, /terminal\.loadAddon\(new WebglAddon\(\)\)/);
+  assert.doesNotMatch(source, /WebglAddon/);
 });
