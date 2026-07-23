@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib';
 
 // addon-serialize ships a real ESM build with named exports only, so it must be
 // imported by name (a default import resolves to undefined under the bundler).
@@ -792,22 +794,78 @@ app.post('/api/terminal/close', async (c) => {
   return c.json({ ok: true, closed: closeSession(sessionId) });
 });
 
-if (fs.existsSync(distDir)) {
-  const indexHtmlPath = path.join(distDir, 'index.html');
-  // Single-file frontend: serve any real asset that survives inlining (e.g. logo.svg),
-  // otherwise fall back to index.html so the SPA handles the route.
-  app.get('*', async (c) => {
-    const requestPath = decodeURIComponent(new URL(c.req.url).pathname);
-    const candidate = path.normalize(path.join(distDir, requestPath));
-    if (
-      requestPath !== '/'
-      && candidate.startsWith(distDir)
-      && fs.existsSync(candidate)
-      && fs.statSync(candidate).isFile()
-    ) {
-      return new Response(Bun.file(candidate));
+// The built frontend is a handful of files that never change while the process is
+// alive, so read them once and keep pre-compressed copies in memory. That drops a
+// 660 KB disk read per request and lets every response ship brotli/gzip with an ETag
+// instead of the raw bytes.
+function buildStaticAssets(directory) {
+  const assets = new Map();
+
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+        continue;
+      }
+
+      const body = fs.readFileSync(fullPath);
+      const urlPath = `/${path.relative(directory, fullPath).split(path.sep).join('/')}`;
+      assets.set(urlPath, {
+        body,
+        gzip: gzipSync(body, { level: 9 }),
+        brotli: brotliCompressSync(body, {
+          params: {
+            [zlibConstants.BROTLI_PARAM_QUALITY]: 9,
+            [zlibConstants.BROTLI_PARAM_SIZE_HINT]: body.length,
+          },
+        }),
+        etag: `"${createHash('sha1').update(body).digest('base64url')}"`,
+        type: Bun.file(fullPath).type,
+      });
     }
-    return c.html(await fs.promises.readFile(indexHtmlPath, 'utf8'));
+  };
+
+  walk(directory);
+  return assets;
+}
+
+function sendStaticAsset(c, asset) {
+  const headers = {
+    'content-type': asset.type,
+    etag: asset.etag,
+    // The entry document changes on every deploy, so it must always revalidate. The
+    // ETag turns that revalidation into a 304 instead of a full re-download.
+    'cache-control': 'no-cache',
+    vary: 'Accept-Encoding',
+  };
+
+  if (c.req.header('if-none-match') === asset.etag) {
+    return new Response(null, { status: 304, headers });
+  }
+
+  const accepted = c.req.header('accept-encoding') ?? '';
+  if (accepted.includes('br')) {
+    return new Response(asset.brotli, { headers: { ...headers, 'content-encoding': 'br' } });
+  }
+  if (accepted.includes('gzip')) {
+    return new Response(asset.gzip, { headers: { ...headers, 'content-encoding': 'gzip' } });
+  }
+  return new Response(asset.body, { headers });
+}
+
+if (fs.existsSync(distDir)) {
+  const staticAssets = buildStaticAssets(distDir);
+  const indexAsset = staticAssets.get('/index.html');
+  // Serve a real built asset when the path names one; otherwise hand back the
+  // single-file index so the SPA can route it. Lookups hit the map, never the disk,
+  // so a crafted path cannot escape the dist directory.
+  app.get('*', (c) => {
+    const asset = staticAssets.get(decodeURIComponent(c.req.path)) ?? indexAsset;
+    if (!asset) {
+      return c.text('Not found', 404);
+    }
+    return sendStaticAsset(c, asset);
   });
 }
 

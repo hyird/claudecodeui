@@ -127,6 +127,48 @@ function wsHandshakeStatus(pathname, token) {
   });
 }
 
+// Node's fetch transparently decodes compressed bodies, so read the raw response off
+// the socket to assert what actually travelled over the wire.
+function rawGet(pathname, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(baseUrl);
+    const headerLines = Object.entries(extraHeaders)
+      .map(([name, value]) => `${name}: ${value}\r\n`)
+      .join('');
+    const socket = net.connect(Number(target.port), target.hostname, () => {
+      socket.write(
+        `GET ${pathname} HTTP/1.1\r\n` +
+        `Host: ${target.host}\r\n` +
+        'Connection: close\r\n' +
+        headerLines +
+        '\r\n',
+      );
+    });
+
+    const chunks = [];
+    socket.on('data', (chunk) => chunks.push(chunk));
+    socket.on('end', () => {
+      const raw = Buffer.concat(chunks);
+      const separator = raw.indexOf('\r\n\r\n');
+      const [statusLine, ...headerRows] = raw.subarray(0, separator).toString('utf8').split('\r\n');
+      const headers = Object.fromEntries(headerRows.map((row) => {
+        const index = row.indexOf(':');
+        return [row.slice(0, index).toLowerCase().trim(), row.slice(index + 1).trim()];
+      }));
+      resolve({
+        status: Number(statusLine.split(' ')[1]),
+        headers,
+        bodyLength: raw.length - separator - 4,
+      });
+    });
+    socket.once('error', reject);
+    socket.setTimeout(5000, () => {
+      socket.destroy();
+      reject(new Error('Timed out reading the raw response'));
+    });
+  });
+}
+
 async function waitForHealth(url) {
   const deadline = Date.now() + 10_000;
   let lastError;
@@ -384,4 +426,30 @@ test('SPA fallback serves the built index for client routes when dist exists', a
   const response = await fetch(`${baseUrl}/not-a-real-api-route`);
   assert.equal(response.status, 200);
   assert.match(await response.text(), /<div id="root"><\/div>/);
+});
+
+test('the built frontend is served compressed and revalidates with an ETag', async () => {
+  const identity = await rawGet('/', { 'Accept-Encoding': 'identity' });
+  assert.equal(identity.status, 200);
+  assert.equal(identity.headers['content-encoding'], undefined);
+  assert.equal(identity.headers.vary, 'Accept-Encoding');
+  const etag = identity.headers.etag;
+  assert.ok(etag, 'expected an ETag on the served index');
+
+  const gzipped = await rawGet('/', { 'Accept-Encoding': 'gzip' });
+  assert.equal(gzipped.status, 200);
+  assert.equal(gzipped.headers['content-encoding'], 'gzip');
+  assert.ok(
+    gzipped.bodyLength < identity.bodyLength / 2,
+    `expected gzip to at least halve the payload, got ${gzipped.bodyLength} vs ${identity.bodyLength}`,
+  );
+
+  const brotli = await rawGet('/', { 'Accept-Encoding': 'br, gzip' });
+  assert.equal(brotli.headers['content-encoding'], 'br');
+  assert.ok(brotli.bodyLength <= gzipped.bodyLength, 'brotli should not be larger than gzip');
+
+  // A repeat visit must revalidate to an empty 304 rather than re-sending the bundle.
+  const revalidated = await rawGet('/', { 'If-None-Match': etag });
+  assert.equal(revalidated.status, 304);
+  assert.equal(revalidated.bodyLength, 0);
 });
