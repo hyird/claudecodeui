@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bun runs the server (bun:sqlite, bun-pty) and produces both bundles.
+      # Keep this pinned to whatever the deploy host runs, so a green CI actually
+      # means the deployed runtime works.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      # The suites themselves run under node:test — Bun's runner cannot host
+      # node:test files (oven-sh/bun#5090) — so Node is needed too.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Must precede the tests: the SPA-fallback and compression suites assert
+      # against a real dist/.
+      - name: Build
+        run: bun run build
+
+      - name: Test
+        run: npm test
+
+      - name: Report artifact sizes
+        run: |
+          echo "server bundle: $(du -h dist-server/server.js | cut -f1)"
+          echo "frontend:      $(du -h dist/index.html | cut -f1)"
+          echo "gzipped:       $(gzip -c dist/index.html | wc -c) bytes"

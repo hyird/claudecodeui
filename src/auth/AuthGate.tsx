@@ -16,7 +16,7 @@ import LoginForm from './LoginForm';
 import SetupForm from './SetupForm';
 import type { AuthActionResult, AuthGateProps, AuthSession, AuthUser } from './types';
 import { decodeAuthServerMessage } from '../terminal/wsCodec';
-import { websocketUrl } from '../wsHost';
+import { openAuthenticatedSocket } from '../wsHost';
 
 type AuthMode = 'loading' | 'setup' | 'login' | 'authenticated';
 
@@ -46,8 +46,8 @@ function clearStoredTokenIfCurrent(token: string) {
   }
 }
 
-function createAuthSessionWebSocketUrl(token: string) {
-  return websocketUrl('/auth/session', token);
+function createAuthSessionSocket(token: string) {
+  return openAuthenticatedSocket('/auth/session', token);
 }
 
 export default function AuthGate({ children }: AuthGateProps) {
@@ -142,7 +142,7 @@ export default function AuthGate({ children }: AuthGateProps) {
       handleAuthInvalidated(state.token);
     };
     const connect = () => {
-      socket = new WebSocket(createAuthSessionWebSocketUrl(state.token));
+      socket = createAuthSessionSocket(state.token);
       socket.binaryType = 'arraybuffer';
       socket.addEventListener('message', (event) => {
         void (async () => {

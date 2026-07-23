@@ -95,10 +95,11 @@ function getFreePort() {
 
 // Bun's built-in `ws` client does not surface the rejected handshake's HTTP
 // status in its error, so read the status line straight off the socket.
-function wsHandshakeStatus(pathname, token) {
+function wsHandshakeStatus(pathname, token, protocols) {
   return new Promise((resolve, reject) => {
     const target = new URL(baseUrl);
-    const query = token ? `?token=${encodeURIComponent(token)}` : '';
+    const query = token && !protocols ? `?token=${encodeURIComponent(token)}` : '';
+    const protocolHeader = protocols ? `Sec-WebSocket-Protocol: ${protocols.join(', ')}\r\n` : '';
     const socket = net.connect(Number(target.port), target.hostname, () => {
       socket.write(
         `GET ${pathname}${query} HTTP/1.1\r\n` +
@@ -107,6 +108,7 @@ function wsHandshakeStatus(pathname, token) {
         'Connection: Upgrade\r\n' +
         'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n' +
         'Sec-WebSocket-Version: 13\r\n' +
+        protocolHeader +
         '\r\n',
       );
     });
@@ -426,6 +428,28 @@ test('SPA fallback serves the built index for client routes when dist exists', a
   const response = await fetch(`${baseUrl}/not-a-real-api-route`);
   assert.equal(response.status, 200);
   assert.match(await response.text(), /<div id="root"><\/div>/);
+});
+
+test('websocket auth accepts the token as a subprotocol so it stays out of the URL', async () => {
+  const socket = new WebSocket(`${wsBaseUrl}/terminal/tabs`, ['cloudcli.v1', `auth.${authToken}`]);
+  // The server pushes the tabs state as soon as the socket opens, so the listener has
+  // to be attached before awaiting anything or that first frame is missed.
+  const state = await readTabsWebSocketMessage(
+    socket,
+    (message) => message.type === 'tabs',
+    'tabs state over a subprotocol-authenticated socket',
+  );
+  assert.equal(state.type, 'tabs');
+
+  // The server must select the marker protocol, never echo the token back.
+  assert.equal(socket.protocol, 'cloudcli.v1');
+  socket.close();
+
+  // A bad token in the subprotocol is rejected exactly like a bad query token.
+  assert.equal(
+    await wsHandshakeStatus('/terminal/tabs', null, ['cloudcli.v1', 'auth.not-a-real-token']),
+    403,
+  );
 });
 
 test('the built frontend is served compressed and revalidates with an ETag', async () => {

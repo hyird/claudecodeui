@@ -11,7 +11,7 @@ import type {
   TerminalTabsState,
 } from './terminal/types';
 import { decodeTabsServerMessage, encodeTabsClientMessage } from './terminal/wsCodec';
-import { websocketUrl } from './wsHost';
+import { openAuthenticatedSocket } from './wsHost';
 
 const DEFAULT_PREFERENCES: TerminalPreferences = {
   fontSize: 14,
@@ -48,8 +48,8 @@ type TabsClientCommand =
   | { type: 'update-title'; tabId: string; title: string }
   | { type: 'close-tab'; tabId: string };
 
-function createTabsWebSocketUrl(authToken: string) {
-  return websocketUrl('/terminal/tabs', authToken);
+function createTabsSocket(authToken: string) {
+  return openAuthenticatedSocket('/terminal/tabs', authToken);
 }
 
 function isTerminalStatus(value: unknown): value is TerminalStatus {
@@ -240,7 +240,7 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
     };
 
     const connect = () => {
-      socket = new WebSocket(createTabsWebSocketUrl(authToken));
+      socket = createTabsSocket(authToken);
       socket.binaryType = 'arraybuffer';
       tabsSocketRef.current = socket;
       socket.addEventListener('open', () => {

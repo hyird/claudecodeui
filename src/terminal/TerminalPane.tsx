@@ -12,7 +12,7 @@ import type {
   TerminalTab,
 } from './types';
 import { decodeTerminalServerMessage, encodeTerminalClientMessage } from './wsCodec';
-import { websocketUrl } from '../wsHost';
+import { openAuthenticatedSocket } from '../wsHost';
 
 type TerminalPaneProps = {
   tab: TerminalTab;
@@ -50,8 +50,8 @@ const TERMINAL_RESUME_PONG_TIMEOUT_MS = 2500;
 const TERMINAL_HEARTBEAT_INTERVAL_MS = 20000;
 const TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS = 8000;
 
-function createWebSocketUrl(authToken: string) {
-  return websocketUrl('/terminal', authToken);
+function createTerminalSocket(authToken: string) {
+  return openAuthenticatedSocket('/terminal', authToken);
 }
 
 function fallbackCopy(text: string) {
@@ -526,7 +526,7 @@ export default function TerminalPane({
       clearReconnectTimer();
       clearPongTimer();
 
-      const socket = new WebSocket(createWebSocketUrl(authToken));
+      const socket = createTerminalSocket(authToken);
       socket.binaryType = 'arraybuffer';
       socketRef.current = socket;
       onStatusChange(tab.id, 'connecting');

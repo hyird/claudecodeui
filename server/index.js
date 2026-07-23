@@ -63,6 +63,8 @@ const WS_ROUTES = {
   '/terminal': 'terminal',
   '/terminal/tabs': 'tabs',
 };
+// Marker subprotocol echoed back on a successful upgrade.
+const WS_SUBPROTOCOL = 'cloudcli.v1';
 
 const sessions = new Map();
 const authSessionSubscribers = new Map();
@@ -112,11 +114,29 @@ async function requireAuth(c, next) {
   await next();
 }
 
+function readOfferedSubprotocols(request) {
+  return (request.headers.get('sec-websocket-protocol') ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+// Browsers cannot set headers on a WebSocket handshake, so the client sends its session
+// token as an `auth.<token>` subprotocol. That keeps the token out of the URL, and so out
+// of reverse-proxy access logs, browser history and Referer headers. The query parameter
+// and Authorization header stay supported for non-browser clients.
+function readSubprotocolToken(offered) {
+  const entry = offered.find((value) => value.startsWith('auth.'));
+  return entry ? entry.slice('auth.'.length) : '';
+}
+
 // Mirrors the HTTP guard's status codes: a missing token is 401, while a token that no
 // longer resolves to a live session (e.g. displaced by a newer login) is 403.
-async function authenticateUpgrade(request) {
+async function authenticateUpgrade(request, offered) {
   const url = new URL(request.url);
-  const token = readBearerToken(request.headers.get('authorization')) || readString(url.searchParams.get('token'));
+  const token = readSubprotocolToken(offered)
+    || readBearerToken(request.headers.get('authorization'))
+    || readString(url.searchParams.get('token'));
 
   if (!token) {
     return { rejectStatus: 401, rejectMessage: 'Unauthorized' };
@@ -877,7 +897,8 @@ const server = Bun.serve({
   async fetch(request, srv) {
     const kind = WS_ROUTES[new URL(request.url).pathname];
     if (kind) {
-      const auth = await authenticateUpgrade(request);
+      const offered = readOfferedSubprotocols(request);
+      const auth = await authenticateUpgrade(request, offered);
       if (auth.rejectStatus) {
         return new Response(auth.rejectMessage, { status: auth.rejectStatus });
       }
@@ -886,7 +907,12 @@ const server = Bun.serve({
         : kind === 'auth'
           ? { kind, auth }
           : { kind };
-      if (srv.upgrade(request, { data })) {
+      // Only select a subprotocol the client actually offered — selecting one it did
+      // not offer makes the browser fail the handshake.
+      const headers = offered.includes(WS_SUBPROTOCOL)
+        ? { 'sec-websocket-protocol': WS_SUBPROTOCOL }
+        : undefined;
+      if (srv.upgrade(request, { data, headers })) {
         return undefined;
       }
       return new Response('WebSocket upgrade failed', { status: 400 });
