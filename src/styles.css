@@ -991,7 +991,10 @@ button:focus-visible {
   position: absolute;
   inset: 10px 12px 12px;
   overflow: hidden;
-  padding: 10px 6px 10px 12px; /* FitAddon subtracts parent padding */
+  /* Uniform ~12px breathing room around the grid. measureCellCapacity subtracts this
+     padding; the right side stays 6px because a 6px scrollbar gutter is reserved in JS
+     (TERMINAL_SCROLLBAR_GUTTER), so effective right margin = 6 + 6 = 12 = left. */
+  padding: 12px 6px 12px 12px;
   border: 1px solid var(--edge-hairline);
   border-radius: var(--radius-frame);
   background: var(--bg-terminal);
@@ -1143,7 +1146,8 @@ button:focus-visible {
 
   .terminal-frame {
     inset: 6px;
-    padding: 8px 4px 8px 8px;
+    /* Uniform ~10px inner margin on compact widths; right 4 + 6px scrollbar gutter = 10. */
+    padding: 10px 4px 10px 10px;
     border-radius: var(--radius-md);
   }
 }

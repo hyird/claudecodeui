@@ -42,8 +42,38 @@ test('toolbar does not remount or restart the active terminal session', () => {
 
 test('terminal pane reconnects its websocket after sleep or disconnect', () => {
   assert.match(terminalPaneSource, /let reconnectTimer = 0/);
-  assert.match(terminalPaneSource, /reconnectTimer = window\.setTimeout\(connect, TERMINAL_RECONNECT_DELAY_MS\)/);
+  assert.match(terminalPaneSource, /reconnectTimer = window\.setTimeout\(connect, delay\)/);
   assert.match(terminalPaneSource, /document\.addEventListener\('visibilitychange', probeConnectionAfterResume\)/);
   assert.match(terminalPaneSource, /window\.addEventListener\('focus', probeConnectionAfterResume\)/);
   assert.match(terminalPaneSource, /type: 'ping'/);
+});
+
+test('terminal reconnect uses capped exponential backoff with jitter', () => {
+  // A flaky network must be retried gently, not hammered at a fixed 1s interval.
+  assert.match(terminalPaneSource, /let reconnectAttempts = 0/);
+  assert.match(
+    terminalPaneSource,
+    /TERMINAL_RECONNECT_MAX_DELAY_MS,\s*\n\s*TERMINAL_RECONNECT_DELAY_MS \* 2 \*\* reconnectAttempts/,
+  );
+  assert.match(terminalPaneSource, /reconnectAttempts \+= 1/);
+  assert.match(terminalPaneSource, /backoff \/ 2 \+ Math\.random\(\) \* \(backoff \/ 2\)/);
+  // Backoff resets on a healthy transport and when the user returns to the tab.
+  assert.match(terminalPaneSource, /reconnectAttempts = 0;\s*\n\s*\/\/ Size the grid/);
+  assert.match(terminalPaneSource, /reconnectAttempts = 0;\s*\n\s*probeConnection\(TERMINAL_RESUME_PONG_TIMEOUT_MS\)/);
+});
+
+test('terminal keeps a visible-tab heartbeat to detect silently dropped sockets', () => {
+  // Weak/mobile networks can drop a socket without a close event; a passive ping
+  // keeps liveness detection working while the tab stays open.
+  assert.match(terminalPaneSource, /let heartbeatTimer = 0/);
+  assert.match(
+    terminalPaneSource,
+    /heartbeatTimer = window\.setInterval\(\s*\n\s*\(\) => probeConnection\(TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS\),\s*\n\s*TERMINAL_HEARTBEAT_INTERVAL_MS,/,
+  );
+  // The heartbeat pong window is more tolerant than the resume probe so high latency
+  // is not mistaken for a dead connection.
+  assert.match(terminalPaneSource, /const TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS = 8000/);
+  assert.match(terminalPaneSource, /const TERMINAL_HEARTBEAT_INTERVAL_MS = 20000/);
+  // The interval is torn down with the pane.
+  assert.match(terminalPaneSource, /window\.clearInterval\(heartbeatTimer\)/);
 });

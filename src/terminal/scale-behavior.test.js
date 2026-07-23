@@ -35,6 +35,25 @@ test('terminal resize manually fits to measured whole-cell dimensions without sc
   assert.equal(settledResize.includes('clampScaleToFrame'), false);
 });
 
+test('terminal fit reserves the scrollbar gutter so the last column is not clipped', () => {
+  const measure = extractCallback('measureCellCapacity');
+
+  // xterm's own FitAddon subtracts the scrollbar width from the available width.
+  // The custom fit must reserve the same gutter, or the rightmost column renders
+  // beneath the scrollback scrollbar and is clipped once scrollback appears.
+  assert.match(measure, /terminal\.options\.scrollback \? TERMINAL_SCROLLBAR_GUTTER : 0/);
+  assert.match(measure, /- scrollbarGutter/);
+  assert.match(source, /const TERMINAL_SCROLLBAR_GUTTER = 6;/);
+  // The reserved gutter must equal the styled scrollbar width.
+  assert.match(styles, /has-scrollback::-webkit-scrollbar \{\s*width:\s*6px/);
+
+  // A sub-pixel guard on both axes prevents integer/HiDPI cell-size rounding from
+  // over-counting the last row/column past the frame edge.
+  assert.match(source, /const FIT_EDGE_GUARD_PX = 1;/);
+  assert.match(measure, /- scrollbarGutter - FIT_EDGE_GUARD_PX/);
+  assert.match(measure, /parseFloat\(style\.paddingBottom\)\s*\n\s*- FIT_EDGE_GUARD_PX/);
+});
+
 test('terminal resize fits before the next animation frame', () => {
   const settledResize = extractCallback('resizeAfterLayoutSettles');
   const dragResize = extractCallback('resizeDuringDrag');

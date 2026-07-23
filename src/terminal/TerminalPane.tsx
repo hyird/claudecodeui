@@ -30,8 +30,25 @@ type TerminalDimensions = {
 
 const MIN_TERMINAL_COLS = 2;
 const MIN_TERMINAL_ROWS = 1;
+// Width of the scrollback scrollbar to reserve so the rightmost column is never
+// rendered beneath it. MUST match `.xterm-viewport.has-scrollback::-webkit-scrollbar`
+// in styles.css. xterm's own FitAddon reserves the same gutter (`- scrollBarWidth`).
+const TERMINAL_SCROLLBAR_GUTTER = 6;
+// Sub-pixel guard shaved off each fit axis so integer/HiDPI cell-size rounding can
+// never round the last whole cell up past the frame edge (bottom row / right column).
+const FIT_EDGE_GUARD_PX = 1;
+// Reconnect backoff: the base delay doubles each consecutive failure up to the cap,
+// so a flaky network is retried gently instead of hammered every second. Reset to the
+// base on a successful open or when the user returns to the tab.
 const TERMINAL_RECONNECT_DELAY_MS = 1000;
+const TERMINAL_RECONNECT_MAX_DELAY_MS = 15000;
 const TERMINAL_RESUME_PONG_TIMEOUT_MS = 2500;
+// Active liveness check: while the tab is visible, ping on an interval so a silently
+// dropped socket (common on weak/mobile networks, no close event) is detected and
+// resumed. The pong window is deliberately generous so high latency is not mistaken
+// for a dead connection and does not trigger a needless reconnect.
+const TERMINAL_HEARTBEAT_INTERVAL_MS = 20000;
+const TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS = 8000;
 
 function createWebSocketUrl(authToken: string) {
   return websocketUrl('/terminal', authToken);
@@ -125,10 +142,15 @@ export default function TerminalPane({
     }
 
     const style = window.getComputedStyle(container);
+    // Reserve the scrollbar's gutter (as xterm's FitAddon does) so the rightmost
+    // column is never clipped beneath the scrollback scrollbar once it appears.
+    const scrollbarGutter = terminal.options.scrollback ? TERMINAL_SCROLLBAR_GUTTER : 0;
     const availWidth = container.clientWidth
-      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+      - scrollbarGutter - FIT_EDGE_GUARD_PX;
     const availHeight = container.clientHeight
-      - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+      - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)
+      - FIT_EDGE_GUARD_PX;
 
     return {
       cols: Math.max(MIN_TERMINAL_COLS, Math.floor(availWidth / cellWidth)),
@@ -453,6 +475,8 @@ export default function TerminalPane({
 
     let disposed = false;
     let reconnectTimer = 0;
+    let reconnectAttempts = 0;
+    let heartbeatTimer = 0;
     let pongTimer = 0;
     let terminalMessageQueue = Promise.resolve();
 
@@ -475,7 +499,15 @@ export default function TerminalPane({
         return;
       }
       onStatusChange(tab.id, 'disconnected');
-      reconnectTimer = window.setTimeout(connect, TERMINAL_RECONNECT_DELAY_MS);
+      const backoff = Math.min(
+        TERMINAL_RECONNECT_MAX_DELAY_MS,
+        TERMINAL_RECONNECT_DELAY_MS * 2 ** reconnectAttempts,
+      );
+      reconnectAttempts += 1;
+      // Equal jitter (half fixed, half random) keeps a floor delay while spreading
+      // retries so many panes dropping together don't reconnect in lockstep.
+      const delay = backoff / 2 + Math.random() * (backoff / 2);
+      reconnectTimer = window.setTimeout(connect, delay);
     }
 
     function connect() {
@@ -503,6 +535,9 @@ export default function TerminalPane({
         if (disposed || socketRef.current !== socket) {
           return;
         }
+
+        // Transport is healthy again — restart backoff from the base delay.
+        reconnectAttempts = 0;
 
         // Size the grid to the frame first, then announce it via init. Sending a
         // resize before init would be rejected by the server ("not initialized")
@@ -550,7 +585,9 @@ export default function TerminalPane({
       });
     }
 
-    const probeConnectionAfterResume = () => {
+    // Ping the socket and reconnect if no pong lands within pongTimeoutMs. A dead or
+    // closed socket reconnects immediately; a live one just confirms liveness.
+    const probeConnection = (pongTimeoutMs: number) => {
       if (document.visibilityState === 'hidden') {
         return;
       }
@@ -583,11 +620,26 @@ export default function TerminalPane({
         socketRef.current = null;
         socket.close();
         scheduleReconnect();
-      }, TERMINAL_RESUME_PONG_TIMEOUT_MS);
+      }, pongTimeoutMs);
+    };
+
+    // The user just came back to the tab: reconnect promptly (skip the backoff ramp)
+    // and use the tight pong window since a slept socket is usually already dead.
+    const probeConnectionAfterResume = () => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+      reconnectAttempts = 0;
+      probeConnection(TERMINAL_RESUME_PONG_TIMEOUT_MS);
     };
 
     document.addEventListener('visibilitychange', probeConnectionAfterResume);
     window.addEventListener('focus', probeConnectionAfterResume);
+    // Passive heartbeat: catches a silently dropped socket while the tab stays open.
+    heartbeatTimer = window.setInterval(
+      () => probeConnection(TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS),
+      TERMINAL_HEARTBEAT_INTERVAL_MS,
+    );
     connect();
 
     const dataSubscription = terminal.onData(sendInput);
@@ -619,6 +671,10 @@ export default function TerminalPane({
       clearResizeTimers();
       clearReconnectTimer();
       clearPongTimer();
+      if (heartbeatTimer) {
+        window.clearInterval(heartbeatTimer);
+        heartbeatTimer = 0;
+      }
       clearTerminalResyncTimer();
       clearScreenTransform();
       dataSubscription.dispose();
