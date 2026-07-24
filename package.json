@@ -11,7 +11,7 @@
     "build:server": "bun build server/index.js --target=bun --outfile dist-server/server.js",
     "preview": "vite preview --host 0.0.0.0",
     "start": "bun server/index.js",
-    "test": "node --test \"server/*.test.js\" \"src/**/*.test.js\"",
+    "test": "node --test \"server/*.test.js\" \"src/**/*.test.js\" && bun test spec",
     "proto": "pbjs -t static-module -w es6 -o proto/messages.js proto/messages.proto && pbts -o proto/messages.d.ts proto/messages.js"
   },
   "dependencies": {

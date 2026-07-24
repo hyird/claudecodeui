@@ -17,5 +17,7 @@
     "jsx": "react-jsx",
     "types": ["vite/client", "node"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts"],
+  "// exclude": "*.spec.ts are behaviour tests run by `bun test`, which provides its own bun:test types; tsc would fail to resolve the bun:test import.",
+  "exclude": ["src/**/*.spec.ts"]
 }

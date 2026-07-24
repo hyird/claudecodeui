@@ -7,17 +7,10 @@ const codecSource = fs.existsSync(new URL('./wsCodec.ts', import.meta.url))
   : '';
 const paneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
 
-test('terminal websocket codec decodes protobuf server frames and inflates compressed output', () => {
-  assert.match(codecSource, /TerminalServerMessage/);
-  assert.match(codecSource, /output\.compressed/);
-  assert.match(codecSource, /DecompressionStream/);
-  assert.match(codecSource, /decodeTerminalServerMessage/);
-});
-
-test('terminal client input is protobuf-encoded before sending', () => {
-  assert.match(codecSource, /encodeTerminalClientMessage/);
-  assert.match(codecSource, /TerminalClientMessage\.encode/);
-});
+// The codec's own behaviour (encode/decode round-trips, including the compressed
+// output path) is covered end to end against the server codec in wsCodec.spec.ts.
+// The assertions kept here are about how TerminalPane *wires up* that codec, which
+// is not exercised without a DOM.
 
 test('terminal pane routes websocket messages through async binary-aware decoder', () => {
   assert.match(paneSource, /decodeTerminalServerMessage/);
