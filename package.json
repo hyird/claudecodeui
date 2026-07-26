@@ -1,5 +1,5 @@
 {
-  "name": "cloudcli-terminal-lite",
+  "name": "cloud-terminal",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "start": "bun server/index.js",
     "test": "node --test \"server/*.test.js\" \"src/**/*.test.js\" && bun test spec",
-    "proto": "pbjs -t static-module -w es6 -o proto/messages.js proto/messages.proto && pbts -o proto/messages.d.ts proto/messages.js"
+    "proto": "pbjs -t static-module -w es6 --no-create --no-verify --no-convert --no-delimited -o proto/messages.js proto/messages.proto && pbts -o proto/messages.d.ts proto/messages.js"
   },
   "dependencies": {
     "@xterm/addon-clipboard": "0.2.0",

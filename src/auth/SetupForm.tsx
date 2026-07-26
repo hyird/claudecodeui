@@ -75,7 +75,7 @@ export default function SetupForm({ onRegister }: SetupFormProps) {
 
   return (
     <AuthScreenLayout
-      title="欢迎使用 CloudCLI"
+      title="欢迎使用 Cloud Terminal"
       description="创建账户后即可开始使用"
       footerText="这是单用户系统，只能创建一个账户。"
     >

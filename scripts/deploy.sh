@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build and deploy CloudCLI Terminal Lite.
+# Build and deploy Cloud Terminal.
 #
 #   ./scripts/deploy.sh              # deploy origin/main
 #   ./scripts/deploy.sh 2ad75e3      # deploy (or roll back to) a specific ref

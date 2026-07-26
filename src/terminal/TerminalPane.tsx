@@ -250,9 +250,9 @@ export default function TerminalPane({
   }, [readViewportElement]);
 
   // A scroll or an in-place TUI repaint changes what each viewport row should
-  // show. Claude Code hits the paths where xterm may not issue a full viewport
-  // refresh on its own: alt-screen mouse scrolling, in-place updates, and
-  // streaming while the buffer moves under a fixed viewport. Force a full-range
+  // show. Full-screen TUIs hit paths where xterm may not issue a full viewport
+  // refresh on its own: alt-screen mouse scrolling, in-place updates, and streaming
+  // while the buffer moves under a fixed viewport. Force a full-range
   // refresh synchronously so it unions into xterm's current render frame.
   const forceFullRefresh = useCallback(() => {
     const terminal = terminalRef.current;
@@ -386,7 +386,7 @@ export default function TerminalPane({
     });
 
     updateScrollbackAffordance();
-    terminal.writeln('\x1b[36mCloudCLI Terminal\x1b[0m');
+    terminal.writeln('\x1b[36mCloud Terminal\x1b[0m');
     terminal.writeln('\x1b[90mConnecting...\x1b[0m');
 
     let lastAppliedTerminalSeq = 0;

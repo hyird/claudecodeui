@@ -1,6 +1,6 @@
-# CloudCLI Terminal Lite
+# Cloud Terminal
 
-一个从零重做的轻量 Web 终端，只保留多标签终端体验。
+一个轻量的 Web 终端界面，专注于多标签终端体验。
 
 ## 功能
 

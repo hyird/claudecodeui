@@ -7,7 +7,7 @@ export default function AuthLoadingScreen() {
         <div className="auth-logo" aria-hidden="true">
           <img src="/logo.svg" alt="" />
         </div>
-        <h1>CloudCLI</h1>
+        <h1>Cloud Terminal</h1>
         <span className="sr-only">正在加载登录状态...</span>
         <div className="auth-loading-dots" aria-hidden="true">
           {dotDelays.map((delay) => (

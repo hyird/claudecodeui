@@ -485,10 +485,18 @@ test('the built frontend is served compressed and revalidates with an ETag', asy
   assert.equal(revalidated.bodyLength, 0);
 });
 
-// `seq 1 200000` emits exactly this many bytes: 9*3 + 90*4 + 900*5 + 9000*6
-// + 90000*7 + 100001*8. The PTY turns each \n into \r\n, so every line costs its
-// digits plus two. Used below to prove coalescing loses nothing.
-const SEQ_OUTPUT_BYTES = 1488895;
+// Generate the sequence with Node instead of the Unix-only `seq` utility so this
+// end-to-end test exercises the server's real default shell on Windows too. The
+// marker is assembled at runtime so the shell's command echo cannot satisfy the
+// completion check before the generated output has arrived.
+const BULK_OUTPUT_SCRIPT = "let s='';"
+  + "for(let i=1;i<=200000;i++)s+=i+String.fromCharCode(10);"
+  + "process.stdout.write(s+['__DO','NE__'].join('')+String.fromCharCode(10))";
+const BULK_OUTPUT_COMMAND = `node -e ${JSON.stringify(BULK_OUTPUT_SCRIPT)}\r`;
+// 9*2 + 90*3 + 900*4 + 9000*5 + 90000*6 + 100001*7: digits plus one LF per line.
+// A PTY may expand LF to CRLF, so this is a portable lower bound rather than an exact
+// transport length.
+const SEQ_OUTPUT_MIN_CHARS = 1288895;
 
 test('bulk terminal output is coalesced into far fewer frames without losing bytes', async () => {
   // bun-pty hands over the PTY in 4 KB reads and drains ~166 of them per event-loop
@@ -505,7 +513,10 @@ test('bulk terminal output is coalesced into far fewer frames without losing byt
 
   const done = new Promise((resolve, reject) => {
     const timeout = setTimeout(
-      () => reject(new Error(`Timed out; ${outputFrames} frames, ${text.length} chars so far`)),
+      () => reject(new Error(
+        `Timed out; ${outputFrames} frames, ${text.length} chars so far; `
+        + `tail ${JSON.stringify(text.slice(-200))}`,
+      )),
       30000,
     );
     socket.on('error', (error) => { clearTimeout(timeout); reject(error); });
@@ -513,10 +524,8 @@ test('bulk terminal output is coalesced into far fewer frames without losing byt
       const message = TerminalServerMessage.decode(toUint8(raw));
       if (message.body === 'ready' && !ready) {
         ready = true;
-        // The literal marker is split so the shell's own echo of the command line
-        // cannot be mistaken for the command's output.
         socket.send(TerminalClientMessage.encode({
-          input: { data: 'seq 1 200000; echo __DO""NE__\r' },
+          input: { data: BULK_OUTPUT_COMMAND },
         }).finish());
         return;
       }
@@ -543,14 +552,18 @@ test('bulk terminal output is coalesced into far fewer frames without losing byt
 
   // Nothing may be dropped or reordered by the batching: every line of the sequence
   // must be present, in order, with the full byte count.
-  assert.ok(text.includes('\r\n200000\r\n'), 'expected the last line of the sequence');
+  const normalizedText = text.replaceAll('\r\n', '\n');
   assert.ok(
-    text.indexOf('\r\n100000\r\n') < text.indexOf('\r\n200000\r\n'),
+    normalizedText.includes('\n200000\n__DONE__'),
+    'expected the last line of the sequence followed by the completion marker',
+  );
+  assert.ok(
+    normalizedText.indexOf('\n100000\n') < normalizedText.indexOf('\n200000\n'),
     'sequence lines must arrive in order',
   );
   assert.ok(
-    text.length >= SEQ_OUTPUT_BYTES,
-    `expected at least ${SEQ_OUTPUT_BYTES} chars of output, got ${text.length}`,
+    text.length >= SEQ_OUTPUT_MIN_CHARS,
+    `expected at least ${SEQ_OUTPUT_MIN_CHARS} chars of output, got ${text.length}`,
   );
 
   // Without coalescing this averages the 4 KB PTY read size. The 8 KB floor is

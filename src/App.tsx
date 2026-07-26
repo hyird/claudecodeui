@@ -364,8 +364,8 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
 
   useEffect(() => {
     document.title = activeTab?.title
-      ? `${activeTab.title} - CloudCLI Terminal`
-      : 'CloudCLI Terminal';
+      ? `${activeTab.title} - Cloud Terminal`
+      : 'Cloud Terminal';
   }, [activeTab?.title]);
 
   // The settings popover floats over the terminal, so opening it never changes
@@ -410,7 +410,7 @@ function TerminalApp({ authToken, user, onLogout, onAuthInvalidated }: TerminalA
           <span className="brand-mark">
             <TerminalIcon size={15} aria-hidden="true" />
           </span>
-          <span className="brand-name">CloudCLI Terminal</span>
+          <span className="brand-name">Cloud Terminal</span>
         </div>
 
         <nav className="tabs" aria-label="终端标签">

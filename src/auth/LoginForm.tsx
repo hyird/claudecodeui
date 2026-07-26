@@ -53,8 +53,8 @@ export default function LoginForm({ onLogin }: LoginFormProps) {
   return (
     <AuthScreenLayout
       title="欢迎回来"
-      description="登录您的 CloudCLI 账户"
-      footerText="输入您的凭据以访问 CloudCLI"
+      description="登录您的 Cloud Terminal 账户"
+      footerText="输入您的凭据以访问 Cloud Terminal"
     >
       <form onSubmit={handleSubmit} className="auth-form">
         <AuthInputField
