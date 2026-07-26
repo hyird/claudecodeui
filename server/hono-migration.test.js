@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,7 @@ import { cloudcli } from '../proto/messages.js';
 // server under test is Bun-only: it imports bun:sqlite and bun-pty. So it is launched
 // with Bun rather than the current interpreter. Set BUN_BIN if bun is not on PATH.
 const BUN_BIN = process.env.BUN_BIN || 'bun';
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const {
   TabsClientMessage,
@@ -31,6 +33,9 @@ function toUint8(raw) {
 // The test is a browser-side client of the server, so it encodes client frames
 // and decodes server frames straight off the shared protobuf schema.
 function encodeTabsClientMessage(message) {
+  if (message.type === 'add-tab') {
+    return TabsClientMessage.encode({ addTab: {} }).finish();
+  }
   if (message.type === 'update-title') {
     return TabsClientMessage.encode({ updateTitle: { tabId: message.tabId, title: message.title } }).finish();
   }
@@ -46,7 +51,6 @@ function decodeTabsServerMessage(raw) {
       state: {
         tabs: (state.tabs ?? []).map((tab) => ({ id: tab.id, title: tab.title, status: tab.status })),
         activeId: state.activeId,
-        nextIndex: state.nextIndex,
       },
     };
   }
@@ -274,10 +278,6 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
     isAuthenticated: false,
   });
 
-  const blockedTabs = await fetch(`${baseUrl}/api/terminal/tabs`);
-  assert.equal(blockedTabs.status, 401);
-  assert.deepEqual(await blockedTabs.json(), { error: 'Access denied. No token provided.' });
-
   const register = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -363,12 +363,6 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
   assert.equal(displacedUser.status, 403);
   assert.deepEqual(await displacedUser.json(), { error: 'Invalid token' });
 
-  const displacedTabs = await fetch(`${baseUrl}/api/terminal/tabs`, {
-    headers: { authorization: `Bearer ${registrationToken}` },
-  });
-  assert.equal(displacedTabs.status, 403);
-  assert.deepEqual(await displacedTabs.json(), { error: 'Invalid token' });
-
   assert.equal(await wsHandshakeStatus('/terminal/tabs', registrationToken), 403);
 
   const activeUser = await fetch(`${baseUrl}/api/auth/user`, {
@@ -377,34 +371,7 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
   assert.equal(activeUser.status, 200);
 });
 
-test('terminal tab HTTP API preserves existing behavior', async () => {
-  const health = await fetch(`${baseUrl}/api/health`);
-  assert.equal(health.status, 200);
-  assert.equal((await health.json()).ok, true);
-
-  const headers = { authorization: `Bearer ${authToken}` };
-  const tabs = await fetch(`${baseUrl}/api/terminal/tabs`, { headers });
-  assert.equal(tabs.status, 200);
-  const initialState = await tabs.json();
-  assert.equal(initialState.ok, true);
-  assert.equal(initialState.state.tabs.length, 1);
-
-  const added = await fetch(`${baseUrl}/api/terminal/tabs`, { method: 'POST', headers });
-  assert.equal(added.status, 200);
-  const addedState = await added.json();
-  assert.equal(addedState.ok, true);
-  assert.equal(addedState.state.tabs.length, 2);
-
-  const invalidActive = await fetch(`${baseUrl}/api/terminal/tabs/active`, {
-    method: 'POST',
-    headers: { ...headers, 'content-type': 'application/json' },
-    body: JSON.stringify({ activeId: '../bad' }),
-  });
-  assert.equal(invalidActive.status, 400);
-  assert.deepEqual(await invalidActive.json(), { ok: false, error: 'Invalid active tab' });
-});
-
-test('terminal tab WebSocket requires and accepts auth token', async () => {
+test('terminal tab WebSocket requires auth and generates UUID ids', async () => {
   assert.equal(await wsHandshakeStatus('/terminal/tabs'), 401);
 
   const authenticated = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
@@ -416,6 +383,17 @@ test('terminal tab WebSocket requires and accepts auth token', async () => {
   assert.equal(firstMessage.type, 'tabs');
   assert.ok(Array.isArray(firstMessage.state.tabs));
   const tabId = firstMessage.state.tabs[0].id;
+  assert.match(tabId, UUID_V4_PATTERN);
+
+  authenticated.send(encodeTabsClientMessage({ type: 'add-tab' }));
+  const addedState = await readTabsWebSocketMessage(
+    authenticated,
+    (message) => message.type === 'tabs' && message.state.tabs.length === 2,
+    'tabs websocket add-tab update',
+  );
+  const addedTabId = addedState.state.tabs[1].id;
+  assert.match(addedTabId, UUID_V4_PATTERN);
+  assert.notEqual(addedTabId, tabId);
 
   authenticated.send(encodeTabsClientMessage({ type: 'update-title', tabId, title: '\u2819 Ruvia' }));
   const titleUpdate = await readTabsWebSocketMessage(
@@ -429,6 +407,37 @@ test('terminal tab WebSocket requires and accepts auth token', async () => {
   assert.equal(titleUpdate.state.tabs.find((tab) => tab.id === tabId).title, 'Ruvia');
 
   authenticated.close();
+});
+
+test('terminal WebSocket rejects legacy non-UUID session ids', async () => {
+  const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const rejection = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for legacy id rejection')), 5000);
+    socket.once('error', reject);
+    socket.on('message', (raw) => {
+      const message = TerminalServerMessage.decode(toUint8(raw));
+      if (message.body === 'error') {
+        clearTimeout(timeout);
+        resolve(message.error.message);
+      }
+    });
+  });
+
+  socket.on('open', () => {
+    socket.send(TerminalClientMessage.encode({
+      init: {
+        sessionId: 'terminal-1785067387023-1-2ziyq2',
+        cols: 120,
+        rows: 40,
+        cwd: '',
+        forceRestart: false,
+        lastSeq: 0,
+      },
+    }).finish());
+  });
+
+  assert.equal(await rejection, 'Invalid session id');
+  socket.close();
 });
 
 test('SPA fallback serves the built index for client routes when dist exists', async () => {
@@ -505,7 +514,7 @@ test('bulk terminal output is coalesced into far fewer frames without losing byt
   // drives a real shell through a real socket to confirm both halves of that: many
   // fewer frames, and every byte still arriving in order.
   const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
-  const sessionId = `terminal-coalesce-${process.pid}`;
+  const sessionId = randomUUID();
 
   let outputFrames = 0;
   let text = '';

@@ -2419,141 +2419,6 @@ export const cloudcli = $root.cloudcli = (() => {
         return UpdateTitle;
     })();
 
-    cloudcli.RestartTab = (function() {
-
-        /**
-         * Properties of a RestartTab.
-         * @typedef {Object} cloudcli.RestartTab.$Properties
-         * @property {string|null} [tabId] RestartTab tabId
-         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
-         */
-
-        /**
-         * Properties of a RestartTab.
-         * @memberof cloudcli
-         * @interface IRestartTab
-         * @augments cloudcli.RestartTab.$Properties
-         * @deprecated Use cloudcli.RestartTab.$Properties instead.
-         */
-
-        /**
-         * Shape of a RestartTab.
-         * @typedef {cloudcli.RestartTab.$Properties} cloudcli.RestartTab.$Shape
-         */
-
-        /**
-         * Constructs a new RestartTab.
-         * @memberof cloudcli
-         * @classdesc Represents a RestartTab.
-         * @constructor
-         * @param {cloudcli.RestartTab.$Properties=} [properties] Properties to set
-         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
-         */
-        const RestartTab = function (properties) {
-            if (properties)
-                for (let keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
-                    if (properties[keys[i]] != null && keys[i] !== "__proto__")
-                        this[keys[i]] = properties[keys[i]];
-        };
-
-        /**
-         * RestartTab tabId.
-         * @member {string} tabId
-         * @memberof cloudcli.RestartTab
-         * @instance
-         */
-        RestartTab.prototype.tabId = "";
-
-        /**
-         * Encodes the specified RestartTab message. Does not implicitly {@link cloudcli.RestartTab.verify|verify} messages.
-         * @function encode
-         * @memberof cloudcli.RestartTab
-         * @static
-         * @param {cloudcli.RestartTab.$Properties} message RestartTab message or plain object to encode
-         * @param {$protobuf.Writer} [writer] Writer to encode to
-         * @returns {$protobuf.Writer} Writer
-         */
-        RestartTab.encode = function (message, writer, _depth) {
-            if (!writer)
-                writer = $Writer.create();
-            if (_depth === $undefined)
-                _depth = 0;
-            if (_depth > $util.recursionLimit)
-                throw $Error("max depth exceeded");
-            if (message.tabId != null && $Object.hasOwnProperty.call(message, "tabId") && message.tabId !== "")
-                writer.uint32(/* id 1, wireType 2 =*/10).string(message.tabId);
-            if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
-                for (let i = 0; i < message.$unknowns.length; ++i)
-                    writer.raw(message.$unknowns[i]);
-            return writer;
-        };
-
-        /**
-         * Decodes a RestartTab message from the specified reader or buffer.
-         * @function decode
-         * @memberof cloudcli.RestartTab
-         * @static
-         * @param {$protobuf.Reader|Uint8Array} reader Reader or buffer to decode from
-         * @param {number} [length] Message length if known beforehand
-         * @returns {cloudcli.RestartTab & cloudcli.RestartTab.$Shape} RestartTab
-         * @throws {Error} If the payload is not a reader or valid buffer
-         * @throws {$protobuf.util.ProtocolError} If required fields are missing
-         */
-        RestartTab.decode = function (reader, length, _end, _depth, _target) {
-            if (!(reader instanceof $Reader))
-                reader = $Reader.create(reader);
-            if (_depth === $undefined)
-                _depth = 0;
-            if (_depth > $Reader.recursionLimit)
-                throw $Error("max depth exceeded");
-            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.RestartTab(), value;
-            while (reader.pos < end) {
-                let start = reader.pos;
-                let tag = reader.tag();
-                if (tag === _end) {
-                    _end = $undefined;
-                    break;
-                }
-                let wireType = tag & 7;
-                switch (tag >>>= 3) {
-                case 1: {
-                        if (wireType !== 2)
-                            break;
-                        if ((value = reader.stringVerify()).length)
-                            message.tabId = value;
-                        else
-                            delete message.tabId;
-                        continue;
-                    }
-                }
-                reader.skipType(wireType, _depth, tag);
-                if (!reader.discardUnknown) {
-                    $util.makeProp(message, "$unknowns", false);
-                    (message.$unknowns || (message.$unknowns = [])).push(reader.raw(start, reader.pos));
-                }
-            }
-            if (_end !== $undefined)
-                throw $Error("missing end group");
-            return message;
-        };
-
-        /**
-         * Gets the type url for RestartTab
-         * @function getTypeUrl
-         * @memberof cloudcli.RestartTab
-         * @static
-         * @param {string} [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
-         * @returns {string} The type url
-         */
-        RestartTab.getTypeUrl = function(prefix) {
-            if (prefix === $undefined)
-                prefix = "type.googleapis.com";
-            return prefix + "/cloudcli.RestartTab";
-        };
-
-        return RestartTab;
-    })();
-
     cloudcli.CloseTab = (function() {
 
         /**
@@ -2698,9 +2563,8 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {cloudcli.AddTab.$Properties|null} [addTab] TabsClientMessage addTab
          * @property {cloudcli.SetActive.$Properties|null} [setActive] TabsClientMessage setActive
          * @property {cloudcli.UpdateTitle.$Properties|null} [updateTitle] TabsClientMessage updateTitle
-         * @property {cloudcli.RestartTab.$Properties|null} [restartTab] TabsClientMessage restartTab
          * @property {cloudcli.CloseTab.$Properties|null} [closeTab] TabsClientMessage closeTab
-         * @property {"ping"|"addTab"|"setActive"|"updateTitle"|"restartTab"|"closeTab"} [body] TabsClientMessage body
+         * @property {"ping"|"addTab"|"setActive"|"updateTitle"|"closeTab"} [body] TabsClientMessage body
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -2719,11 +2583,10 @@ export const cloudcli = $root.cloudcli = (() => {
          *   addTab?: cloudcli.AddTab.$Shape|null;
          *   setActive?: cloudcli.SetActive.$Shape|null;
          *   updateTitle?: cloudcli.UpdateTitle.$Shape|null;
-         *   restartTab?: cloudcli.RestartTab.$Shape|null;
          *   closeTab?: cloudcli.CloseTab.$Shape|null;
          *   $unknowns?: Array.<Uint8Array>;
          * } & (
-         *   ({ body?: undefined; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; restartTab?: null; closeTab?: null }|{ body?: "ping"; ping: cloudcli.Ping.$Shape; addTab?: null; setActive?: null; updateTitle?: null; restartTab?: null; closeTab?: null }|{ body?: "addTab"; ping?: null; addTab: cloudcli.AddTab.$Shape; setActive?: null; updateTitle?: null; restartTab?: null; closeTab?: null }|{ body?: "setActive"; ping?: null; addTab?: null; setActive: cloudcli.SetActive.$Shape; updateTitle?: null; restartTab?: null; closeTab?: null }|{ body?: "updateTitle"; ping?: null; addTab?: null; setActive?: null; updateTitle: cloudcli.UpdateTitle.$Shape; restartTab?: null; closeTab?: null }|{ body?: "restartTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; restartTab: cloudcli.RestartTab.$Shape; closeTab?: null }|{ body?: "closeTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; restartTab?: null; closeTab: cloudcli.CloseTab.$Shape })
+         *   ({ body?: undefined; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "ping"; ping: cloudcli.Ping.$Shape; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "addTab"; ping?: null; addTab: cloudcli.AddTab.$Shape; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "setActive"; ping?: null; addTab?: null; setActive: cloudcli.SetActive.$Shape; updateTitle?: null; closeTab?: null }|{ body?: "updateTitle"; ping?: null; addTab?: null; setActive?: null; updateTitle: cloudcli.UpdateTitle.$Shape; closeTab?: null }|{ body?: "closeTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab: cloudcli.CloseTab.$Shape })
          * )} cloudcli.TabsClientMessage.$Shape
          */
 
@@ -2775,14 +2638,6 @@ export const cloudcli = $root.cloudcli = (() => {
         TabsClientMessage.prototype.updateTitle = null;
 
         /**
-         * TabsClientMessage restartTab.
-         * @member {cloudcli.RestartTab.$Properties|null|undefined} restartTab
-         * @memberof cloudcli.TabsClientMessage
-         * @instance
-         */
-        TabsClientMessage.prototype.restartTab = null;
-
-        /**
          * TabsClientMessage closeTab.
          * @member {cloudcli.CloseTab.$Properties|null|undefined} closeTab
          * @memberof cloudcli.TabsClientMessage
@@ -2795,12 +2650,12 @@ export const cloudcli = $root.cloudcli = (() => {
 
         /**
          * TabsClientMessage body.
-         * @member {"ping"|"addTab"|"setActive"|"updateTitle"|"restartTab"|"closeTab"|undefined} body
+         * @member {"ping"|"addTab"|"setActive"|"updateTitle"|"closeTab"|undefined} body
          * @memberof cloudcli.TabsClientMessage
          * @instance
          */
         $Object.defineProperty(TabsClientMessage.prototype, "body", {
-            get: $util.oneOfGetter($oneOfFields = ["ping", "addTab", "setActive", "updateTitle", "restartTab", "closeTab"]),
+            get: $util.oneOfGetter($oneOfFields = ["ping", "addTab", "setActive", "updateTitle", "closeTab"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -2828,10 +2683,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 $root.cloudcli.SetActive.encode(message.setActive, writer.uint32(/* id 3, wireType 2 =*/26).fork(), _depth + 1).ldelim();
             if (message.updateTitle != null && $Object.hasOwnProperty.call(message, "updateTitle"))
                 $root.cloudcli.UpdateTitle.encode(message.updateTitle, writer.uint32(/* id 4, wireType 2 =*/34).fork(), _depth + 1).ldelim();
-            if (message.restartTab != null && $Object.hasOwnProperty.call(message, "restartTab"))
-                $root.cloudcli.RestartTab.encode(message.restartTab, writer.uint32(/* id 5, wireType 2 =*/42).fork(), _depth + 1).ldelim();
             if (message.closeTab != null && $Object.hasOwnProperty.call(message, "closeTab"))
-                $root.cloudcli.CloseTab.encode(message.closeTab, writer.uint32(/* id 6, wireType 2 =*/50).fork(), _depth + 1).ldelim();
+                $root.cloudcli.CloseTab.encode(message.closeTab, writer.uint32(/* id 5, wireType 2 =*/42).fork(), _depth + 1).ldelim();
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -2895,13 +2748,6 @@ export const cloudcli = $root.cloudcli = (() => {
                         continue;
                     }
                 case 5: {
-                        if (wireType !== 2)
-                            break;
-                        message.restartTab = $root.cloudcli.RestartTab.decode(reader, reader.uint32(), $undefined, _depth + 1, message.restartTab);
-                        message.body = "restartTab";
-                        continue;
-                    }
-                case 6: {
                         if (wireType !== 2)
                             break;
                         message.closeTab = $root.cloudcli.CloseTab.decode(reader, reader.uint32(), $undefined, _depth + 1, message.closeTab);
@@ -3119,7 +2965,6 @@ export const cloudcli = $root.cloudcli = (() => {
          * @typedef {Object} cloudcli.TabsState.$Properties
          * @property {Array.<cloudcli.Tab.$Properties>|null} [tabs] TabsState tabs
          * @property {string|null} [activeId] TabsState activeId
-         * @property {number|null} [nextIndex] TabsState nextIndex
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -3169,14 +3014,6 @@ export const cloudcli = $root.cloudcli = (() => {
         TabsState.prototype.activeId = "";
 
         /**
-         * TabsState nextIndex.
-         * @member {number} nextIndex
-         * @memberof cloudcli.TabsState
-         * @instance
-         */
-        TabsState.prototype.nextIndex = 0;
-
-        /**
          * Encodes the specified TabsState message. Does not implicitly {@link cloudcli.TabsState.verify|verify} messages.
          * @function encode
          * @memberof cloudcli.TabsState
@@ -3197,8 +3034,6 @@ export const cloudcli = $root.cloudcli = (() => {
                     $root.cloudcli.Tab.encode(message.tabs[i], writer.uint32(/* id 1, wireType 2 =*/10).fork(), _depth + 1).ldelim();
             if (message.activeId != null && $Object.hasOwnProperty.call(message, "activeId") && message.activeId !== "")
                 writer.uint32(/* id 2, wireType 2 =*/18).string(message.activeId);
-            if (message.nextIndex != null && $Object.hasOwnProperty.call(message, "nextIndex") && message.nextIndex !== 0)
-                writer.uint32(/* id 3, wireType 0 =*/24).uint32(message.nextIndex);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -3248,15 +3083,6 @@ export const cloudcli = $root.cloudcli = (() => {
                             message.activeId = value;
                         else
                             delete message.activeId;
-                        continue;
-                    }
-                case 3: {
-                        if (wireType !== 0)
-                            break;
-                        if (value = reader.uint32())
-                            message.nextIndex = value;
-                        else
-                            delete message.nextIndex;
                         continue;
                     }
                 }

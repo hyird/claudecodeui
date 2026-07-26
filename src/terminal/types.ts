@@ -13,7 +13,6 @@ export type TerminalTab = {
 export type TerminalTabsState = {
   tabs: TerminalTab[];
   activeId: string;
-  nextIndex: number;
 };
 
 type TerminalServerMessageMeta = {

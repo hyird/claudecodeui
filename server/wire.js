@@ -146,8 +146,6 @@ export function decodeTabsClientMessage(raw) {
       return { type: 'set-active', activeId: message.setActive.activeId };
     case 'updateTitle':
       return { type: 'update-title', tabId: message.updateTitle.tabId, title: message.updateTitle.title };
-    case 'restartTab':
-      return { type: 'restart-tab', tabId: message.restartTab.tabId };
     case 'closeTab':
       return { type: 'close-tab', tabId: message.closeTab.tabId };
     default:
@@ -182,7 +180,6 @@ function toTabsStatePayload(state) {
       status: tab.status,
     })),
     activeId: state?.activeId ?? '',
-    nextIndex: state?.nextIndex ?? 0,
   };
 }
 

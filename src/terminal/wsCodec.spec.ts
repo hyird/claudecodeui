@@ -16,6 +16,8 @@ import {
   encodeTerminalClientMessage,
 } from './wsCodec';
 
+const TERMINAL_ID = '11111111-1111-4111-8111-111111111111';
+
 // The client codec (wsCodec) and the server codec (wire.js) are two ends of the same
 // protobuf wire. These tests drive real bytes between them, so a schema or compression
 // mismatch fails here instead of only at runtime against a live shell.
@@ -86,25 +88,24 @@ describe('terminal server -> client', () => {
 
 describe('tabs and auth channels', () => {
   test('a tabs command reaches the server decoder intact', () => {
-    const bytes = encodeTabsClientMessage({ type: 'update-title', tabId: 'terminal-1', title: 'Ruvia' });
-    expect(decodeTabsClientMessage(bytes)).toEqual({ type: 'update-title', tabId: 'terminal-1', title: 'Ruvia' });
+    const bytes = encodeTabsClientMessage({ type: 'update-title', tabId: TERMINAL_ID, title: 'Ruvia' });
+    expect(decodeTabsClientMessage(bytes))
+      .toEqual({ type: 'update-title', tabId: TERMINAL_ID, title: 'Ruvia' });
   });
 
   test('tabs state round-trips with per-tab status', async () => {
     const frame = encodeTabsServerMessage({
       type: 'tabs',
       state: {
-        tabs: [{ id: 'terminal-1', title: 'one', status: 'connected' }],
-        activeId: 'terminal-1',
-        nextIndex: 2,
+        tabs: [{ id: TERMINAL_ID, title: 'one', status: 'connected' }],
+        activeId: TERMINAL_ID,
       },
     });
     expect(await decodeTabsServerMessage(frame)).toEqual({
       type: 'tabs',
       state: {
-        tabs: [{ id: 'terminal-1', title: 'one', status: 'connected' }],
-        activeId: 'terminal-1',
-        nextIndex: 2,
+        tabs: [{ id: TERMINAL_ID, title: 'one', status: 'connected' }],
+        activeId: TERMINAL_ID,
       },
     });
   });

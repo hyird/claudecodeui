@@ -1104,70 +1104,6 @@ export namespace cloudcli {
     }
 
     /**
-     * Properties of a RestartTab.
-     * @deprecated Use cloudcli.RestartTab.$Properties instead.
-     */
-    interface IRestartTab extends cloudcli.RestartTab.$Properties {
-    }
-
-    /** Represents a RestartTab. */
-    class RestartTab {
-
-        /**
-         * Constructs a new RestartTab.
-         * @param [properties] Properties to set
-         */
-        constructor(properties?: cloudcli.RestartTab.$Properties);
-
-        /** Unknown fields preserved while decoding when enabled */
-        $unknowns?: Uint8Array[];
-
-        /** RestartTab tabId. */
-        tabId: string;
-
-        /**
-         * Encodes the specified RestartTab message. Does not implicitly {@link cloudcli.RestartTab.verify|verify} messages.
-         * @param message RestartTab message or plain object to encode
-         * @param [writer] Writer to encode to
-         * @returns Writer
-         */
-        static encode(message: cloudcli.RestartTab.$Properties, writer?: $protobuf.Writer): $protobuf.Writer;
-
-        /**
-         * Decodes a RestartTab message from the specified reader or buffer.
-         * @param reader Reader or buffer to decode from
-         * @param [length] Message length if known beforehand
-         * @returns {cloudcli.RestartTab & cloudcli.RestartTab.$Shape} RestartTab
-         * @throws {Error} If the payload is not a reader or valid buffer
-         * @throws {$protobuf.util.ProtocolError} If required fields are missing
-         */
-        static decode(reader: ($protobuf.Reader|Uint8Array), length?: number): cloudcli.RestartTab & cloudcli.RestartTab.$Shape;
-
-        /**
-         * Gets the type url for RestartTab
-         * @param [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
-         * @returns The type url
-         */
-        static getTypeUrl(prefix?: string): string;
-    }
-
-    namespace RestartTab {
-
-        /** Properties of a RestartTab. */
-        interface $Properties {
-
-            /** RestartTab tabId */
-            tabId?: (string|null);
-
-            /** Unknown fields preserved while decoding when enabled */
-            $unknowns?: Uint8Array[];
-        }
-
-        /** Shape of a RestartTab. */
-        type $Shape = cloudcli.RestartTab.$Properties;
-    }
-
-    /**
      * Properties of a CloseTab.
      * @deprecated Use cloudcli.CloseTab.$Properties instead.
      */
@@ -1262,14 +1198,11 @@ export namespace cloudcli {
         /** TabsClientMessage updateTitle. */
         updateTitle?: (cloudcli.UpdateTitle.$Properties|null);
 
-        /** TabsClientMessage restartTab. */
-        restartTab?: (cloudcli.RestartTab.$Properties|null);
-
         /** TabsClientMessage closeTab. */
         closeTab?: (cloudcli.CloseTab.$Properties|null);
 
         /** TabsClientMessage body. */
-        body?: ("ping"|"addTab"|"setActive"|"updateTitle"|"restartTab"|"closeTab");
+        body?: ("ping"|"addTab"|"setActive"|"updateTitle"|"closeTab");
 
         /**
          * Encodes the specified TabsClientMessage message. Does not implicitly {@link cloudcli.TabsClientMessage.verify|verify} messages.
@@ -1314,14 +1247,11 @@ export namespace cloudcli {
             /** TabsClientMessage updateTitle */
             updateTitle?: (cloudcli.UpdateTitle.$Properties|null);
 
-            /** TabsClientMessage restartTab */
-            restartTab?: (cloudcli.RestartTab.$Properties|null);
-
             /** TabsClientMessage closeTab */
             closeTab?: (cloudcli.CloseTab.$Properties|null);
 
             /** TabsClientMessage body */
-            body?: ("ping"|"addTab"|"setActive"|"updateTitle"|"restartTab"|"closeTab");
+            body?: ("ping"|"addTab"|"setActive"|"updateTitle"|"closeTab");
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -1333,11 +1263,10 @@ export namespace cloudcli {
           addTab?: cloudcli.AddTab.$Shape|null;
           setActive?: cloudcli.SetActive.$Shape|null;
           updateTitle?: cloudcli.UpdateTitle.$Shape|null;
-          restartTab?: cloudcli.RestartTab.$Shape|null;
           closeTab?: cloudcli.CloseTab.$Shape|null;
           $unknowns?: Uint8Array[];
         } & (
-          ({ body?: undefined; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; restartTab?: null; closeTab?: null }|{ body?: "ping"; ping: cloudcli.Ping.$Shape; addTab?: null; setActive?: null; updateTitle?: null; restartTab?: null; closeTab?: null }|{ body?: "addTab"; ping?: null; addTab: cloudcli.AddTab.$Shape; setActive?: null; updateTitle?: null; restartTab?: null; closeTab?: null }|{ body?: "setActive"; ping?: null; addTab?: null; setActive: cloudcli.SetActive.$Shape; updateTitle?: null; restartTab?: null; closeTab?: null }|{ body?: "updateTitle"; ping?: null; addTab?: null; setActive?: null; updateTitle: cloudcli.UpdateTitle.$Shape; restartTab?: null; closeTab?: null }|{ body?: "restartTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; restartTab: cloudcli.RestartTab.$Shape; closeTab?: null }|{ body?: "closeTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; restartTab?: null; closeTab: cloudcli.CloseTab.$Shape })
+          ({ body?: undefined; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "ping"; ping: cloudcli.Ping.$Shape; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "addTab"; ping?: null; addTab: cloudcli.AddTab.$Shape; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "setActive"; ping?: null; addTab?: null; setActive: cloudcli.SetActive.$Shape; updateTitle?: null; closeTab?: null }|{ body?: "updateTitle"; ping?: null; addTab?: null; setActive?: null; updateTitle: cloudcli.UpdateTitle.$Shape; closeTab?: null }|{ body?: "closeTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab: cloudcli.CloseTab.$Shape })
         );
     }
 
@@ -1442,9 +1371,6 @@ export namespace cloudcli {
         /** TabsState activeId. */
         activeId: string;
 
-        /** TabsState nextIndex. */
-        nextIndex: number;
-
         /**
          * Encodes the specified TabsState message. Does not implicitly {@link cloudcli.TabsState.verify|verify} messages.
          * @param message TabsState message or plain object to encode
@@ -1481,9 +1407,6 @@ export namespace cloudcli {
 
             /** TabsState activeId */
             activeId?: (string|null);
-
-            /** TabsState nextIndex */
-            nextIndex?: (number|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];

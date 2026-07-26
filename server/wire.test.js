@@ -13,6 +13,8 @@ import {
 } from './wire.js';
 
 const { TerminalServerMessage, TerminalClientMessage, TabsClientMessage, TabsServerMessage } = cloudcli;
+const TERMINAL_ID = '11111111-1111-4111-8111-111111111111';
+const SECOND_TERMINAL_ID = '22222222-2222-4222-8222-222222222222';
 
 function decodeOutputFrame(frame) {
   const message = TerminalServerMessage.decode(frame);
@@ -83,11 +85,11 @@ test('empty terminal output is not framed or sent', () => {
 
 test('terminal client messages round-trip through protobuf', () => {
   const init = TerminalClientMessage.encode({
-    init: { sessionId: 'terminal-1', cols: 120, rows: 40, cwd: '/tmp', forceRestart: true, lastSeq: 9 },
+    init: { sessionId: TERMINAL_ID, cols: 120, rows: 40, cwd: '/tmp', forceRestart: true, lastSeq: 9 },
   }).finish();
   assert.deepEqual(decodeTerminalClientMessage(init), {
     type: 'init',
-    sessionId: 'terminal-1',
+    sessionId: TERMINAL_ID,
     cols: 120,
     rows: 40,
     cwd: '/tmp',
@@ -106,7 +108,7 @@ test('terminal ready frames carry replay reset metadata', () => {
   const frame = encodeTerminalServerMessage({
     type: 'ready',
     cwd: '/tmp/project',
-    sessionId: 'terminal-1',
+    sessionId: TERMINAL_ID,
     reset: true,
     gap: true,
     lastSeq: 21,
@@ -115,36 +117,37 @@ test('terminal ready frames carry replay reset metadata', () => {
 
   assert.equal(message.body, 'ready');
   assert.equal(message.ready.cwd, '/tmp/project');
-  assert.equal(message.ready.sessionId, 'terminal-1');
+  assert.equal(message.ready.sessionId, TERMINAL_ID);
   assert.equal(message.ready.reset, true);
   assert.equal(message.ready.gap, true);
   assert.equal(message.ready.lastSeq, 21);
 });
 
 test('tabs client hyphenated commands map back from protobuf oneof fields', () => {
-  const setActive = TabsClientMessage.encode({ setActive: { activeId: 'terminal-2' } }).finish();
-  assert.deepEqual(decodeTabsClientMessage(setActive), { type: 'set-active', activeId: 'terminal-2' });
+  const setActive = TabsClientMessage.encode({ setActive: { activeId: SECOND_TERMINAL_ID } }).finish();
+  assert.deepEqual(decodeTabsClientMessage(setActive), { type: 'set-active', activeId: SECOND_TERMINAL_ID });
 
-  const updateTitle = TabsClientMessage.encode({ updateTitle: { tabId: 'terminal-2', title: 'logs' } }).finish();
-  assert.deepEqual(decodeTabsClientMessage(updateTitle), { type: 'update-title', tabId: 'terminal-2', title: 'logs' });
+  const updateTitle = TabsClientMessage.encode({ updateTitle: { tabId: SECOND_TERMINAL_ID, title: 'logs' } }).finish();
+  assert.deepEqual(
+    decodeTabsClientMessage(updateTitle),
+    { type: 'update-title', tabId: SECOND_TERMINAL_ID, title: 'logs' },
+  );
 });
 
 test('tabs server state encodes to a decodable protobuf frame', () => {
   const frame = encodeTabsServerMessage({
     type: 'tabs',
     state: {
-      tabs: [{ id: 'terminal-1', title: '终端 1', status: 'connected' }],
-      activeId: 'terminal-1',
-      nextIndex: 2,
+      tabs: [{ id: TERMINAL_ID, title: '终端 1', status: 'connected' }],
+      activeId: TERMINAL_ID,
     },
   });
   const message = TabsServerMessage.decode(frame);
 
   assert.equal(message.body, 'tabs');
-  assert.equal(message.tabs.activeId, 'terminal-1');
-  assert.equal(message.tabs.nextIndex, 2);
+  assert.equal(message.tabs.activeId, TERMINAL_ID);
   assert.deepEqual(
     message.tabs.tabs.map((tab) => ({ id: tab.id, title: tab.title, status: tab.status })),
-    [{ id: 'terminal-1', title: '终端 1', status: 'connected' }],
+    [{ id: TERMINAL_ID, title: '终端 1', status: 'connected' }],
   );
 });

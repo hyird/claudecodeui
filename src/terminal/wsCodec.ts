@@ -28,7 +28,6 @@ export type TabsClientMessage =
   | { type: 'add-tab' }
   | { type: 'set-active'; activeId: string }
   | { type: 'update-title'; tabId: string; title: string }
-  | { type: 'restart-tab'; tabId: string }
   | { type: 'close-tab'; tabId: string };
 
 async function toBytes(raw: MessageEvent['data']): Promise<Uint8Array | null> {
@@ -144,8 +143,6 @@ export function encodeTabsClientMessage(message: TabsClientMessage): Uint8Array 
       return TabsClientMessage.encode({ setActive: { activeId: message.activeId } }).finish();
     case 'update-title':
       return TabsClientMessage.encode({ updateTitle: { tabId: message.tabId, title: message.title } }).finish();
-    case 'restart-tab':
-      return TabsClientMessage.encode({ restartTab: { tabId: message.tabId } }).finish();
     case 'close-tab':
       return TabsClientMessage.encode({ closeTab: { tabId: message.tabId } }).finish();
   }
@@ -180,7 +177,6 @@ export async function decodeTabsServerMessage(
             status: tab.status,
           })),
           activeId: state.activeId,
-          nextIndex: state.nextIndex,
         },
       } as TerminalTabsServerMessage;
     }

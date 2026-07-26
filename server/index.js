@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -49,7 +49,7 @@ const distDir = fs.existsSync(bundledDist) ? bundledDist : path.join(rootDir, 'd
 
 const PORT = Number(process.env.PORT || 3001);
 const SERVER_SNAPSHOT_SCROLLBACK = 1000;
-const SAFE_ID = /^[a-zA-Z0-9_.:-]+$/;
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SPINNER_TITLE_PREFIX = /^[\u2800-\u28ff]+[\s:·.-]*/u;
 const { Terminal: HeadlessTerminal } = headlessXterm;
 
@@ -189,9 +189,8 @@ onSessionInvalidated((tokenHash) => {
 });
 
 function createTab(index) {
-  const entropy = Math.random().toString(36).slice(2, 8);
   return {
-    id: `terminal-${Date.now()}-${index}-${entropy}`,
+    id: randomUUID(),
     title: `\u7ec8\u7aef ${index}`,
   };
 }
@@ -246,7 +245,6 @@ function serializeTabsState() {
       status: getTabStatus(tab.id),
     })),
     activeId: tabsState.activeId,
-    nextIndex: tabsState.nextIndex,
   };
 }
 
@@ -273,11 +271,10 @@ function addTab() {
   tabsState.activeId = tab.id;
   tabsState.nextIndex += 1;
   broadcastTabsState();
-  return serializeTabsState();
 }
 
 function setActiveTab(activeId) {
-  if (!SAFE_ID.test(activeId) || !tabsState.tabs.some((tab) => tab.id === activeId)) {
+  if (!UUID_V4_PATTERN.test(activeId) || !tabsState.tabs.some((tab) => tab.id === activeId)) {
     return false;
   }
 
@@ -287,7 +284,7 @@ function setActiveTab(activeId) {
 }
 
 function updateTabTitle(tabId, rawTitle) {
-  if (!SAFE_ID.test(tabId)) {
+  if (!UUID_V4_PATTERN.test(tabId)) {
     return false;
   }
 
@@ -310,7 +307,7 @@ function updateTabTitle(tabId, rawTitle) {
 }
 
 function removeTab(tabId) {
-  if (!SAFE_ID.test(tabId) || tabsState.tabs.length <= 1) {
+  if (!UUID_V4_PATTERN.test(tabId) || tabsState.tabs.length <= 1) {
     return false;
   }
 
@@ -327,29 +324,6 @@ function removeTab(tabId) {
   closeSession(tabId, false);
   broadcastTabsState();
   return true;
-}
-
-function restartTab(tabId) {
-  if (!SAFE_ID.test(tabId)) {
-    return false;
-  }
-
-  const tabIndex = tabsState.tabs.findIndex((tab) => tab.id === tabId);
-  if (tabIndex < 0) {
-    return false;
-  }
-
-  const oldTab = tabsState.tabs[tabIndex];
-  const replacement = {
-    ...createTab(tabsState.nextIndex),
-    title: oldTab.title,
-  };
-  tabsState.tabs[tabIndex] = replacement;
-  tabsState.activeId = replacement.id;
-  tabsState.nextIndex += 1;
-  closeSession(tabId, false);
-  broadcastTabsState();
-  return serializeTabsState();
 }
 
 function sendTabsError(ws, message) {
@@ -381,14 +355,6 @@ function handleTabsCommand(ws, message) {
     const tabId = readString(message.tabId);
     if (!tabId || !updateTabTitle(tabId, message.title)) {
       sendTabsError(ws, 'Invalid tab update');
-    }
-    return;
-  }
-
-  if (message?.type === 'restart-tab') {
-    const tabId = readString(message.tabId);
-    if (!tabId || !restartTab(tabId)) {
-      sendTabsError(ws, 'Invalid tab restart');
     }
     return;
   }
@@ -652,7 +618,7 @@ function closeSession(sessionId, broadcast = true) {
 
 function handleInit(ws, message) {
   const sessionId = readString(message.sessionId);
-  if (!sessionId || !SAFE_ID.test(sessionId)) {
+  if (!sessionId || !UUID_V4_PATTERN.test(sessionId)) {
     ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid session id' }));
     return null;
   }
@@ -811,61 +777,6 @@ app.get('/api/auth/user', requireAuth, (c) => c.json({
 app.post('/api/auth/logout', requireAuth, async (c) => {
   await logoutToken(c.get('authToken'));
   return c.json({ success: true, message: 'Logged out successfully' });
-});
-
-app.use('/api/terminal/*', requireAuth);
-
-app.get('/api/terminal/tabs', (c) => c.json({ ok: true, state: serializeTabsState() }));
-
-app.post('/api/terminal/tabs', (c) => c.json({ ok: true, state: addTab() }));
-
-app.post('/api/terminal/tabs/active', async (c) => {
-  const body = await readJsonBody(c);
-  const activeId = readString(body.activeId);
-  if (!activeId || !setActiveTab(activeId)) {
-    return c.json({ ok: false, error: 'Invalid active tab' }, 400);
-  }
-
-  return c.json({ ok: true, state: serializeTabsState() });
-});
-
-app.patch('/api/terminal/tabs/:sessionId', async (c) => {
-  const body = await readJsonBody(c);
-  const sessionId = readString(c.req.param('sessionId'));
-  if (!sessionId || !updateTabTitle(sessionId, body.title)) {
-    return c.json({ ok: false, error: 'Invalid tab update' }, 400);
-  }
-
-  return c.json({ ok: true, state: serializeTabsState() });
-});
-
-app.post('/api/terminal/tabs/:sessionId/restart', (c) => {
-  const sessionId = readString(c.req.param('sessionId'));
-  const state = restartTab(sessionId);
-  if (!state) {
-    return c.json({ ok: false, error: 'Invalid tab restart' }, 400);
-  }
-
-  return c.json({ ok: true, state });
-});
-
-app.delete('/api/terminal/tabs/:sessionId', (c) => {
-  const sessionId = readString(c.req.param('sessionId'));
-  if (!sessionId || !removeTab(sessionId)) {
-    return c.json({ ok: false, error: 'Invalid tab close' }, 400);
-  }
-
-  return c.json({ ok: true, state: serializeTabsState() });
-});
-
-app.post('/api/terminal/close', async (c) => {
-  const body = await readJsonBody(c);
-  const sessionId = readString(body.sessionId);
-  if (!sessionId || !SAFE_ID.test(sessionId)) {
-    return c.json({ ok: false, error: 'Invalid session id' }, 400);
-  }
-
-  return c.json({ ok: true, closed: closeSession(sessionId) });
 });
 
 // The built frontend is a handful of files that never change while the process is
