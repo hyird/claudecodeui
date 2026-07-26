@@ -17,8 +17,17 @@ type DecompressionStreamConstructor = new (
 const textDecoder = new TextDecoder();
 
 export type TerminalClientMessage =
-  | { type: 'init'; sessionId: string; cols: number; rows: number; cwd?: string; forceRestart?: boolean; lastSeq?: number }
-  | { type: 'input'; data: string }
+  | {
+      type: 'init';
+      sessionId: string;
+      cols: number;
+      rows: number;
+      inputStreamId: string;
+      cwd?: string;
+      forceRestart?: boolean;
+      lastSeq?: number;
+    }
+  | { type: 'input'; data: string; inputSeq: number }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'close' }
   | { type: 'ping' };
@@ -72,10 +81,16 @@ export function encodeTerminalClientMessage(message: TerminalClientMessage): Uin
           cwd: message.cwd ?? '',
           forceRestart: message.forceRestart ?? false,
           lastSeq: message.lastSeq ?? 0,
+          inputStreamId: message.inputStreamId,
         },
       }).finish();
     case 'input':
-      return TerminalClientMessage.encode({ input: { data: message.data } }).finish();
+      return TerminalClientMessage.encode({
+        input: {
+          data: message.data,
+          inputSeq: message.inputSeq,
+        },
+      }).finish();
     case 'resize':
       return TerminalClientMessage.encode({ resize: { cols: message.cols, rows: message.rows } }).finish();
     case 'close':
@@ -127,6 +142,8 @@ export async function decodeTerminalServerMessage(
       return { type: 'error', message: message.error!.message, seq: message.seq };
     case 'pong':
       return { type: 'pong', seq: message.seq };
+    case 'inputAck':
+      return { type: 'input-ack', inputSeq: message.inputAck!.inputSeq };
     default:
       return null;
   }

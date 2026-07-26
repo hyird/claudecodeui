@@ -43,10 +43,15 @@ export function decodeTerminalClientMessage(raw) {
         cwd: init.cwd,
         forceRestart: init.forceRestart,
         lastSeq: init.lastSeq,
+        inputStreamId: init.inputStreamId,
       };
     }
     case 'input':
-      return { type: 'input', data: message.input.data };
+      return {
+        type: 'input',
+        data: message.input.data,
+        inputSeq: message.input.inputSeq,
+      };
     case 'resize':
       return { type: 'resize', cols: message.resize.cols, rows: message.resize.rows };
     case 'close':
@@ -86,6 +91,9 @@ export function encodeTerminalServerMessage(message) {
       break;
     case 'pong':
       payload = { pong: {} };
+      break;
+    case 'input-ack':
+      payload = { inputAck: { inputSeq: message.inputSeq ?? 0 } };
       break;
     default:
       throw new Error(`Unknown terminal server message: ${message.type}`);

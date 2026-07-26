@@ -387,6 +387,7 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {string|null} [cwd] TerminalInit cwd
          * @property {boolean|null} [forceRestart] TerminalInit forceRestart
          * @property {number|null} [lastSeq] TerminalInit lastSeq
+         * @property {string|null} [inputStreamId] TerminalInit inputStreamId
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -467,6 +468,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalInit.prototype.lastSeq = 0;
 
         /**
+         * TerminalInit inputStreamId.
+         * @member {string} inputStreamId
+         * @memberof cloudcli.TerminalInit
+         * @instance
+         */
+        TerminalInit.prototype.inputStreamId = "";
+
+        /**
          * Encodes the specified TerminalInit message. Does not implicitly {@link cloudcli.TerminalInit.verify|verify} messages.
          * @function encode
          * @memberof cloudcli.TerminalInit
@@ -494,6 +503,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 writer.uint32(/* id 5, wireType 0 =*/40).bool(message.forceRestart);
             if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq") && message.lastSeq !== 0)
                 writer.uint32(/* id 6, wireType 0 =*/48).uint32(message.lastSeq);
+            if (message.inputStreamId != null && $Object.hasOwnProperty.call(message, "inputStreamId") && message.inputStreamId !== "")
+                writer.uint32(/* id 7, wireType 2 =*/58).string(message.inputStreamId);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -582,6 +593,15 @@ export const cloudcli = $root.cloudcli = (() => {
                             delete message.lastSeq;
                         continue;
                     }
+                case 7: {
+                        if (wireType !== 2)
+                            break;
+                        if ((value = reader.stringVerify()).length)
+                            message.inputStreamId = value;
+                        else
+                            delete message.inputStreamId;
+                        continue;
+                    }
                 }
                 reader.skipType(wireType, _depth, tag);
                 if (!reader.discardUnknown) {
@@ -617,6 +637,7 @@ export const cloudcli = $root.cloudcli = (() => {
          * Properties of a TerminalInput.
          * @typedef {Object} cloudcli.TerminalInput.$Properties
          * @property {string|null} [data] TerminalInput data
+         * @property {number|null} [inputSeq] TerminalInput inputSeq
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -657,6 +678,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalInput.prototype.data = "";
 
         /**
+         * TerminalInput inputSeq.
+         * @member {number} inputSeq
+         * @memberof cloudcli.TerminalInput
+         * @instance
+         */
+        TerminalInput.prototype.inputSeq = 0;
+
+        /**
          * Encodes the specified TerminalInput message. Does not implicitly {@link cloudcli.TerminalInput.verify|verify} messages.
          * @function encode
          * @memberof cloudcli.TerminalInput
@@ -674,6 +703,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 throw $Error("max depth exceeded");
             if (message.data != null && $Object.hasOwnProperty.call(message, "data") && message.data !== "")
                 writer.uint32(/* id 1, wireType 2 =*/10).string(message.data);
+            if (message.inputSeq != null && $Object.hasOwnProperty.call(message, "inputSeq") && message.inputSeq !== 0)
+                writer.uint32(/* id 2, wireType 0 =*/16).uint32(message.inputSeq);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -715,6 +746,15 @@ export const cloudcli = $root.cloudcli = (() => {
                             message.data = value;
                         else
                             delete message.data;
+                        continue;
+                    }
+                case 2: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.inputSeq = value;
+                        else
+                            delete message.inputSeq;
                         continue;
                     }
                 }
@@ -1767,6 +1807,141 @@ export const cloudcli = $root.cloudcli = (() => {
         return TerminalExit;
     })();
 
+    cloudcli.TerminalInputAck = (function() {
+
+        /**
+         * Properties of a TerminalInputAck.
+         * @typedef {Object} cloudcli.TerminalInputAck.$Properties
+         * @property {number|null} [inputSeq] TerminalInputAck inputSeq
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+
+        /**
+         * Properties of a TerminalInputAck.
+         * @memberof cloudcli
+         * @interface ITerminalInputAck
+         * @augments cloudcli.TerminalInputAck.$Properties
+         * @deprecated Use cloudcli.TerminalInputAck.$Properties instead.
+         */
+
+        /**
+         * Shape of a TerminalInputAck.
+         * @typedef {cloudcli.TerminalInputAck.$Properties} cloudcli.TerminalInputAck.$Shape
+         */
+
+        /**
+         * Constructs a new TerminalInputAck.
+         * @memberof cloudcli
+         * @classdesc Represents a TerminalInputAck.
+         * @constructor
+         * @param {cloudcli.TerminalInputAck.$Properties=} [properties] Properties to set
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+        const TerminalInputAck = function (properties) {
+            if (properties)
+                for (let keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                    if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                        this[keys[i]] = properties[keys[i]];
+        };
+
+        /**
+         * TerminalInputAck inputSeq.
+         * @member {number} inputSeq
+         * @memberof cloudcli.TerminalInputAck
+         * @instance
+         */
+        TerminalInputAck.prototype.inputSeq = 0;
+
+        /**
+         * Encodes the specified TerminalInputAck message. Does not implicitly {@link cloudcli.TerminalInputAck.verify|verify} messages.
+         * @function encode
+         * @memberof cloudcli.TerminalInputAck
+         * @static
+         * @param {cloudcli.TerminalInputAck.$Properties} message TerminalInputAck message or plain object to encode
+         * @param {$protobuf.Writer} [writer] Writer to encode to
+         * @returns {$protobuf.Writer} Writer
+         */
+        TerminalInputAck.encode = function (message, writer, _depth) {
+            if (!writer)
+                writer = $Writer.create();
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $util.recursionLimit)
+                throw $Error("max depth exceeded");
+            if (message.inputSeq != null && $Object.hasOwnProperty.call(message, "inputSeq") && message.inputSeq !== 0)
+                writer.uint32(/* id 1, wireType 0 =*/8).uint32(message.inputSeq);
+            if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                for (let i = 0; i < message.$unknowns.length; ++i)
+                    writer.raw(message.$unknowns[i]);
+            return writer;
+        };
+
+        /**
+         * Decodes a TerminalInputAck message from the specified reader or buffer.
+         * @function decode
+         * @memberof cloudcli.TerminalInputAck
+         * @static
+         * @param {$protobuf.Reader|Uint8Array} reader Reader or buffer to decode from
+         * @param {number} [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalInputAck & cloudcli.TerminalInputAck.$Shape} TerminalInputAck
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        TerminalInputAck.decode = function (reader, length, _end, _depth, _target) {
+            if (!(reader instanceof $Reader))
+                reader = $Reader.create(reader);
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $Reader.recursionLimit)
+                throw $Error("max depth exceeded");
+            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.TerminalInputAck(), value;
+            while (reader.pos < end) {
+                let start = reader.pos;
+                let tag = reader.tag();
+                if (tag === _end) {
+                    _end = $undefined;
+                    break;
+                }
+                let wireType = tag & 7;
+                switch (tag >>>= 3) {
+                case 1: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.inputSeq = value;
+                        else
+                            delete message.inputSeq;
+                        continue;
+                    }
+                }
+                reader.skipType(wireType, _depth, tag);
+                if (!reader.discardUnknown) {
+                    $util.makeProp(message, "$unknowns", false);
+                    (message.$unknowns || (message.$unknowns = [])).push(reader.raw(start, reader.pos));
+                }
+            }
+            if (_end !== $undefined)
+                throw $Error("missing end group");
+            return message;
+        };
+
+        /**
+         * Gets the type url for TerminalInputAck
+         * @function getTypeUrl
+         * @memberof cloudcli.TerminalInputAck
+         * @static
+         * @param {string} [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns {string} The type url
+         */
+        TerminalInputAck.getTypeUrl = function(prefix) {
+            if (prefix === $undefined)
+                prefix = "type.googleapis.com";
+            return prefix + "/cloudcli.TerminalInputAck";
+        };
+
+        return TerminalInputAck;
+    })();
+
     cloudcli.TerminalServerMessage = (function() {
 
         /**
@@ -1777,8 +1952,9 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {cloudcli.TerminalExit.$Properties|null} [exit] TerminalServerMessage exit
          * @property {cloudcli.ErrorMessage.$Properties|null} [error] TerminalServerMessage error
          * @property {cloudcli.Pong.$Properties|null} [pong] TerminalServerMessage pong
+         * @property {cloudcli.TerminalInputAck.$Properties|null} [inputAck] TerminalServerMessage inputAck
          * @property {number|null} [seq] TerminalServerMessage seq
-         * @property {"ready"|"output"|"exit"|"error"|"pong"} [body] TerminalServerMessage body
+         * @property {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"} [body] TerminalServerMessage body
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -1798,10 +1974,11 @@ export const cloudcli = $root.cloudcli = (() => {
          *   exit?: cloudcli.TerminalExit.$Shape|null;
          *   error?: cloudcli.ErrorMessage.$Shape|null;
          *   pong?: cloudcli.Pong.$Shape|null;
+         *   inputAck?: cloudcli.TerminalInputAck.$Shape|null;
          *   seq?: number|null;
          *   $unknowns?: Array.<Uint8Array>;
          * } & (
-         *   ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape })
+         *   ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape })
          * )} cloudcli.TerminalServerMessage.$Shape
          */
 
@@ -1861,6 +2038,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalServerMessage.prototype.pong = null;
 
         /**
+         * TerminalServerMessage inputAck.
+         * @member {cloudcli.TerminalInputAck.$Properties|null|undefined} inputAck
+         * @memberof cloudcli.TerminalServerMessage
+         * @instance
+         */
+        TerminalServerMessage.prototype.inputAck = null;
+
+        /**
          * TerminalServerMessage seq.
          * @member {number} seq
          * @memberof cloudcli.TerminalServerMessage
@@ -1873,12 +2058,12 @@ export const cloudcli = $root.cloudcli = (() => {
 
         /**
          * TerminalServerMessage body.
-         * @member {"ready"|"output"|"exit"|"error"|"pong"|undefined} body
+         * @member {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"|undefined} body
          * @memberof cloudcli.TerminalServerMessage
          * @instance
          */
         $Object.defineProperty(TerminalServerMessage.prototype, "body", {
-            get: $util.oneOfGetter($oneOfFields = ["ready", "output", "exit", "error", "pong"]),
+            get: $util.oneOfGetter($oneOfFields = ["ready", "output", "exit", "error", "pong", "inputAck"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -1908,6 +2093,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 $root.cloudcli.ErrorMessage.encode(message.error, writer.uint32(/* id 4, wireType 2 =*/34).fork(), _depth + 1).ldelim();
             if (message.pong != null && $Object.hasOwnProperty.call(message, "pong"))
                 $root.cloudcli.Pong.encode(message.pong, writer.uint32(/* id 5, wireType 2 =*/42).fork(), _depth + 1).ldelim();
+            if (message.inputAck != null && $Object.hasOwnProperty.call(message, "inputAck"))
+                $root.cloudcli.TerminalInputAck.encode(message.inputAck, writer.uint32(/* id 6, wireType 2 =*/50).fork(), _depth + 1).ldelim();
             if (message.seq != null && $Object.hasOwnProperty.call(message, "seq") && message.seq !== 0)
                 writer.uint32(/* id 100, wireType 0 =*/800).uint32(message.seq);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
@@ -1977,6 +2164,13 @@ export const cloudcli = $root.cloudcli = (() => {
                             break;
                         message.pong = $root.cloudcli.Pong.decode(reader, reader.uint32(), $undefined, _depth + 1, message.pong);
                         message.body = "pong";
+                        continue;
+                    }
+                case 6: {
+                        if (wireType !== 2)
+                            break;
+                        message.inputAck = $root.cloudcli.TerminalInputAck.decode(reader, reader.uint32(), $undefined, _depth + 1, message.inputAck);
+                        message.body = "inputAck";
                         continue;
                     }
                 case 100: {

@@ -10,7 +10,9 @@ test('terminal attach replays a serialized screen snapshot instead of raw PTY hi
   assert.match(source, /terminalSnapshot/);
   assert.match(source, /session\.terminal\.write\(chunk,/);
   assert.match(source, /session\.serializer\.serialize\(\)/);
-  assert.match(source, /sendTerminalOutput\(ws,\s*terminalSnapshot\)/);
+  assert.match(source, /sendTerminalSnapshot\(ws,\s*terminalSnapshot\)/);
+  assert.match(source, /function sendTerminalSnapshot\(ws, snapshot\)/);
+  assert.match(source, /forEachTerminalOutputFrame\(snapshot,/);
   assert.equal(source.includes("session.buffer.join('')"), false);
   assert.equal(source.includes('for (const chunk of session.buffer)'), false);
 });

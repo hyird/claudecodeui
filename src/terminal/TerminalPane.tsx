@@ -49,6 +49,55 @@ const TERMINAL_RESUME_PONG_TIMEOUT_MS = 2500;
 // for a dead connection and does not trigger a needless reconnect.
 const TERMINAL_HEARTBEAT_INTERVAL_MS = 20000;
 const TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS = 8000;
+const TERMINAL_INPUT_MAX_FRAME_BYTES = 4 * 1024;
+
+type ReliableTerminalInputState = {
+  streamId: string;
+  nextSeq: number;
+  pending: Map<number, string>;
+};
+
+const terminalInputEncoder = new TextEncoder();
+const terminalInputDecoder = new TextDecoder();
+const terminalInputStates = new Map<string, ReliableTerminalInputState>();
+
+export function discardTerminalInputState(tabId: string) {
+  terminalInputStates.delete(tabId);
+}
+
+export function clearTerminalInputStates() {
+  terminalInputStates.clear();
+}
+
+function getTerminalInputState(tabId: string) {
+  let state = terminalInputStates.get(tabId);
+  if (!state) {
+    state = {
+      streamId: crypto.randomUUID(),
+      nextSeq: 1,
+      pending: new Map(),
+    };
+    terminalInputStates.set(tabId, state);
+  }
+  return state;
+}
+
+function splitTerminalInput(data: string) {
+  const bytes = terminalInputEncoder.encode(data);
+  const frames: string[] = [];
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    let end = Math.min(offset + TERMINAL_INPUT_MAX_FRAME_BYTES, bytes.length);
+    while (end < bytes.length && end > offset && (bytes[end] & 0xc0) === 0x80) {
+      end -= 1;
+    }
+    frames.push(terminalInputDecoder.decode(bytes.subarray(offset, end)));
+    offset = end;
+  }
+
+  return frames;
+}
 
 function createTerminalSocket(authToken: string) {
   return openAuthenticatedSocket('/terminal', authToken);
@@ -85,6 +134,8 @@ export default function TerminalPane({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const terminalReadyRef = useRef(false);
+  const inputStateRef = useRef(getTerminalInputState(tab.id));
   const activeRef = useRef(active);
   const resizeTimersRef = useRef<number[]>([]);
   const resizeFrameRef = useRef(0);
@@ -216,9 +267,30 @@ export default function TerminalPane({
   }, [proposeFrameDimensions]);
 
   const sendInput = useCallback((data: string) => {
+    if (!data) {
+      return;
+    }
+
+    const inputState = inputStateRef.current;
     const socket = socketRef.current;
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(encodeTerminalClientMessage({ type: 'input', data }));
+    let canSend = terminalReadyRef.current && socket?.readyState === WebSocket.OPEN;
+
+    for (const frame of splitTerminalInput(data)) {
+      const inputSeq = inputState.nextSeq;
+      inputState.nextSeq += 1;
+      inputState.pending.set(inputSeq, frame);
+
+      if (!canSend || !socket) {
+        continue;
+      }
+
+      try {
+        socket.send(encodeTerminalClientMessage({ type: 'input', data: frame, inputSeq }));
+      } catch {
+        terminalReadyRef.current = false;
+        canSend = false;
+        socket.close();
+      }
     }
   }, []);
 
@@ -433,6 +505,20 @@ export default function TerminalPane({
           terminal.writeln(`\x1b[36mSession ${message.sessionId}\x1b[0m`);
           terminal.writeln(`\x1b[90m${message.cwd}\x1b[0m\r\n`);
         }
+        terminalReadyRef.current = true;
+        for (const [inputSeq, data] of inputStateRef.current.pending) {
+          if (socketRef.current !== socket || socket.readyState !== WebSocket.OPEN) {
+            terminalReadyRef.current = false;
+            break;
+          }
+          try {
+            socket.send(encodeTerminalClientMessage({ type: 'input', data, inputSeq }));
+          } catch {
+            terminalReadyRef.current = false;
+            socket.close();
+            break;
+          }
+        }
         onStatusChange(tab.id, 'connected');
         updateScrollbackAffordance();
         resizeAfterLayoutSettles();
@@ -458,6 +544,15 @@ export default function TerminalPane({
 
       if (message.type === 'pong') {
         clearPongTimer();
+        return;
+      }
+
+      if (message.type === 'input-ack' && typeof message.inputSeq === 'number') {
+        for (const inputSeq of inputStateRef.current.pending.keys()) {
+          if (inputSeq <= message.inputSeq) {
+            inputStateRef.current.pending.delete(inputSeq);
+          }
+        }
         return;
       }
     };
@@ -555,6 +650,7 @@ export default function TerminalPane({
 
       clearReconnectTimer();
       clearPongTimer();
+      terminalReadyRef.current = false;
 
       const socket = createTerminalSocket(authToken);
       socket.binaryType = 'arraybuffer';
@@ -583,6 +679,7 @@ export default function TerminalPane({
           cols: terminal.cols,
           rows: terminal.rows,
           lastSeq: lastAppliedTerminalSeq,
+          inputStreamId: inputStateRef.current.streamId,
         }));
         resizeAfterLayoutSettles();
       });
@@ -600,6 +697,7 @@ export default function TerminalPane({
       socket.addEventListener('close', () => {
         if (socketRef.current === socket) {
           socketRef.current = null;
+          terminalReadyRef.current = false;
           clearPongTimer();
           clearTerminalResyncTimer();
           scheduleReconnect();
@@ -608,6 +706,7 @@ export default function TerminalPane({
 
       socket.addEventListener('error', () => {
         if (socketRef.current === socket) {
+          terminalReadyRef.current = false;
           onStatusChange(tab.id, 'error');
           socket.close();
           scheduleReconnect();
@@ -698,6 +797,7 @@ export default function TerminalPane({
 
     return () => {
       disposed = true;
+      terminalReadyRef.current = false;
       clearResizeTimers();
       clearReconnectTimer();
       clearPongTimer();

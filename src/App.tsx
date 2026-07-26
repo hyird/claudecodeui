@@ -3,7 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AuthGate } from './auth';
 import type { AuthUser } from './auth';
-import TerminalPane from './terminal/TerminalPane';
+import TerminalPane, {
+  clearTerminalInputStates,
+  discardTerminalInputState,
+} from './terminal/TerminalPane';
 import type {
   TerminalPreferences,
   TerminalStatus,
@@ -152,6 +155,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
     titleSyncTimersRef.current = {};
     pendingTitlesRef.current = {};
     pendingTabsCommandsRef.current = [];
+    clearTerminalInputStates();
   }, []);
 
   const applyTabsState = useCallback((state: TerminalTabsState) => {
@@ -318,6 +322,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       return;
     }
 
+    discardTerminalInputState(tabId);
     sendTabsCommand({ type: 'close-tab', tabId });
   }, [sendTabsCommand, tabs.length]);
 

@@ -423,17 +423,36 @@ function writeTerminalSnapshot(session, chunk) {
   });
 }
 
-// bun-pty hands over the PTY read buffer in 4 KB chunks and drains many of them in a
-// single event-loop turn (~166 per turn while `cat`-ing a large file). Emitting each one
-// as its own event costs a protobuf encode, a deflate and a websocket write apiece, and
-// leaves deflate almost nothing to find. Coalescing per microtask makes that cost scale
-// with event-loop turns instead of with read() calls, and adds no latency: microtasks run
-// before the next macrotask, so an echoed keystroke still leaves in the turn it arrived.
-// The byte cap bounds how large a single coalesced frame can grow.
-const TERMINAL_OUTPUT_FLUSH_BYTES = 128 * 1024;
+// Keep each decoded terminal frame small enough for xterm to parse without monopolizing
+// the browser thread. A busy PTY reaches the byte cap and sends immediately; light output
+// such as an echoed key is forced out within 20 ms.
+const TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 * 1024;
+const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 20;
+
+function forEachTerminalOutputFrame(chunk, callback) {
+  const bytes = Buffer.from(chunk);
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    let end = Math.min(offset + TERMINAL_OUTPUT_MAX_FRAME_BYTES, bytes.length);
+    while (end < bytes.length && end > offset && (bytes[end] & 0xc0) === 0x80) {
+      end -= 1;
+    }
+
+    callback(bytes.toString('utf8', offset, end), end - offset);
+    offset = end;
+  }
+}
+
+function clearTerminalOutputFlushTimer(session) {
+  if (session.outputFlushTimer !== null) {
+    clearTimeout(session.outputFlushTimer);
+    session.outputFlushTimer = null;
+  }
+}
 
 function flushTerminalOutput(session) {
-  session.outputFlushScheduled = false;
+  clearTerminalOutputFlushTimer(session);
   if (session.pendingOutput.length === 0) {
     return;
   }
@@ -448,19 +467,40 @@ function flushTerminalOutput(session) {
   recordAndSendTerminalEvent(session, { type: 'output', data: chunk });
 }
 
-function queueTerminalOutput(session, chunk) {
-  session.pendingOutput.push(chunk);
-  session.pendingOutputBytes += chunk.length;
+function queueTerminalOutputPiece(session, chunk, chunkBytes) {
+  if (
+    session.pendingOutputBytes > 0
+    && session.pendingOutputBytes + chunkBytes > TERMINAL_OUTPUT_MAX_FRAME_BYTES
+  ) {
+    flushTerminalOutput(session);
+  }
 
-  if (session.pendingOutputBytes >= TERMINAL_OUTPUT_FLUSH_BYTES) {
+  session.pendingOutput.push(chunk);
+  session.pendingOutputBytes += chunkBytes;
+
+  if (session.pendingOutputBytes >= TERMINAL_OUTPUT_MAX_FRAME_BYTES) {
     flushTerminalOutput(session);
     return;
   }
 
-  if (!session.outputFlushScheduled) {
-    session.outputFlushScheduled = true;
-    queueMicrotask(() => flushTerminalOutput(session));
+  if (session.outputFlushTimer === null) {
+    session.outputFlushTimer = setTimeout(
+      () => flushTerminalOutput(session),
+      TERMINAL_OUTPUT_FLUSH_INTERVAL_MS,
+    );
   }
+}
+
+function queueTerminalOutput(session, chunk) {
+  forEachTerminalOutputFrame(chunk, (frame, frameBytes) => {
+    queueTerminalOutputPiece(session, frame, frameBytes);
+  });
+}
+
+function sendTerminalSnapshot(ws, snapshot) {
+  forEachTerminalOutputFrame(snapshot, (frame) => {
+    sendTerminalOutput(ws, frame);
+  });
 }
 
 function readTerminalSnapshot(session) {
@@ -528,10 +568,11 @@ function createSession(sessionId, options) {
     snapshotDirty: false,
     socket: null,
     terminalEvents: createTerminalEventLog(),
+    inputStreams: new Map(),
     closed: false,
     pendingOutput: [],
     pendingOutputBytes: 0,
-    outputFlushScheduled: false,
+    outputFlushTimer: null,
   };
 
   shellProcess.onData((chunk) => {
@@ -583,7 +624,7 @@ function attachSocket(ws, session, lastSeq = 0) {
   } else {
     const terminalSnapshot = readTerminalSnapshot(session);
     if (terminalSnapshot) {
-      sendTerminalOutput(ws, terminalSnapshot);
+      sendTerminalSnapshot(ws, terminalSnapshot);
     }
   }
   broadcastTabsState();
@@ -604,6 +645,7 @@ function closeSession(sessionId, broadcast = true) {
 
   // The session is going away and its socket with it, so buffered output has nowhere
   // left to land — drop it instead of letting a queued flush revive a dead session.
+  clearTerminalOutputFlushTimer(session);
   session.pendingOutput.length = 0;
   session.pendingOutputBytes = 0;
   session.socket?.close(1000, 'Terminal closed');
@@ -620,6 +662,11 @@ function handleInit(ws, message) {
   const sessionId = readString(message.sessionId);
   if (!sessionId || !UUID_V4_PATTERN.test(sessionId)) {
     ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid session id' }));
+    return null;
+  }
+  const inputStreamId = readString(message.inputStreamId);
+  if (!inputStreamId || !UUID_V4_PATTERN.test(inputStreamId)) {
+    ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid input stream id' }));
     return null;
   }
 
@@ -639,6 +686,10 @@ function handleInit(ws, message) {
   });
 
   resizeSession(session, cols, rows);
+  if (!session.inputStreams.has(inputStreamId)) {
+    session.inputStreams.set(inputStreamId, 0);
+  }
+  ws.data.inputStreamId = inputStreamId;
   attachSocket(ws, session, lastSeq);
   return session;
 }
@@ -667,7 +718,28 @@ function handleTerminalMessage(ws, raw) {
   }
 
   if (message.type === 'input') {
+    const inputStreamId = readString(ws.data.inputStreamId);
+    const inputSeq = readNumber(message.inputSeq, 0);
+    const lastInputSeq = activeSession.inputStreams.get(inputStreamId);
+    if (!inputStreamId || lastInputSeq === undefined || inputSeq <= 0) {
+      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid terminal input' }));
+      return;
+    }
+
+    if (inputSeq <= lastInputSeq) {
+      ws.send(encodeTerminalServerMessage({ type: 'input-ack', inputSeq: lastInputSeq }));
+      return;
+    }
+
+    if (inputSeq !== lastInputSeq + 1) {
+      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal input sequence gap' }));
+      ws.close(1011, 'Terminal input sequence gap');
+      return;
+    }
+
     activeSession.pty.write(readString(message.data));
+    activeSession.inputStreams.set(inputStreamId, inputSeq);
+    ws.send(encodeTerminalServerMessage({ type: 'input-ack', inputSeq }));
     return;
   }
 

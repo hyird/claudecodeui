@@ -15,6 +15,7 @@ import {
 const { TerminalServerMessage, TerminalClientMessage, TabsClientMessage, TabsServerMessage } = cloudcli;
 const TERMINAL_ID = '11111111-1111-4111-8111-111111111111';
 const SECOND_TERMINAL_ID = '22222222-2222-4222-8222-222222222222';
+const INPUT_STREAM_ID = '33333333-3333-4333-8333-333333333333';
 
 function decodeOutputFrame(frame) {
   const message = TerminalServerMessage.decode(frame);
@@ -85,7 +86,15 @@ test('empty terminal output is not framed or sent', () => {
 
 test('terminal client messages round-trip through protobuf', () => {
   const init = TerminalClientMessage.encode({
-    init: { sessionId: TERMINAL_ID, cols: 120, rows: 40, cwd: '/tmp', forceRestart: true, lastSeq: 9 },
+    init: {
+      sessionId: TERMINAL_ID,
+      cols: 120,
+      rows: 40,
+      cwd: '/tmp',
+      forceRestart: true,
+      lastSeq: 9,
+      inputStreamId: INPUT_STREAM_ID,
+    },
   }).finish();
   assert.deepEqual(decodeTerminalClientMessage(init), {
     type: 'init',
@@ -95,10 +104,11 @@ test('terminal client messages round-trip through protobuf', () => {
     cwd: '/tmp',
     forceRestart: true,
     lastSeq: 9,
+    inputStreamId: INPUT_STREAM_ID,
   });
 
-  const input = TerminalClientMessage.encode({ input: { data: 'ls\r' } }).finish();
-  assert.deepEqual(decodeTerminalClientMessage(input), { type: 'input', data: 'ls\r' });
+  const input = TerminalClientMessage.encode({ input: { data: 'ls\r', inputSeq: 7 } }).finish();
+  assert.deepEqual(decodeTerminalClientMessage(input), { type: 'input', data: 'ls\r', inputSeq: 7 });
 
   const resize = TerminalClientMessage.encode({ resize: { cols: 80, rows: 24 } }).finish();
   assert.deepEqual(decodeTerminalClientMessage(resize), { type: 'resize', cols: 80, rows: 24 });
@@ -121,6 +131,14 @@ test('terminal ready frames carry replay reset metadata', () => {
   assert.equal(message.ready.reset, true);
   assert.equal(message.ready.gap, true);
   assert.equal(message.ready.lastSeq, 21);
+});
+
+test('terminal input acknowledgements carry the cumulative input sequence', () => {
+  const frame = encodeTerminalServerMessage({ type: 'input-ack', inputSeq: 17 });
+  const message = TerminalServerMessage.decode(frame);
+
+  assert.equal(message.body, 'inputAck');
+  assert.equal(message.inputAck.inputSeq, 17);
 });
 
 test('tabs client hyphenated commands map back from protobuf oneof fields', () => {

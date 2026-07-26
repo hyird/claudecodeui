@@ -221,6 +221,9 @@ export namespace cloudcli {
         /** TerminalInit lastSeq. */
         lastSeq: number;
 
+        /** TerminalInit inputStreamId. */
+        inputStreamId: string;
+
         /**
          * Encodes the specified TerminalInit message. Does not implicitly {@link cloudcli.TerminalInit.verify|verify} messages.
          * @param message TerminalInit message or plain object to encode
@@ -270,6 +273,9 @@ export namespace cloudcli {
             /** TerminalInit lastSeq */
             lastSeq?: (number|null);
 
+            /** TerminalInit inputStreamId */
+            inputStreamId?: (string|null);
+
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
         }
@@ -299,6 +305,9 @@ export namespace cloudcli {
 
         /** TerminalInput data. */
         data: string;
+
+        /** TerminalInput inputSeq. */
+        inputSeq: number;
 
         /**
          * Encodes the specified TerminalInput message. Does not implicitly {@link cloudcli.TerminalInput.verify|verify} messages.
@@ -333,6 +342,9 @@ export namespace cloudcli {
 
             /** TerminalInput data */
             data?: (string|null);
+
+            /** TerminalInput inputSeq */
+            inputSeq?: (number|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -802,6 +814,70 @@ export namespace cloudcli {
     }
 
     /**
+     * Properties of a TerminalInputAck.
+     * @deprecated Use cloudcli.TerminalInputAck.$Properties instead.
+     */
+    interface ITerminalInputAck extends cloudcli.TerminalInputAck.$Properties {
+    }
+
+    /** Represents a TerminalInputAck. */
+    class TerminalInputAck {
+
+        /**
+         * Constructs a new TerminalInputAck.
+         * @param [properties] Properties to set
+         */
+        constructor(properties?: cloudcli.TerminalInputAck.$Properties);
+
+        /** Unknown fields preserved while decoding when enabled */
+        $unknowns?: Uint8Array[];
+
+        /** TerminalInputAck inputSeq. */
+        inputSeq: number;
+
+        /**
+         * Encodes the specified TerminalInputAck message. Does not implicitly {@link cloudcli.TerminalInputAck.verify|verify} messages.
+         * @param message TerminalInputAck message or plain object to encode
+         * @param [writer] Writer to encode to
+         * @returns Writer
+         */
+        static encode(message: cloudcli.TerminalInputAck.$Properties, writer?: $protobuf.Writer): $protobuf.Writer;
+
+        /**
+         * Decodes a TerminalInputAck message from the specified reader or buffer.
+         * @param reader Reader or buffer to decode from
+         * @param [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalInputAck & cloudcli.TerminalInputAck.$Shape} TerminalInputAck
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        static decode(reader: ($protobuf.Reader|Uint8Array), length?: number): cloudcli.TerminalInputAck & cloudcli.TerminalInputAck.$Shape;
+
+        /**
+         * Gets the type url for TerminalInputAck
+         * @param [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns The type url
+         */
+        static getTypeUrl(prefix?: string): string;
+    }
+
+    namespace TerminalInputAck {
+
+        /** Properties of a TerminalInputAck. */
+        interface $Properties {
+
+            /** TerminalInputAck inputSeq */
+            inputSeq?: (number|null);
+
+            /** Unknown fields preserved while decoding when enabled */
+            $unknowns?: Uint8Array[];
+        }
+
+        /** Shape of a TerminalInputAck. */
+        type $Shape = cloudcli.TerminalInputAck.$Properties;
+    }
+
+    /**
      * Properties of a TerminalServerMessage.
      * @deprecated Use cloudcli.TerminalServerMessage.$Properties instead.
      */
@@ -835,11 +911,14 @@ export namespace cloudcli {
         /** TerminalServerMessage pong. */
         pong?: (cloudcli.Pong.$Properties|null);
 
+        /** TerminalServerMessage inputAck. */
+        inputAck?: (cloudcli.TerminalInputAck.$Properties|null);
+
         /** TerminalServerMessage seq. */
         seq: number;
 
         /** TerminalServerMessage body. */
-        body?: ("ready"|"output"|"exit"|"error"|"pong");
+        body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck");
 
         /**
          * Encodes the specified TerminalServerMessage message. Does not implicitly {@link cloudcli.TerminalServerMessage.verify|verify} messages.
@@ -887,11 +966,14 @@ export namespace cloudcli {
             /** TerminalServerMessage pong */
             pong?: (cloudcli.Pong.$Properties|null);
 
+            /** TerminalServerMessage inputAck */
+            inputAck?: (cloudcli.TerminalInputAck.$Properties|null);
+
             /** TerminalServerMessage seq */
             seq?: (number|null);
 
             /** TerminalServerMessage body */
-            body?: ("ready"|"output"|"exit"|"error"|"pong");
+            body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck");
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -904,10 +986,11 @@ export namespace cloudcli {
           exit?: cloudcli.TerminalExit.$Shape|null;
           error?: cloudcli.ErrorMessage.$Shape|null;
           pong?: cloudcli.Pong.$Shape|null;
+          inputAck?: cloudcli.TerminalInputAck.$Shape|null;
           seq?: number|null;
           $unknowns?: Uint8Array[];
         } & (
-          ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape })
+          ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape })
         );
     }
 

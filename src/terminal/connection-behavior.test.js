@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 const source = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 const terminalPaneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+const serverSource = fs.readFileSync(new URL('../../server/index.js', import.meta.url), 'utf8');
 
 function extractTerminalStack() {
   const match = source.match(/<section className="terminal-stack">[\s\S]*?<\/section>/);
@@ -76,4 +77,24 @@ test('terminal keeps a visible-tab heartbeat to detect silently dropped sockets'
   assert.match(terminalPaneSource, /const TERMINAL_HEARTBEAT_INTERVAL_MS = 20000/);
   // The interval is torn down with the pane.
   assert.match(terminalPaneSource, /window\.clearInterval\(heartbeatTimer\)/);
+});
+
+test('terminal output uses bounded frames with a 20ms forced send', () => {
+  assert.match(serverSource, /TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 \* 1024/);
+  assert.match(serverSource, /TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 20/);
+  assert.match(
+    serverSource,
+    /setTimeout\(\s*\n\s*\(\) => flushTerminalOutput\(session\),\s*\n\s*TERMINAL_OUTPUT_FLUSH_INTERVAL_MS/,
+  );
+  assert.match(serverSource, /Buffer\.from\(chunk\)/);
+});
+
+test('terminal input remains queued until the server acknowledges it', () => {
+  assert.match(terminalPaneSource, /TERMINAL_INPUT_MAX_FRAME_BYTES = 4 \* 1024/);
+  assert.match(terminalPaneSource, /streamId:\s*crypto\.randomUUID\(\)/);
+  assert.match(terminalPaneSource, /inputState\.pending\.set\(inputSeq, frame\)/);
+  assert.match(terminalPaneSource, /for \(const \[inputSeq, data\] of inputStateRef\.current\.pending\)/);
+  assert.match(terminalPaneSource, /type:\s*'input', data, inputSeq/);
+  assert.match(terminalPaneSource, /message\.type === 'input-ack'/);
+  assert.match(terminalPaneSource, /inputStateRef\.current\.pending\.delete\(inputSeq\)/);
 });

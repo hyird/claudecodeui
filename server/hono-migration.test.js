@@ -228,6 +228,28 @@ function readTabsWebSocketMessage(ws, predicate, description) {
   });
 }
 
+function readTerminalWebSocketMessage(ws, predicate, description) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), 5000);
+    const onMessage = (raw) => {
+      const message = TerminalServerMessage.decode(toUint8(raw));
+      if (!predicate || predicate(message)) {
+        clearTimeout(timeout);
+        ws.off('message', onMessage);
+        ws.off('error', onError);
+        resolve(message);
+      }
+    };
+    const onError = (error) => {
+      clearTimeout(timeout);
+      ws.off('message', onMessage);
+      reject(error);
+    };
+    ws.on('message', onMessage);
+    ws.once('error', onError);
+  });
+}
+
 before(async () => {
   const port = await getFreePort();
   baseUrl = `http://127.0.0.1:${port}`;
@@ -440,6 +462,81 @@ test('terminal WebSocket rejects legacy non-UUID session ids', async () => {
   socket.close();
 });
 
+test('terminal input is acknowledged and duplicate delivery is ignored', async () => {
+  const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const sessionId = randomUUID();
+  const inputStreamId = randomUUID();
+  let output = '';
+  let markerResolve;
+  const markerSeen = new Promise((resolve) => { markerResolve = resolve; });
+
+  socket.on('message', (raw) => {
+    const message = TerminalServerMessage.decode(toUint8(raw));
+    if (message.body !== 'output') {
+      return;
+    }
+    const payload = message.output.data ?? new Uint8Array(0);
+    output += (message.output.compressed ? inflateSync(payload) : Buffer.from(payload)).toString('utf8');
+    if (output.includes('__RELIABLE_INPUT__')) {
+      markerResolve();
+    }
+  });
+
+  const ready = readTerminalWebSocketMessage(
+    socket,
+    (message) => message.body === 'ready',
+    'terminal ready message',
+  );
+  socket.on('open', () => {
+    socket.send(TerminalClientMessage.encode({
+      init: {
+        sessionId,
+        cols: 120,
+        rows: 40,
+        cwd: '',
+        forceRestart: true,
+        lastSeq: 0,
+        inputStreamId,
+      },
+    }).finish());
+  });
+  await ready;
+
+  const command = 'echo __RELIABLE_INPUT__\r';
+  const firstAck = readTerminalWebSocketMessage(
+    socket,
+    (message) => message.body === 'inputAck' && message.inputAck.inputSeq === 1,
+    'first terminal input acknowledgement',
+  );
+  socket.send(TerminalClientMessage.encode({
+    input: { data: command, inputSeq: 1 },
+  }).finish());
+  await firstAck;
+  await markerSeen;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const occurrencesBeforeDuplicate = output.split('__RELIABLE_INPUT__').length - 1;
+
+  const duplicateAck = readTerminalWebSocketMessage(
+    socket,
+    (message) => message.body === 'inputAck' && message.inputAck.inputSeq === 1,
+    'duplicate terminal input acknowledgement',
+  );
+  socket.send(TerminalClientMessage.encode({
+    input: { data: command, inputSeq: 1 },
+  }).finish());
+  await duplicateAck;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  assert.equal(
+    output.split('__RELIABLE_INPUT__').length - 1,
+    occurrencesBeforeDuplicate,
+    'a resent input frame must not execute twice',
+  );
+
+  socket.send(TerminalClientMessage.encode({ close: {} }).finish());
+  socket.close();
+});
+
 test('SPA fallback serves the built index for client routes when dist exists', async () => {
   const response = await fetch(`${baseUrl}/not-a-real-api-route`);
   assert.equal(response.status, 200);
@@ -506,8 +603,9 @@ const BULK_OUTPUT_COMMAND = `node -e ${JSON.stringify(BULK_OUTPUT_SCRIPT)}\r`;
 // A PTY may expand LF to CRLF, so this is a portable lower bound rather than an exact
 // transport length.
 const SEQ_OUTPUT_MIN_CHARS = 1288895;
+const TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 * 1024;
 
-test('bulk terminal output is coalesced into far fewer frames without losing bytes', async () => {
+test('bulk terminal output stays responsive with bounded frames and no lost bytes', async () => {
   // bun-pty hands over the PTY in 4 KB reads and drains ~166 of them per event-loop
   // turn, so one frame per read means one protobuf encode, one deflate and one socket
   // write per 4 KB. The server batches a turn's reads into a single output event; this
@@ -515,8 +613,10 @@ test('bulk terminal output is coalesced into far fewer frames without losing byt
   // fewer frames, and every byte still arriving in order.
   const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
   const sessionId = randomUUID();
+  const inputStreamId = randomUUID();
 
   let outputFrames = 0;
+  let largestOutputFrame = 0;
   let text = '';
   let ready = false;
 
@@ -534,7 +634,7 @@ test('bulk terminal output is coalesced into far fewer frames without losing byt
       if (message.body === 'ready' && !ready) {
         ready = true;
         socket.send(TerminalClientMessage.encode({
-          input: { data: BULK_OUTPUT_COMMAND },
+          input: { data: BULK_OUTPUT_COMMAND, inputSeq: 1 },
         }).finish());
         return;
       }
@@ -543,7 +643,9 @@ test('bulk terminal output is coalesced into far fewer frames without losing byt
       }
       outputFrames += 1;
       const payload = message.output.data ?? new Uint8Array(0);
-      text += (message.output.compressed ? inflateSync(payload) : Buffer.from(payload)).toString('utf8');
+      const decoded = message.output.compressed ? inflateSync(payload) : Buffer.from(payload);
+      largestOutputFrame = Math.max(largestOutputFrame, decoded.byteLength);
+      text += decoded.toString('utf8');
       if (text.includes('__DONE__\r\n')) {
         clearTimeout(timeout);
         resolve();
@@ -553,7 +655,15 @@ test('bulk terminal output is coalesced into far fewer frames without losing byt
 
   socket.on('open', () => {
     socket.send(TerminalClientMessage.encode({
-      init: { sessionId, cols: 120, rows: 40, cwd: '', forceRestart: true, lastSeq: 0 },
+      init: {
+        sessionId,
+        cols: 120,
+        rows: 40,
+        cwd: '',
+        forceRestart: true,
+        lastSeq: 0,
+        inputStreamId,
+      },
     }).finish());
   });
 
@@ -573,6 +683,11 @@ test('bulk terminal output is coalesced into far fewer frames without losing byt
   assert.ok(
     text.length >= SEQ_OUTPUT_MIN_CHARS,
     `expected at least ${SEQ_OUTPUT_MIN_CHARS} chars of output, got ${text.length}`,
+  );
+  assert.ok(
+    largestOutputFrame <= TERMINAL_OUTPUT_MAX_FRAME_BYTES,
+    `expected output frames no larger than ${TERMINAL_OUTPUT_MAX_FRAME_BYTES} bytes, `
+      + `got ${largestOutputFrame}`,
   );
 
   // Without coalescing this averages the 4 KB PTY read size. The 8 KB floor is

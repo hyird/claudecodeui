@@ -17,6 +17,7 @@ import {
 } from './wsCodec';
 
 const TERMINAL_ID = '11111111-1111-4111-8111-111111111111';
+const INPUT_STREAM_ID = '33333333-3333-4333-8333-333333333333';
 
 // The client codec (wsCodec) and the server codec (wire.js) are two ends of the same
 // protobuf wire. These tests drive real bytes between them, so a schema or compression
@@ -25,16 +26,33 @@ const TERMINAL_ID = '11111111-1111-4111-8111-111111111111';
 describe('terminal client -> server', () => {
   test('init carries every field through the wire', () => {
     const bytes = encodeTerminalClientMessage({
-      type: 'init', sessionId: 's1', cols: 120, rows: 40, cwd: '/tmp', forceRestart: true, lastSeq: 7,
+      type: 'init',
+      sessionId: 's1',
+      cols: 120,
+      rows: 40,
+      cwd: '/tmp',
+      forceRestart: true,
+      lastSeq: 7,
+      inputStreamId: INPUT_STREAM_ID,
     });
     expect(decodeTerminalClientMessage(bytes)).toEqual({
-      type: 'init', sessionId: 's1', cols: 120, rows: 40, cwd: '/tmp', forceRestart: true, lastSeq: 7,
+      type: 'init',
+      sessionId: 's1',
+      cols: 120,
+      rows: 40,
+      cwd: '/tmp',
+      forceRestart: true,
+      lastSeq: 7,
+      inputStreamId: INPUT_STREAM_ID,
     });
   });
 
   test('input, resize, close and ping round-trip', () => {
-    expect(decodeTerminalClientMessage(encodeTerminalClientMessage({ type: 'input', data: 'ls -al\r' })))
-      .toEqual({ type: 'input', data: 'ls -al\r' });
+    expect(decodeTerminalClientMessage(encodeTerminalClientMessage({
+      type: 'input',
+      data: 'ls -al\r',
+      inputSeq: 9,
+    }))).toEqual({ type: 'input', data: 'ls -al\r', inputSeq: 9 });
     expect(decodeTerminalClientMessage(encodeTerminalClientMessage({ type: 'resize', cols: 80, rows: 24 })))
       .toEqual({ type: 'resize', cols: 80, rows: 24 });
     expect(decodeTerminalClientMessage(encodeTerminalClientMessage({ type: 'close' })))
@@ -52,6 +70,12 @@ describe('terminal server -> client', () => {
     expect(await decodeTerminalServerMessage(frame)).toEqual({
       type: 'ready', cwd: '/root', sessionId: 's1', reset: true, gap: false, lastSeq: 3, seq: 1,
     });
+  });
+
+  test('input acknowledgements release cumulatively confirmed input', async () => {
+    const frame = encodeTerminalServerMessage({ type: 'input-ack', inputSeq: 12 });
+    expect(await decodeTerminalServerMessage(frame))
+      .toEqual({ type: 'input-ack', inputSeq: 12 });
   });
 
   test('a small payload travels uncompressed and decodes to text', async () => {

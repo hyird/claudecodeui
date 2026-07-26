@@ -25,6 +25,7 @@ export type TerminalServerMessage =
   | ({ type: 'exit'; exitCode: number; signal?: string | null } & TerminalServerMessageMeta)
   | ({ type: 'error'; message: string } & TerminalServerMessageMeta)
   | ({ type: 'pong' } & TerminalServerMessageMeta)
+  | ({ type: 'input-ack'; inputSeq: number } & TerminalServerMessageMeta)
   | { type: string; [key: string]: unknown };
 
 export type TerminalTabsServerMessage =
