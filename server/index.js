@@ -457,6 +457,46 @@ function writeTerminalSnapshot(session, chunk) {
   });
 }
 
+// bun-pty hands over the PTY read buffer in 4 KB chunks and drains many of them in a
+// single event-loop turn (~166 per turn while `cat`-ing a large file). Emitting each one
+// as its own event costs a protobuf encode, a deflate and a websocket write apiece, and
+// leaves deflate almost nothing to find. Coalescing per microtask makes that cost scale
+// with event-loop turns instead of with read() calls, and adds no latency: microtasks run
+// before the next macrotask, so an echoed keystroke still leaves in the turn it arrived.
+// The byte cap bounds how large a single coalesced frame can grow.
+const TERMINAL_OUTPUT_FLUSH_BYTES = 128 * 1024;
+
+function flushTerminalOutput(session) {
+  session.outputFlushScheduled = false;
+  if (session.pendingOutput.length === 0) {
+    return;
+  }
+
+  const chunk = session.pendingOutput.length === 1
+    ? session.pendingOutput[0]
+    : session.pendingOutput.join('');
+  session.pendingOutput.length = 0;
+  session.pendingOutputBytes = 0;
+
+  writeTerminalSnapshot(session, chunk);
+  recordAndSendTerminalEvent(session, { type: 'output', data: chunk });
+}
+
+function queueTerminalOutput(session, chunk) {
+  session.pendingOutput.push(chunk);
+  session.pendingOutputBytes += chunk.length;
+
+  if (session.pendingOutputBytes >= TERMINAL_OUTPUT_FLUSH_BYTES) {
+    flushTerminalOutput(session);
+    return;
+  }
+
+  if (!session.outputFlushScheduled) {
+    session.outputFlushScheduled = true;
+    queueMicrotask(() => flushTerminalOutput(session));
+  }
+}
+
 function readTerminalSnapshot(session) {
   if (session.snapshotDirty || !session.terminalSnapshot) {
     session.terminalSnapshot = session.serializer.serialize();
@@ -467,6 +507,9 @@ function readTerminalSnapshot(session) {
 }
 
 function resizeSession(session, cols, rows) {
+  // Reflow the buffered bytes at the old width before resizing, so they are not
+  // re-wrapped to a geometry they were never written for.
+  flushTerminalOutput(session);
   session.terminal.resize(cols, rows);
   session.pty.resize(cols, rows);
   session.snapshotDirty = true;
@@ -520,15 +563,19 @@ function createSession(sessionId, options) {
     socket: null,
     terminalEvents: createTerminalEventLog(),
     closed: false,
+    pendingOutput: [],
+    pendingOutputBytes: 0,
+    outputFlushScheduled: false,
   };
 
   shellProcess.onData((chunk) => {
-    writeTerminalSnapshot(session, chunk);
-
-    recordAndSendTerminalEvent(session, { type: 'output', data: chunk });
+    queueTerminalOutput(session, chunk);
   });
 
   shellProcess.onExit(({ exitCode, signal }) => {
+    // Drain buffered output first so the exit notice never overtakes the process's
+    // own final bytes.
+    flushTerminalOutput(session);
     session.closed = true;
     const suffix = signal ? ` (${signal})` : '';
     const message = `\r\n\x1b[33mProcess exited with code ${exitCode}${suffix}\x1b[0m\r\n`;
@@ -544,6 +591,9 @@ function createSession(sessionId, options) {
 }
 
 function attachSocket(ws, session, lastSeq = 0) {
+  // Land any buffered output in the event log and snapshot before the replay plan is
+  // computed, so a reconnecting client is never handed a view that is missing it.
+  flushTerminalOutput(session);
   const oldSocket = session.socket;
   session.socket = ws;
   if (oldSocket && oldSocket !== ws && oldSocket.readyState === WS_OPEN) {
@@ -586,6 +636,10 @@ function closeSession(sessionId, broadcast = true) {
     return false;
   }
 
+  // The session is going away and its socket with it, so buffered output has nowhere
+  // left to land — drop it instead of letting a queued flush revive a dead session.
+  session.pendingOutput.length = 0;
+  session.pendingOutputBytes = 0;
   session.socket?.close(1000, 'Terminal closed');
   session.socket = null;
   session.pty.kill();

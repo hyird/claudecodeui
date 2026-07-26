@@ -6,6 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { inflateSync } from 'node:zlib';
 
 import { WebSocket } from 'ws';
 import { cloudcli } from '../proto/messages.js';
@@ -15,7 +16,13 @@ import { cloudcli } from '../proto/messages.js';
 // with Bun rather than the current interpreter. Set BUN_BIN if bun is not on PATH.
 const BUN_BIN = process.env.BUN_BIN || 'bun';
 
-const { TabsClientMessage, TabsServerMessage, AuthServerMessage } = cloudcli;
+const {
+  TabsClientMessage,
+  TabsServerMessage,
+  AuthServerMessage,
+  TerminalClientMessage,
+  TerminalServerMessage,
+} = cloudcli;
 
 function toUint8(raw) {
   return raw instanceof Uint8Array ? raw : new Uint8Array(raw);
@@ -476,4 +483,85 @@ test('the built frontend is served compressed and revalidates with an ETag', asy
   const revalidated = await rawGet('/', { 'If-None-Match': etag });
   assert.equal(revalidated.status, 304);
   assert.equal(revalidated.bodyLength, 0);
+});
+
+// `seq 1 200000` emits exactly this many bytes: 9*3 + 90*4 + 900*5 + 9000*6
+// + 90000*7 + 100001*8. The PTY turns each \n into \r\n, so every line costs its
+// digits plus two. Used below to prove coalescing loses nothing.
+const SEQ_OUTPUT_BYTES = 1488895;
+
+test('bulk terminal output is coalesced into far fewer frames without losing bytes', async () => {
+  // bun-pty hands over the PTY in 4 KB reads and drains ~166 of them per event-loop
+  // turn, so one frame per read means one protobuf encode, one deflate and one socket
+  // write per 4 KB. The server batches a turn's reads into a single output event; this
+  // drives a real shell through a real socket to confirm both halves of that: many
+  // fewer frames, and every byte still arriving in order.
+  const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const sessionId = `terminal-coalesce-${process.pid}`;
+
+  let outputFrames = 0;
+  let text = '';
+  let ready = false;
+
+  const done = new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`Timed out; ${outputFrames} frames, ${text.length} chars so far`)),
+      30000,
+    );
+    socket.on('error', (error) => { clearTimeout(timeout); reject(error); });
+    socket.on('message', (raw) => {
+      const message = TerminalServerMessage.decode(toUint8(raw));
+      if (message.body === 'ready' && !ready) {
+        ready = true;
+        // The literal marker is split so the shell's own echo of the command line
+        // cannot be mistaken for the command's output.
+        socket.send(TerminalClientMessage.encode({
+          input: { data: 'seq 1 200000; echo __DO""NE__\r' },
+        }).finish());
+        return;
+      }
+      if (message.body !== 'output') {
+        return;
+      }
+      outputFrames += 1;
+      const payload = message.output.data ?? new Uint8Array(0);
+      text += (message.output.compressed ? inflateSync(payload) : Buffer.from(payload)).toString('utf8');
+      if (text.includes('__DONE__\r\n')) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+  });
+
+  socket.on('open', () => {
+    socket.send(TerminalClientMessage.encode({
+      init: { sessionId, cols: 120, rows: 40, cwd: '', forceRestart: true, lastSeq: 0 },
+    }).finish());
+  });
+
+  await done;
+
+  // Nothing may be dropped or reordered by the batching: every line of the sequence
+  // must be present, in order, with the full byte count.
+  assert.ok(text.includes('\r\n200000\r\n'), 'expected the last line of the sequence');
+  assert.ok(
+    text.indexOf('\r\n100000\r\n') < text.indexOf('\r\n200000\r\n'),
+    'sequence lines must arrive in order',
+  );
+  assert.ok(
+    text.length >= SEQ_OUTPUT_BYTES,
+    `expected at least ${SEQ_OUTPUT_BYTES} chars of output, got ${text.length}`,
+  );
+
+  // Without coalescing this averages the 4 KB PTY read size. The 8 KB floor is
+  // therefore unreachable unless a turn's reads are actually being batched.
+  const averageFrameBytes = text.length / outputFrames;
+  assert.ok(
+    averageFrameBytes > 8192,
+    `expected coalesced frames, got ${outputFrames} frames averaging `
+    + `${Math.round(averageFrameBytes)} bytes (uncoalesced would be ~4096)`,
+  );
+
+  socket.send(TerminalClientMessage.encode({ close: {} }).finish());
+  socket.close();
 });
