@@ -148,6 +148,30 @@ test('terminal output and scroll events refresh without blocking later frames', 
   assert.match(source, /forceFullRefresh\(\)/);
 });
 
+test('terminal DOM lookups are cached instead of re-queried every frame', () => {
+  // updateScrollbackAffordance runs off onWriteParsed and onScroll, so a querySelector
+  // in it is a DOM tree walk per frame of terminal output. xterm creates .xterm-screen
+  // and .xterm-viewport once in open() and keeps them, so they are resolved once.
+  assert.match(source, /const readScreenElement = useCallback/);
+  assert.match(source, /const readViewportElement = useCallback/);
+
+  const affordance = extractCallback('updateScrollbackAffordance');
+  assert.match(affordance, /readViewportElement\(\)/);
+  assert.equal(affordance.includes('querySelector'), false);
+  // The class is only touched when the scrollback state actually flips.
+  assert.match(affordance, /hasScrollback === hasScrollbackRef\.current/);
+
+  const measure = extractCallback('measureCellCapacity');
+  assert.match(measure, /readScreenElement\(\)/);
+  assert.equal(measure.includes('querySelector'), false);
+
+  // A disposed terminal's nodes and the derived class state must not leak into the
+  // next terminal, or its first affordance toggle would be skipped.
+  assert.match(source, /screenElementRef\.current = null;/);
+  assert.match(source, /viewportElementRef\.current = null;/);
+  assert.match(source, /hasScrollbackRef\.current = false;/);
+});
+
 test('terminal uses xterm default renderer for reliable in-place TUI updates', () => {
   assert.match(styles, /\.terminal-frame \{\s+inset:\s*6px;/);
   assert.equal(styles.includes('inset: 7px;'), false);

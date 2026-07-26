@@ -89,6 +89,30 @@ export default function TerminalPane({
   const resizeTimersRef = useRef<number[]>([]);
   const resizeFrameRef = useRef(0);
   const lastSizeRef = useRef({ cols: 0, rows: 0 });
+  const screenElementRef = useRef<HTMLElement | null>(null);
+  const viewportElementRef = useRef<HTMLElement | null>(null);
+  const hasScrollbackRef = useRef(false);
+
+  // xterm builds .xterm-screen and .xterm-viewport once in terminal.open() and keeps
+  // them for the terminal's lifetime, but the scrollback affordance runs off every
+  // parsed write and every scroll — re-querying the DOM there costs a tree walk per
+  // frame of output. Resolve each once and reuse it; isConnected re-resolves if xterm
+  // ever rebuilds its DOM.
+  const readScreenElement = useCallback(() => {
+    if (!screenElementRef.current?.isConnected) {
+      screenElementRef.current = terminalRef.current?.element
+        ?.querySelector<HTMLElement>('.xterm-screen') ?? null;
+    }
+    return screenElementRef.current;
+  }, []);
+
+  const readViewportElement = useCallback(() => {
+    if (!viewportElementRef.current?.isConnected) {
+      viewportElementRef.current = terminalRef.current?.element
+        ?.querySelector<HTMLElement>('.xterm-viewport') ?? null;
+    }
+    return viewportElementRef.current;
+  }, []);
 
   useEffect(() => {
     activeRef.current = active;
@@ -124,7 +148,7 @@ export default function TerminalPane({
   const measureCellCapacity = useCallback((fallback?: TerminalDimensions) => {
     const terminal = terminalRef.current;
     const container = containerRef.current;
-    const screen = terminal?.element?.querySelector<HTMLElement>('.xterm-screen');
+    const screen = readScreenElement();
     if (!terminal || !container || !screen) {
       return fallback;
     }
@@ -156,7 +180,7 @@ export default function TerminalPane({
       cols: Math.max(MIN_TERMINAL_COLS, Math.floor(availWidth / cellWidth)),
       rows: Math.max(MIN_TERMINAL_ROWS, Math.floor(availHeight / cellHeight)),
     };
-  }, []);
+  }, [readScreenElement]);
 
   const proposeFrameDimensions = useCallback(() => (
     measureCellCapacity(readFitDimensions())
@@ -199,7 +223,7 @@ export default function TerminalPane({
   }, []);
 
   const clearScreenTransform = useCallback(() => {
-    const screen = terminalRef.current?.element?.querySelector<HTMLElement>('.xterm-screen');
+    const screen = readScreenElement();
     if (!screen) {
       return;
     }
@@ -207,17 +231,23 @@ export default function TerminalPane({
     screen.style.transform = '';
     screen.style.transformOrigin = '';
     screen.style.willChange = '';
-  }, []);
+  }, [readScreenElement]);
 
   const updateScrollbackAffordance = useCallback(() => {
     const terminal = terminalRef.current;
-    const viewport = terminal?.element?.querySelector<HTMLElement>('.xterm-viewport');
+    const viewport = readViewportElement();
     if (!terminal || !viewport) {
       return;
     }
 
-    viewport.classList.toggle('has-scrollback', terminal.buffer.active.baseY > 0);
-  }, []);
+    // Runs on every parsed write, so skip the class mutation unless the state flipped.
+    const hasScrollback = terminal.buffer.active.baseY > 0;
+    if (hasScrollback === hasScrollbackRef.current) {
+      return;
+    }
+    hasScrollbackRef.current = hasScrollback;
+    viewport.classList.toggle('has-scrollback', hasScrollback);
+  }, [readViewportElement]);
 
   // A scroll or an in-place TUI repaint changes what each viewport row should
   // show. Claude Code hits the paths where xterm may not issue a full viewport
@@ -692,6 +722,11 @@ export default function TerminalPane({
       socketRef.current = null;
       fitAddonRef.current = null;
       terminalRef.current = null;
+      // The cached nodes belong to the disposed terminal, and the affordance state
+      // must not leak into the next one or its first toggle would be skipped.
+      screenElementRef.current = null;
+      viewportElementRef.current = null;
+      hasScrollbackRef.current = false;
     };
   }, [
     clearResizeTimers,
