@@ -13,6 +13,7 @@ import type {
 } from './types';
 import { decodeTerminalServerMessage, encodeTerminalClientMessage } from './wsCodec';
 import { openAuthenticatedSocket } from '../wsHost';
+import { createUuidV4 } from '../uuid';
 
 type TerminalPaneProps = {
   tab: TerminalTab;
@@ -73,7 +74,7 @@ function getTerminalInputState(tabId: string) {
   let state = terminalInputStates.get(tabId);
   if (!state) {
     state = {
-      streamId: crypto.randomUUID(),
+      streamId: createUuidV4(),
       nextSeq: 1,
       pending: new Map(),
     };

@@ -91,7 +91,7 @@ test('terminal output uses bounded frames with a 20ms forced send', () => {
 
 test('terminal input remains queued until the server acknowledges it', () => {
   assert.match(terminalPaneSource, /TERMINAL_INPUT_MAX_FRAME_BYTES = 4 \* 1024/);
-  assert.match(terminalPaneSource, /streamId:\s*crypto\.randomUUID\(\)/);
+  assert.match(terminalPaneSource, /streamId:\s*createUuidV4\(\)/);
   assert.match(terminalPaneSource, /inputState\.pending\.set\(inputSeq, frame\)/);
   assert.match(terminalPaneSource, /for \(const \[inputSeq, data\] of inputStateRef\.current\.pending\)/);
   assert.match(terminalPaneSource, /type:\s*'input', data, inputSeq/);
