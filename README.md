@@ -12,9 +12,18 @@
 
 ## 开发
 
+需要 Bun（服务端依赖 bun:sqlite 和 bun-pty），依赖以 `bun.lock` 为准。
+
 ```bash
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 打开 http://localhost:5173。
+
+测试跑在 node:test 上（Bun 的 runner 无法承载 node:test 文件），所以还需要 Node：
+
+```bash
+bun run build   # SPA fallback 和压缩用例需要真实的 dist/
+npm test
+```
