@@ -431,6 +431,122 @@ test('terminal tab WebSocket requires auth and generates UUID ids', async () => 
   authenticated.close();
 });
 
+test('inactive PTYs report background and preserve their exited state', async () => {
+  const tabsSocket = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
+  let tabsMessage = await readTabsWebSocketMessage(
+    tabsSocket,
+    (message) => message.type === 'tabs',
+    'initial tabs state for background status',
+  );
+
+  if (tabsMessage.state.tabs.length < 2) {
+    tabsSocket.send(encodeTabsClientMessage({ type: 'add-tab' }));
+    tabsMessage = await readTabsWebSocketMessage(
+      tabsSocket,
+      (message) => message.type === 'tabs' && message.state.tabs.length === 2,
+      'second tab for background status',
+    );
+  }
+
+  const inactiveTab = tabsMessage.state.tabs.find((tab) => tab.id !== tabsMessage.state.activeId);
+  assert.ok(inactiveTab, 'expected an inactive terminal tab');
+
+  const connectedState = readTabsWebSocketMessage(
+    tabsSocket,
+    (message) => (
+      message.type === 'tabs'
+      && message.state.tabs.some((tab) => tab.id === inactiveTab.id && tab.status === 'connected')
+    ),
+    'connected inactive PTY status',
+  );
+  const terminalSocket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const terminalReady = readTerminalWebSocketMessage(
+    terminalSocket,
+    (message) => message.body === 'ready',
+    'inactive PTY ready message',
+  );
+  terminalSocket.on('open', () => {
+    terminalSocket.send(TerminalClientMessage.encode({
+      init: {
+        sessionId: inactiveTab.id,
+        cols: 120,
+        rows: 40,
+        cwd: '',
+        forceRestart: true,
+        lastSeq: 0,
+        inputStreamId: randomUUID(),
+      },
+    }).finish());
+  });
+  await terminalReady;
+  await connectedState;
+
+  const backgroundState = readTabsWebSocketMessage(
+    tabsSocket,
+    (message) => (
+      message.type === 'tabs'
+      && message.state.tabs.some((tab) => tab.id === inactiveTab.id && tab.status === 'background')
+    ),
+    'background PTY status after detaching its viewer',
+  );
+  terminalSocket.close();
+  const backgroundMessage = await backgroundState;
+  assert.equal(
+    backgroundMessage.state.tabs.find((tab) => tab.id === inactiveTab.id).status,
+    'background',
+  );
+
+  const reconnectedState = readTabsWebSocketMessage(
+    tabsSocket,
+    (message) => (
+      message.type === 'tabs'
+      && message.state.tabs.some((tab) => tab.id === inactiveTab.id && tab.status === 'connected')
+    ),
+    'reattached PTY status',
+  );
+  const exitSocket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const exitReady = readTerminalWebSocketMessage(
+    exitSocket,
+    (message) => message.body === 'ready',
+    'reattached PTY ready message',
+  );
+  exitSocket.on('open', () => {
+    exitSocket.send(TerminalClientMessage.encode({
+      init: {
+        sessionId: inactiveTab.id,
+        cols: 120,
+        rows: 40,
+        cwd: '',
+        forceRestart: false,
+        lastSeq: 0,
+        inputStreamId: randomUUID(),
+      },
+    }).finish());
+  });
+  await exitReady;
+  await reconnectedState;
+
+  const exitedState = readTabsWebSocketMessage(
+    tabsSocket,
+    (message) => (
+      message.type === 'tabs'
+      && message.state.tabs.some((tab) => tab.id === inactiveTab.id && tab.status === 'exited')
+    ),
+    'exited PTY status',
+  );
+  exitSocket.send(TerminalClientMessage.encode({
+    input: { data: 'exit\r', inputSeq: 1 },
+  }).finish());
+  const exitedMessage = await exitedState;
+  assert.equal(
+    exitedMessage.state.tabs.find((tab) => tab.id === inactiveTab.id).status,
+    'exited',
+  );
+
+  exitSocket.close();
+  tabsSocket.close();
+});
+
 test('terminal WebSocket rejects legacy non-UUID session ids', async () => {
   const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
   const rejection = new Promise((resolve, reject) => {
@@ -502,7 +618,11 @@ test('terminal input is acknowledged and duplicate delivery is ignored', async (
   });
   await ready;
 
-  const command = 'echo __RELIABLE_INPUT__\r';
+  // Build the marker from octal escapes so it does not appear in the command echoed
+  // by the PTY. The server's ready frame can arrive before the shell has printed its
+  // first prompt; counting a literal marker in the input would then race shell startup
+  // and make a correctly ignored resend look like a second execution.
+  const command = "printf '\\137\\137RELIABLE_INPUT\\137\\137\\n'\r";
   const firstAck = readTerminalWebSocketMessage(
     socket,
     (message) => message.body === 'inputAck' && message.inputAck.inputSeq === 1,

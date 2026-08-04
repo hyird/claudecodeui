@@ -10,8 +10,19 @@ test('terminal keyboard input mirrors the original plugin handler', () => {
   assert.match(paneSource, /mod && event\.key\.toLowerCase\(\) === 'c' && terminal\.hasSelection\(\)/);
   assert.match(paneSource, /copyText\(terminal\.getSelection\(\)\)/);
   assert.match(paneSource, /mod && event\.key\.toLowerCase\(\) === 'v'/);
-  assert.match(paneSource, /navigator\.clipboard\?\.readText\?\.\(\)\.then\(\(text\) => text && sendInput\(text\)\)/);
+  assert.equal(paneSource.includes('navigator.clipboard?.readText'), false);
   assert.match(paneSource, /return true/);
+});
+
+test('paste shortcuts stay on xterm native paste path', () => {
+  const pasteBranch = paneSource.match(
+    /if \(mod && event\.key\.toLowerCase\(\) === 'v'\) \{[\s\S]*?\n\s*\}/,
+  );
+  assert.ok(pasteBranch, 'Could not find paste shortcut branch');
+  assert.match(pasteBranch[0], /return false/);
+  assert.equal(pasteBranch[0].includes('preventDefault'), false);
+  assert.equal(pasteBranch[0].includes('sendInput'), false);
+  assert.equal(pasteBranch[0].includes('clipboard.readText'), false);
 });
 
 test('all ordinary xterm input is sent directly by onData', () => {

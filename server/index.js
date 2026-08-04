@@ -67,6 +67,7 @@ const WS_ROUTES = {
 const WS_SUBPROTOCOL = 'cloudcli.v1';
 
 const sessions = new Map();
+const exitedTabs = new Set();
 const authSessionSubscribers = new Map();
 const tabSubscribers = new Set();
 const tabsState = createInitialTabsState();
@@ -216,14 +217,21 @@ function cleanTerminalTitle(title) {
 function getTabStatus(tabId) {
   const session = sessions.get(tabId);
   if (!session) {
-    return 'disconnected';
+    return exitedTabs.has(tabId) ? 'exited' : 'disconnected';
   }
 
   if (session.closed) {
     return 'exited';
   }
 
-  return session.socket?.readyState === WS_OPEN ? 'connected' : 'disconnected';
+  if (session.socket?.readyState === WS_OPEN) {
+    return 'connected';
+  }
+
+  // Only the selected pane owns a browser WebSocket. Its PTY keeps running after
+  // the pane is unmounted, so an inactive session without a viewer is healthy
+  // background work rather than a broken connection.
+  return tabId === tabsState.activeId ? 'disconnected' : 'background';
 }
 
 function serializeTabsState() {
@@ -321,6 +329,7 @@ function removeTab(tabId) {
     tabsState.activeId = tabsState.tabs[Math.max(0, closedIndex - 1)]?.id ?? tabsState.tabs[0].id;
   }
 
+  exitedTabs.delete(tabId);
   closeSession(tabId, false);
   broadcastTabsState();
   return true;
@@ -557,6 +566,7 @@ function createSession(sessionId, options) {
       FORCE_COLOR: '3',
     },
   });
+  exitedTabs.delete(sessionId);
 
   const session = {
     id: sessionId,
@@ -589,8 +599,14 @@ function createSession(sessionId, options) {
     recordAndSendTerminalEvent(session, { type: 'output', data: message });
     recordAndSendTerminalEvent(session, { type: 'exit', exitCode, signal });
     session.socket = null;
-    sessions.delete(sessionId);
-    broadcastTabsState();
+    // closeSession may already have removed this PTY because the tab was closed or
+    // force-restarted. Ignore that stale process's later onExit callback so it cannot
+    // overwrite the replacement session's state.
+    if (sessions.get(sessionId) === session) {
+      exitedTabs.add(sessionId);
+      sessions.delete(sessionId);
+      broadcastTabsState();
+    }
   });
 
   sessions.set(sessionId, session);
@@ -638,6 +654,7 @@ function detachSocket(session, ws) {
 }
 
 function closeSession(sessionId, broadcast = true) {
+  exitedTabs.delete(sessionId);
   const session = sessions.get(sessionId);
   if (!session) {
     return false;

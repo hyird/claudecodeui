@@ -43,9 +43,8 @@ test('terminal fit reserves the scrollbar gutter so the last column is not clipp
   // beneath the scrollback scrollbar and is clipped once scrollback appears.
   assert.match(measure, /terminal\.options\.scrollback \? TERMINAL_SCROLLBAR_GUTTER : 0/);
   assert.match(measure, /- scrollbarGutter/);
-  assert.match(source, /const TERMINAL_SCROLLBAR_GUTTER = 6;/);
-  // The reserved gutter must equal the styled scrollbar width.
-  assert.match(styles, /has-scrollback::-webkit-scrollbar \{\s*width:\s*6px/);
+  assert.match(source, /const TERMINAL_SCROLLBAR_GUTTER = 4;/);
+  assert.match(source, /overviewRuler:\s*\{ width: TERMINAL_SCROLLBAR_GUTTER \}/);
 
   // A sub-pixel guard on both axes prevents integer/HiDPI cell-size rounding from
   // over-counting the last row/column past the frame edge.
@@ -76,24 +75,20 @@ test('terminal screen does not force transform styling while idle', () => {
   assert.equal(rule.includes('transition: transform'), false);
 });
 
-test('terminal viewport hides fractional scrollbars until scrollback exists', () => {
+test('terminal viewport hides the legacy native scrollbar behind xterm 6 overlay', () => {
   const viewportRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport \{[\s\S]*?\}/);
-  const scrollbackRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport\.has-scrollback \{[\s\S]*?\}/);
   const scrollbarRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport::-webkit-scrollbar \{[\s\S]*?\}/);
-  const activeScrollbarRule = styles.match(/\.terminal-pane \.xterm \.xterm-viewport\.has-scrollback::-webkit-scrollbar \{[\s\S]*?\}/);
   const rule = viewportRule?.[0] ?? '';
-  const activeRule = scrollbackRule?.[0] ?? '';
   const scrollbar = scrollbarRule?.[0] ?? '';
-  const activeScrollbar = activeScrollbarRule?.[0] ?? '';
 
   assert.match(rule, /overflow-y:\s*auto\s*!important/);
+  assert.match(rule, /background-color:\s*var\(--bg-terminal\)/);
   assert.match(rule, /scrollbar-width:\s*none/);
   assert.equal(rule.includes('overflow-y: scroll'), false);
-  assert.match(activeRule, /scrollbar-width:\s*thin/);
   assert.match(scrollbar, /width:\s*0/);
   assert.match(scrollbar, /height:\s*0/);
-  assert.match(activeScrollbar, /width:\s*6px/);
-  assert.match(activeScrollbar, /height:\s*6px/);
+  assert.equal(styles.includes('.xterm-viewport.has-scrollback::-webkit-scrollbar'), false);
+  assert.match(styles, /\.scrollbar\.vertical > \.slider \{\s*border-radius:\s*999px/);
 });
 
 test('terminal viewport scroll affordance follows xterm scrollback state', () => {

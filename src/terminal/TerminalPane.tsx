@@ -34,7 +34,7 @@ const MIN_TERMINAL_ROWS = 1;
 // Width of the scrollback scrollbar to reserve so the rightmost column is never
 // rendered beneath it. MUST match `.xterm-viewport.has-scrollback::-webkit-scrollbar`
 // in styles.css. xterm's own FitAddon reserves the same gutter (`- scrollBarWidth`).
-const TERMINAL_SCROLLBAR_GUTTER = 6;
+const TERMINAL_SCROLLBAR_GUTTER = 4;
 // Sub-pixel guard shaved off each fit axis so integer/HiDPI cell-size rounding can
 // never round the last whole cell up past the frame edge (bottom row / right column).
 const FIT_EDGE_GUARD_PX = 1;
@@ -400,6 +400,7 @@ export default function TerminalPane({
       fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, monospace',
       fontSize: preferences.fontSize,
       lineHeight: 1.12,
+      overviewRuler: { width: TERMINAL_SCROLLBAR_GUTTER },
       scrollback: 10000,
       theme: terminalTheme,
     });
@@ -437,8 +438,10 @@ export default function TerminalPane({
         return false;
       }
       if (mod && event.key.toLowerCase() === 'v') {
-        event.preventDefault();
-        navigator.clipboard?.readText?.().then((text) => text && sendInput(text)).catch(() => {});
+        // Leave the browser's native paste action intact. xterm receives the paste
+        // event from its helper textarea, normalizes newlines and adds bracketed-paste
+        // markers when the active application requested them. Reading through
+        // navigator.clipboard here both fails on insecure HTTP and bypasses that path.
         return false;
       }
       return true;
@@ -502,9 +505,10 @@ export default function TerminalPane({
         if (message.reset) {
           pendingTerminalMessages.clear();
           lastAppliedTerminalSeq = typeof message.lastSeq === 'number' ? message.lastSeq : 0;
+          // The serialized server snapshot that follows is the source of truth.
+          // Do not prepend internal session ids or cwd lines: they clutter new
+          // terminals and can corrupt the cursor position of a restored TUI.
           terminal.clear();
-          terminal.writeln(`\x1b[36mSession ${message.sessionId}\x1b[0m`);
-          terminal.writeln(`\x1b[90m${message.cwd}\x1b[0m\r\n`);
         }
         terminalReadyRef.current = true;
         for (const [inputSeq, data] of inputStateRef.current.pending) {

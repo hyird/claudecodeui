@@ -27,3 +27,23 @@ bun run dev
 bun run build   # SPA fallback 和压缩用例需要真实的 dist/
 npm test
 ```
+
+## 本机 systemd 部署
+
+当前工作站使用 `cloud-terminal.service`，应用文件安装到
+`/opt/cloud-terminal/current`，SQLite 数据保存在
+`/opt/cloud-terminal/data`。部署脚本会先构建并运行完整测试，成功后才覆盖产物和重启服务：
+
+```bash
+./scripts/deploy-local.sh
+```
+
+部署完成后打开 http://localhost:3001。常用检查命令：
+
+```bash
+sudo systemctl status cloud-terminal.service
+sudo journalctl -u cloud-terminal.service -n 50 --no-pager
+```
+
+为避免更新时杀掉正在运行的 PTY，脚本检测到活跃终端会话时默认拒绝重启。
+确认可以中断会话时可显式运行 `./scripts/deploy-local.sh --force`。

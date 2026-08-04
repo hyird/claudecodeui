@@ -1,0 +1,24 @@
+[Unit]
+Description=Cloud Terminal web terminal
+After=network.target
+
+[Service]
+Type=simple
+User=user
+Group=user
+WorkingDirectory=/opt/cloud-terminal/current
+Environment=HOME=/home/user
+Environment=SHELL=/bin/bash
+Environment=PATH=/home/user/.bun/bin:/home/user/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PORT=3001
+Environment=CLOUDCLI_DB_PATH=/opt/cloud-terminal/data/auth.sqlite
+Environment=BUN_PTY_LIB=/opt/cloud-terminal/current/librust_pty.so
+ExecStart=/home/user/.bun/bin/bun /opt/cloud-terminal/current/server.js
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10s
+KillMode=mixed
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

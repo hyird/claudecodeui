@@ -5,9 +5,10 @@ import { test } from 'node:test';
 const source = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 const terminalPaneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
 const serverSource = fs.readFileSync(new URL('../../server/index.js', import.meta.url), 'utf8');
+const stylesSource = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 function extractTerminalStack() {
-  const match = source.match(/<section className="terminal-stack">[\s\S]*?<\/section>/);
+  const match = source.match(/<section[\s\S]*?className="terminal-stack"[\s\S]*?<\/section>/);
   assert.ok(match, 'Could not find terminal stack');
   return match[0];
 }
@@ -21,6 +22,45 @@ test('only the active terminal pane is mounted to avoid websocket bursts on logi
   assert.equal(terminalStack.includes('tabs.map'), false);
 });
 
+test('terminal tabs expose standard semantics and keyboard navigation', () => {
+  assert.match(source, /role="tablist"/);
+  assert.match(source, /aria-orientation="horizontal"/);
+  assert.match(source, /role="tab"/);
+  assert.match(source, /aria-selected=\{isActive\}/);
+  assert.match(source, /aria-controls="active-terminal-panel"/);
+  assert.match(source, /tabIndex=\{isActive \? 0 : -1\}/);
+  assert.match(source, /role="tabpanel"/);
+  assert.match(source, /aria-labelledby=\{activeTab \? `terminal-tab-\$\{activeTab\.id\}`/);
+  assert.match(source, /event\.key === 'ArrowRight'/);
+  assert.match(source, /event\.key === 'ArrowLeft'/);
+  assert.match(source, /event\.key === 'Home'/);
+  assert.match(source, /event\.key === 'End'/);
+  assert.match(source, /selectTab\(nextTabId\)/);
+  assert.match(source, /tabButtonRefs\.current\.get\(nextTabId\)\?\.focus\(\)/);
+});
+
+test('closing a terminal tab restores focus to the server-selected fallback', () => {
+  assert.match(source, /event\.key === 'Delete'/);
+  assert.match(source, /pendingTabFocusRef/);
+  assert.match(
+    source,
+    /remainingTabs\[Math\.max\(0, closedIndex - 1\)\]\?\.id \?\? remainingTabs\[0\]\.id/,
+  );
+  assert.match(source, /tabs\.some\(\(tab\) => tab\.id === pendingFocus\.closedId\)/);
+  assert.match(source, /const focusTarget = tabButtonRefs\.current\.get\(pendingFocus\.focusId\)/);
+  assert.match(source, /focusTarget\.focus\(\);\s*\n\s*pendingTabFocusRef\.current = null/);
+  assert.match(source, /window\.clearTimeout\(titleTimer\)/);
+  assert.match(source, /discardTerminalInputState\(tabId\)/);
+});
+
+test('inactive live sessions are presented as background work, not disconnections', () => {
+  assert.match(serverSource, /return tabId === tabsState\.activeId \? 'disconnected' : 'background'/);
+  assert.match(serverSource, /exitedTabs\.has\(tabId\) \? 'exited' : 'disconnected'/);
+  assert.match(source, /'background'/);
+  assert.match(source, /if \(status === 'background'\) return '后台运行'/);
+  assert.match(stylesSource, /\.status-dot\.background/);
+});
+
 test('tab mutations use the tabs websocket instead of HTTP mutation endpoints', () => {
   assert.match(source, /tabsSocketRef/);
   assert.match(source, /sendTabsCommand/);
@@ -30,6 +70,26 @@ test('tab mutations use the tabs websocket instead of HTTP mutation endpoints', 
   assert.equal(source.includes("sendTabsMutation('/api/terminal/tabs'"), false);
   assert.equal(source.includes('/api/terminal/tabs/active'), false);
   assert.equal(source.includes('/api/terminal/tabs/${encodeURIComponent'), false);
+});
+
+test('tab controls recover from silently dropped sockets without losing queued mutations', () => {
+  assert.match(source, /pendingTabsCommandsRef\.current\.push\(command\)/);
+  assert.match(source, /pendingTabsCommandsRef\.current\.unshift\(\.\.\.pendingCommands\.slice\(index\)\)/);
+  assert.match(source, /let reconnectAttempts = 0/);
+  assert.match(
+    source,
+    /TABS_RECONNECT_MAX_DELAY_MS,\s*\n\s*TABS_RECONNECT_DELAY_MS \* 2 \*\* reconnectAttempts/,
+  );
+  assert.match(source, /backoff \/ 2 \+ Math\.random\(\) \* \(backoff \/ 2\)/);
+  assert.match(source, /document\.addEventListener\('visibilitychange', probeTabsConnectionAfterResume\)/);
+  assert.match(source, /window\.addEventListener\('focus', probeTabsConnectionAfterResume\)/);
+  assert.match(source, /encodeTabsClientMessage\(\{ type: 'ping' \}\)/);
+  assert.match(
+    source,
+    /heartbeatTimer = window\.setInterval\(\s*\n\s*\(\) => probeTabsConnection\(TABS_HEARTBEAT_PONG_TIMEOUT_MS\),\s*\n\s*TABS_HEARTBEAT_INTERVAL_MS/,
+  );
+  assert.match(source, /message\?\.type === 'pong'/);
+  assert.match(source, /window\.clearInterval\(heartbeatTimer\)/);
 });
 
 test('toolbar does not remount or restart the active terminal session', () => {
@@ -97,4 +157,11 @@ test('terminal input remains queued until the server acknowledges it', () => {
   assert.match(terminalPaneSource, /type:\s*'input', data, inputSeq/);
   assert.match(terminalPaneSource, /message\.type === 'input-ack'/);
   assert.match(terminalPaneSource, /inputStateRef\.current\.pending\.delete\(inputSeq\)/);
+});
+
+test('terminal reset renders only the authoritative server snapshot', () => {
+  assert.match(terminalPaneSource, /if \(message\.reset\) \{/);
+  assert.match(terminalPaneSource, /terminal\.clear\(\)/);
+  assert.equal(terminalPaneSource.includes('Session ${message.sessionId}'), false);
+  assert.equal(terminalPaneSource.includes('${message.cwd}'), false);
 });

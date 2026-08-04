@@ -1,5 +1,6 @@
 import { LogOut, Minus, Plus, Settings, Terminal as TerminalIcon, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import { AuthGate } from './auth';
 import type { AuthUser } from './auth';
@@ -23,6 +24,11 @@ const DEFAULT_PREFERENCES: TerminalPreferences = {
 const MIN_FONT_SIZE = 11;
 const MAX_FONT_SIZE = 22;
 const TITLE_SYNC_DELAY_MS = 500;
+const TABS_RECONNECT_DELAY_MS = 1000;
+const TABS_RECONNECT_MAX_DELAY_MS = 15000;
+const TABS_RESUME_PONG_TIMEOUT_MS = 2500;
+const TABS_HEARTBEAT_INTERVAL_MS = 20000;
+const TABS_HEARTBEAT_PONG_TIMEOUT_MS = 8000;
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SPINNER_TITLE_PREFIX = /^[\u2800-\u28ff]+[\s:·.-]*/u;
 const EMPTY_TABS_STATE: TerminalTabsState = {
@@ -32,6 +38,7 @@ const EMPTY_TABS_STATE: TerminalTabsState = {
 const TERMINAL_STATUSES = new Set<string>([
   'connecting',
   'connected',
+  'background',
   'disconnected',
   'exited',
   'error',
@@ -127,6 +134,7 @@ function readPreferences(): TerminalPreferences {
 function statusLabel(status: TerminalStatus) {
   if (status === 'connected') return '已连接';
   if (status === 'connecting') return '连接中';
+  if (status === 'background') return '后台运行';
   if (status === 'exited') return '已退出';
   if (status === 'error') return '错误';
   return '已断开';
@@ -143,6 +151,8 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   const titleSyncTimersRef = useRef<Record<string, number>>({});
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const settingsPanelRef = useRef<HTMLDivElement | null>(null);
+  const tabButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingTabFocusRef = useRef<{ closedId: string; focusId: string } | null>(null);
 
   const { tabs, activeId } = tabsState;
 
@@ -150,27 +160,62 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
     tabsStateRef.current = tabsState;
   }, [tabsState]);
 
-  useEffect(() => () => {
-    Object.values(titleSyncTimersRef.current).forEach((timer) => window.clearTimeout(timer));
-    titleSyncTimersRef.current = {};
-    pendingTitlesRef.current = {};
-    pendingTabsCommandsRef.current = [];
-    clearTerminalInputStates();
-  }, []);
-
   const applyTabsState = useCallback((state: TerminalTabsState) => {
-    setTabsState(normalizeTabsState(state));
+    const normalized = normalizeTabsState(state);
+    setTabsState({
+      ...normalized,
+      tabs: normalized.tabs.map((tab) => {
+        const pendingTitle = pendingTitlesRef.current[tab.id];
+        if (!pendingTitle) {
+          return tab;
+        }
+        if (pendingTitle === tab.title) {
+          delete pendingTitlesRef.current[tab.id];
+          return tab;
+        }
+        // A status broadcast may race ahead of the title mutation. Keep the latest
+        // local title visible until the server echoes that exact value back.
+        return { ...tab, title: pendingTitle };
+      }),
+    });
   }, []);
 
   const sendTabsCommand = useCallback((command: TabsClientCommand) => {
     const socket = tabsSocketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(encodeTabsClientMessage(command));
-      return;
+      try {
+        socket.send(encodeTabsClientMessage(command));
+        return;
+      } catch {
+        // Keep the mutation queued. The socket lifecycle below will reconnect and
+        // flush it once the tab-control channel is healthy again.
+        socket.close();
+      }
     }
 
     pendingTabsCommandsRef.current.push(command);
   }, []);
+
+  const flushPendingTitles = useCallback(() => {
+    Object.values(titleSyncTimersRef.current).forEach((timer) => window.clearTimeout(timer));
+    titleSyncTimersRef.current = {};
+    for (const [tabId, title] of Object.entries(pendingTitlesRef.current)) {
+      sendTabsCommand({ type: 'update-title', tabId, title });
+    }
+  }, [sendTabsCommand]);
+
+  useEffect(() => {
+    // pagehide runs while the WebSocket is still usable, including mobile refreshes
+    // and back/forward-cache navigations. Flush the trailing title before teardown.
+    window.addEventListener('pagehide', flushPendingTitles);
+    return () => {
+      window.removeEventListener('pagehide', flushPendingTitles);
+      flushPendingTitles();
+      pendingTitlesRef.current = {};
+      pendingTabsCommandsRef.current = [];
+      clearTerminalInputStates();
+    };
+  }, [flushPendingTitles]);
 
   useEffect(() => {
     localStorage.setItem('terminal-preferences', JSON.stringify(preferences));
@@ -202,44 +247,179 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
     let disposed = false;
     let socket: WebSocket | null = null;
     let reconnectTimer = 0;
+    let reconnectAttempts = 0;
+    let heartbeatTimer = 0;
+    let pongTimer = 0;
+    let tabsMessageQueue = Promise.resolve();
 
-    const connect = () => {
-      socket = createTabsSocket(authToken);
-      socket.binaryType = 'arraybuffer';
-      tabsSocketRef.current = socket;
-      socket.addEventListener('open', () => {
-        if (tabsSocketRef.current !== socket) {
-          return;
-        }
-        const pendingCommands = pendingTabsCommandsRef.current;
-        pendingTabsCommandsRef.current = [];
-        for (const command of pendingCommands) {
-          socket?.send(encodeTabsClientMessage(command));
-        }
-      });
-      socket.addEventListener('message', (event) => {
-        void (async () => {
-          const message = await decodeTabsServerMessage(event.data);
-          if (message?.type === 'tabs') {
-            applyTabsState(normalizeTabsState(message.state));
-          }
-        })();
-      });
-      socket.addEventListener('close', () => {
-        if (tabsSocketRef.current === socket) {
-          tabsSocketRef.current = null;
-        }
-        if (!disposed) {
-          reconnectTimer = window.setTimeout(connect, 1000);
-        }
-      });
+    const clearReconnectTimer = () => {
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = 0;
+      }
     };
 
+    const clearPongTimer = () => {
+      if (pongTimer) {
+        window.clearTimeout(pongTimer);
+        pongTimer = 0;
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (disposed || reconnectTimer) {
+        return;
+      }
+
+      const backoff = Math.min(
+        TABS_RECONNECT_MAX_DELAY_MS,
+        TABS_RECONNECT_DELAY_MS * 2 ** reconnectAttempts,
+      );
+      reconnectAttempts += 1;
+      const delay = backoff / 2 + Math.random() * (backoff / 2);
+      reconnectTimer = window.setTimeout(connect, delay);
+    };
+
+    function connect() {
+      if (disposed) {
+        return;
+      }
+
+      const currentSocket = tabsSocketRef.current;
+      if (
+        currentSocket
+        && (currentSocket.readyState === WebSocket.OPEN || currentSocket.readyState === WebSocket.CONNECTING)
+      ) {
+        return;
+      }
+
+      clearReconnectTimer();
+      clearPongTimer();
+      const nextSocket = createTabsSocket(authToken);
+      socket = nextSocket;
+      nextSocket.binaryType = 'arraybuffer';
+      tabsSocketRef.current = nextSocket;
+      nextSocket.addEventListener('open', () => {
+        if (disposed || tabsSocketRef.current !== nextSocket) {
+          return;
+        }
+
+        reconnectAttempts = 0;
+        const pendingCommands = pendingTabsCommandsRef.current;
+        pendingTabsCommandsRef.current = [];
+        for (let index = 0; index < pendingCommands.length; index += 1) {
+          try {
+            nextSocket.send(encodeTabsClientMessage(pendingCommands[index]));
+          } catch {
+            pendingTabsCommandsRef.current.unshift(...pendingCommands.slice(index));
+            tabsSocketRef.current = null;
+            nextSocket.close();
+            scheduleReconnect();
+            break;
+          }
+        }
+      });
+      nextSocket.addEventListener('message', (event) => {
+        if (tabsSocketRef.current !== nextSocket) {
+          return;
+        }
+
+        tabsMessageQueue = tabsMessageQueue
+          .then(async () => {
+            const message = await decodeTabsServerMessage(event.data);
+            if (tabsSocketRef.current !== nextSocket) {
+              return;
+            }
+            if (message?.type === 'tabs') {
+              applyTabsState(normalizeTabsState(message.state));
+            } else if (message?.type === 'pong') {
+              clearPongTimer();
+            }
+          })
+          .catch(() => undefined);
+      });
+      nextSocket.addEventListener('close', () => {
+        if (tabsSocketRef.current === nextSocket) {
+          tabsSocketRef.current = null;
+          clearPongTimer();
+          scheduleReconnect();
+        }
+      });
+      nextSocket.addEventListener('error', () => {
+        if (tabsSocketRef.current === nextSocket) {
+          tabsSocketRef.current = null;
+          clearPongTimer();
+          nextSocket.close();
+          scheduleReconnect();
+        }
+      });
+    }
+
+    const probeTabsConnection = (pongTimeoutMs: number) => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+
+      const currentSocket = tabsSocketRef.current;
+      if (
+        !currentSocket
+        || currentSocket.readyState === WebSocket.CLOSED
+        || currentSocket.readyState === WebSocket.CLOSING
+      ) {
+        scheduleReconnect();
+        return;
+      }
+      if (currentSocket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      clearPongTimer();
+      try {
+        currentSocket.send(encodeTabsClientMessage({ type: 'ping' }));
+      } catch {
+        tabsSocketRef.current = null;
+        currentSocket.close();
+        scheduleReconnect();
+        return;
+      }
+
+      pongTimer = window.setTimeout(() => {
+        if (tabsSocketRef.current !== currentSocket) {
+          return;
+        }
+
+        tabsSocketRef.current = null;
+        currentSocket.close();
+        scheduleReconnect();
+      }, pongTimeoutMs);
+    };
+
+    const probeTabsConnectionAfterResume = () => {
+      if (document.visibilityState === 'hidden') {
+        return;
+      }
+      reconnectAttempts = 0;
+      probeTabsConnection(TABS_RESUME_PONG_TIMEOUT_MS);
+    };
+
+    document.addEventListener('visibilitychange', probeTabsConnectionAfterResume);
+    window.addEventListener('focus', probeTabsConnectionAfterResume);
+    heartbeatTimer = window.setInterval(
+      () => probeTabsConnection(TABS_HEARTBEAT_PONG_TIMEOUT_MS),
+      TABS_HEARTBEAT_INTERVAL_MS,
+    );
     connect();
 
     return () => {
       disposed = true;
-      window.clearTimeout(reconnectTimer);
+      clearReconnectTimer();
+      clearPongTimer();
+      if (heartbeatTimer) {
+        window.clearInterval(heartbeatTimer);
+        heartbeatTimer = 0;
+      }
+      document.removeEventListener('visibilitychange', probeTabsConnectionAfterResume);
+      window.removeEventListener('focus', probeTabsConnectionAfterResume);
       if (tabsSocketRef.current === socket) {
         tabsSocketRef.current = null;
       }
@@ -283,12 +463,14 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
 
     const existingTimer = titleSyncTimersRef.current[tabId];
     if (existingTimer) {
-      window.clearTimeout(existingTimer);
+      // The leading update has already been sent. Keep only the latest trailing
+      // title during the cooldown instead of resetting the timer indefinitely.
+      return;
     }
+    sendTabsCommand({ type: 'update-title', tabId, title });
     titleSyncTimersRef.current[tabId] = window.setTimeout(() => {
       delete titleSyncTimersRef.current[tabId];
       const pendingTitle = pendingTitlesRef.current[tabId];
-      delete pendingTitlesRef.current[tabId];
       if (!pendingTitle) {
         return;
       }
@@ -318,13 +500,88 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   }, [sendTabsCommand]);
 
   const closeTab = useCallback((tabId: string) => {
-    if (tabs.length <= 1) {
+    const currentTabs = tabsStateRef.current.tabs;
+    if (currentTabs.length <= 1) {
       return;
     }
 
+    const closedIndex = currentTabs.findIndex((tab) => tab.id === tabId);
+    if (closedIndex < 0) {
+      return;
+    }
+
+    const remainingTabs = currentTabs.filter((tab) => tab.id !== tabId);
+    const focusId = tabsStateRef.current.activeId === tabId
+      ? remainingTabs[Math.max(0, closedIndex - 1)]?.id ?? remainingTabs[0].id
+      : tabsStateRef.current.activeId;
+    pendingTabFocusRef.current = { closedId: tabId, focusId };
+
+    const titleTimer = titleSyncTimersRef.current[tabId];
+    if (titleTimer) {
+      window.clearTimeout(titleTimer);
+      delete titleSyncTimersRef.current[tabId];
+    }
+    delete pendingTitlesRef.current[tabId];
     discardTerminalInputState(tabId);
     sendTabsCommand({ type: 'close-tab', tabId });
-  }, [sendTabsCommand, tabs.length]);
+  }, [sendTabsCommand]);
+
+  const handleTabKeyDown = useCallback((
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    tabId: string,
+  ) => {
+    const currentTabs = tabsStateRef.current.tabs;
+    const currentIndex = currentTabs.findIndex((tab) => tab.id === tabId);
+    if (currentIndex < 0 || currentTabs.length < 2) {
+      return;
+    }
+
+    if (event.key === 'Delete') {
+      event.preventDefault();
+      closeTab(tabId);
+      return;
+    }
+
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % currentTabs.length;
+    } else if (event.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + currentTabs.length) % currentTabs.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = currentTabs.length - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    const nextTabId = currentTabs[nextIndex].id;
+    selectTab(nextTabId);
+    window.requestAnimationFrame(() => {
+      tabButtonRefs.current.get(nextTabId)?.focus();
+    });
+  }, [closeTab, selectTab]);
+
+  useEffect(() => {
+    const pendingFocus = pendingTabFocusRef.current;
+    if (!pendingFocus || tabs.some((tab) => tab.id === pendingFocus.closedId)) {
+      return;
+    }
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      if (pendingTabFocusRef.current !== pendingFocus) {
+        return;
+      }
+
+      const focusTarget = tabButtonRefs.current.get(pendingFocus.focusId);
+      if (focusTarget) {
+        focusTarget.focus();
+        pendingTabFocusRef.current = null;
+      }
+    });
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [tabs]);
 
   useEffect(() => {
     document.title = activeTab?.title
@@ -377,7 +634,12 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
           <span className="brand-name">Cloud Terminal</span>
         </div>
 
-        <nav className="tabs" aria-label="终端标签">
+        <nav
+          className="tabs"
+          role="tablist"
+          aria-label="终端标签"
+          aria-orientation="horizontal"
+        >
           {tabs.map((tab) => {
             const isActive = tab.id === activeTab?.id;
             return (
@@ -385,8 +647,21 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
                 <button
                   type="button"
                   className="tab-main"
+                  id={`terminal-tab-${tab.id}`}
+                  ref={(button) => {
+                    if (button) {
+                      tabButtonRefs.current.set(tab.id, button);
+                    } else {
+                      tabButtonRefs.current.delete(tab.id);
+                    }
+                  }}
+                  role="tab"
                   onClick={() => selectTab(tab.id)}
+                  onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
+                  aria-selected={isActive}
+                  aria-controls="active-terminal-panel"
                   aria-current={isActive ? 'page' : undefined}
+                  tabIndex={isActive ? 0 : -1}
                   title={`${tab.title} - ${statusLabel(tab.status)}`}
                 >
                   <span className={`status-dot ${tab.status}`} aria-hidden="true" />
@@ -436,7 +711,12 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
         </div>
       </header>
 
-      <section className="terminal-stack">
+      <section
+        id="active-terminal-panel"
+        className="terminal-stack"
+        role="tabpanel"
+        aria-labelledby={activeTab ? `terminal-tab-${activeTab.id}` : undefined}
+      >
         {activeTab && (
           <div
             key={activeTab.id}

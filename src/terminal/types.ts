@@ -1,4 +1,10 @@
-export type TerminalStatus = 'connecting' | 'connected' | 'disconnected' | 'exited' | 'error';
+export type TerminalStatus =
+  | 'connecting'
+  | 'connected'
+  | 'background'
+  | 'disconnected'
+  | 'exited'
+  | 'error';
 
 export type TerminalPreferences = {
   fontSize: number;

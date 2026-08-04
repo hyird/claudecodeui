@@ -741,6 +741,11 @@ button:focus-visible {
   box-shadow: 0 0 0 3px var(--success-glow);
 }
 
+.status-dot.background {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
 .status-dot.connecting {
   background: var(--warning);
   animation: status-pulse 1.3s ease-in-out infinite;
@@ -992,9 +997,9 @@ button:focus-visible {
   inset: 10px 12px 12px;
   overflow: hidden;
   /* Uniform ~12px breathing room around the grid. measureCellCapacity subtracts this
-     padding; the right side stays 6px because a 6px scrollbar gutter is reserved in JS
-     (TERMINAL_SCROLLBAR_GUTTER), so effective right margin = 6 + 6 = 12 = left. */
-  padding: 12px 6px 12px 12px;
+     padding; the right side stays 8px because a 4px scrollbar gutter is reserved in JS
+     (TERMINAL_SCROLLBAR_GUTTER), so effective right margin = 8 + 4 = 12 = left. */
+  padding: 12px 8px 12px 12px;
   border: 1px solid var(--edge-hairline);
   border-radius: var(--radius-frame);
   background: var(--bg-terminal);
@@ -1015,17 +1020,16 @@ button:focus-visible {
   background: transparent;
 }
 
-/* Slim scroll affordance — only present when there is scrollback to reach.
-   Keep `auto` so wheel events still flow through xterm, but visually hide the
-   track until xterm reports real scrollback. */
+/* xterm 6 owns a custom overlay scrollbar inside `.xterm-scrollable-element`.
+   Keep the legacy native viewport scrollbar hidden so the two implementations
+   never stack into a thick double bar. Wheel events still flow through `auto`. */
 .terminal-pane .xterm .xterm-viewport {
   overflow-y: auto !important;
+  /* xterm defaults the viewport to pure black. Whole-cell fitting can leave a
+     few remainder pixels below the last row, so match the terminal theme here
+     instead of exposing that remainder as a black strip. */
+  background-color: var(--bg-terminal);
   scrollbar-width: none;
-}
-
-.terminal-pane .xterm .xterm-viewport.has-scrollback {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
 }
 
 .terminal-pane .xterm .xterm-viewport::-webkit-scrollbar {
@@ -1033,22 +1037,10 @@ button:focus-visible {
   height: 0;
 }
 
-.terminal-pane .xterm .xterm-viewport.has-scrollback::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-.terminal-pane .xterm .xterm-viewport::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.terminal-pane .xterm .xterm-viewport::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+/* xterm 6 renders its own VS Code-style scrollbar above the viewport. Its width
+   comes from `overviewRuler.width`; keep the thumb pill-shaped at that compact size. */
+.terminal-pane .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
   border-radius: 999px;
-}
-
-.terminal-pane .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.28);
 }
 
 /* --------------------------------------------------------------------------
@@ -1146,8 +1138,8 @@ button:focus-visible {
 
   .terminal-frame {
     inset: 6px;
-    /* Uniform ~10px inner margin on compact widths; right 4 + 6px scrollbar gutter = 10. */
-    padding: 10px 4px 10px 10px;
+    /* Uniform ~10px inner margin on compact widths; right 6 + 4px scrollbar gutter = 10. */
+    padding: 10px 6px 10px 10px;
     border-radius: var(--radius-md);
   }
 }
