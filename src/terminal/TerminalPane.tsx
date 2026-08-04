@@ -859,7 +859,6 @@ export default function TerminalPane({
     terminal.options.theme = terminalTheme;
     if (active) {
       resizeAfterLayoutSettles();
-      terminal.focus();
     } else {
       terminal.blur();
     }

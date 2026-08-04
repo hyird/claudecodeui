@@ -1111,7 +1111,7 @@ button:focus-visible {
     grid-template-columns: minmax(0, 1fr) auto;
     height: auto;
     min-height: 46px;
-    padding: 6px 9px;
+    padding: 3px 7px;
     gap: 8px;
   }
 
@@ -1125,10 +1125,32 @@ button:focus-visible {
 
   .toolbar {
     order: 2;
+    gap: 2px;
+    padding-left: 7px;
+  }
+
+  .icon-button {
+    width: 40px;
+    height: 40px;
   }
 
   .tab {
     min-width: 108px;
+    height: 40px;
+  }
+
+  .tab-close {
+    width: 32px;
+    height: 32px;
+  }
+
+  .font-stepper {
+    height: 42px;
+  }
+
+  .step-button {
+    width: 40px;
+    height: 40px;
   }
 
   .settings-popover {

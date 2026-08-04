@@ -27,6 +27,7 @@ test('terminal tabs expose standard semantics and keyboard navigation', () => {
   assert.match(source, /aria-orientation="horizontal"/);
   assert.match(source, /role="tab"/);
   assert.match(source, /aria-selected=\{isActive\}/);
+  assert.match(source, /aria-label=\{`\$\{tab\.title\}，\$\{statusLabel\(tab\.status\)\}`\}/);
   assert.match(source, /aria-controls="active-terminal-panel"/);
   assert.match(source, /tabIndex=\{isActive \? 0 : -1\}/);
   assert.match(source, /role="tabpanel"/);
@@ -37,6 +38,40 @@ test('terminal tabs expose standard semantics and keyboard navigation', () => {
   assert.match(source, /event\.key === 'End'/);
   assert.match(source, /selectTab\(nextTabId\)/);
   assert.match(source, /tabButtonRefs\.current\.get\(nextTabId\)\?\.focus\(\)/);
+});
+
+test('the active terminal tab stays visible inside an overflowing tab strip', () => {
+  assert.match(source, /useLayoutEffect/);
+  assert.match(source, /tabButtonRefs\.current\s*\.get\(activeTab\.id\)/);
+  assert.match(source, /\.closest<HTMLElement>\('\.tab'\)/);
+  assert.match(source, /scrollIntoView\(\{ block: 'nearest', inline: 'nearest' \}\)/);
+});
+
+test('terminal settings dialog receives focus and is linked to its trigger', () => {
+  assert.match(source, /id="terminal-settings-dialog"/);
+  assert.match(source, /aria-controls="terminal-settings-dialog"/);
+  assert.match(source, /settingsPanelRef\.current\?\.querySelector<HTMLButtonElement>/);
+  assert.match(source, /'button:not\(:disabled\)'/);
+  assert.match(source, /firstSettingsControl\?\.focus\(\)/);
+  assert.match(source, /settingsButtonRef\.current\?\.focus\(\)/);
+});
+
+test('changing terminal font size does not steal focus from settings', () => {
+  const preferencesEffect = terminalPaneSource.match(
+    /useEffect\(\(\) => \{[\s\S]*?terminal\.options\.fontSize[\s\S]*?\}, \[active, preferences\.fontSize, resizeAfterLayoutSettles\]\);/,
+  );
+  assert.ok(preferencesEffect, 'Could not find terminal preference effect');
+  assert.equal(preferencesEffect[0].includes('terminal.focus()'), false);
+  assert.match(terminalPaneSource, /terminalRef\.current\?\.focus\(\)/);
+});
+
+test('mobile terminal controls expose practical touch targets', () => {
+  const mobileStyles = stylesSource.slice(stylesSource.indexOf('@media (max-width: 720px)'));
+  assert.match(mobileStyles, /\.icon-button \{\s*width:\s*40px;\s*height:\s*40px;/);
+  assert.match(mobileStyles, /\.tab \{[\s\S]*?height:\s*40px;/);
+  assert.match(mobileStyles, /\.tab-close \{\s*width:\s*32px;\s*height:\s*32px;/);
+  assert.match(mobileStyles, /\.font-stepper \{\s*height:\s*42px;/);
+  assert.match(mobileStyles, /\.step-button \{\s*width:\s*40px;\s*height:\s*40px;/);
 });
 
 test('closing a terminal tab restores focus to the server-selected fallback', () => {

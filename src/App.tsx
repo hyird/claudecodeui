@@ -1,5 +1,5 @@
 import { LogOut, Minus, Plus, Settings, Terminal as TerminalIcon, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import { AuthGate } from './auth';
@@ -432,6 +432,21 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
     [activeId, tabs],
   );
 
+  // On compact screens the tab strip scrolls horizontally. Server-created tabs
+  // become active without receiving DOM focus, so the browser does not reveal
+  // them automatically. Move the whole pill (including its close button) into
+  // view before paint whenever the active tab changes.
+  useLayoutEffect(() => {
+    if (!activeTab) {
+      return;
+    }
+
+    tabButtonRefs.current
+      .get(activeTab.id)
+      ?.closest<HTMLElement>('.tab')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeTab?.id]);
+
   const updateTabStatus = useCallback((tabId: string, status: TerminalStatus) => {
     setTabsState((current) => ({
       ...current,
@@ -589,6 +604,17 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       : 'Cloud Terminal';
   }, [activeTab?.title]);
 
+  useLayoutEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+
+    const firstSettingsControl = settingsPanelRef.current?.querySelector<HTMLButtonElement>(
+      'button:not(:disabled)',
+    );
+    firstSettingsControl?.focus();
+  }, [settingsOpen]);
+
   // The settings popover floats over the terminal, so opening it never changes
   // the terminal's size (which would otherwise trigger a reflow / PTY resize).
   // Dismiss it on outside-click or Escape, like any menu.
@@ -659,6 +685,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
                   onClick={() => selectTab(tab.id)}
                   onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
                   aria-selected={isActive}
+                  aria-label={`${tab.title}，${statusLabel(tab.status)}`}
                   aria-controls="active-terminal-panel"
                   aria-current={isActive ? 'page' : undefined}
                   tabIndex={isActive ? 0 : -1}
@@ -695,6 +722,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
             title="终端设置"
             aria-label="终端设置"
             aria-haspopup="dialog"
+            aria-controls="terminal-settings-dialog"
             aria-expanded={settingsOpen}
           >
             <Settings size={16} aria-hidden="true" />
@@ -736,6 +764,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
 
       {settingsOpen && (
         <div
+          id="terminal-settings-dialog"
           ref={settingsPanelRef}
           className="settings-popover"
           role="dialog"

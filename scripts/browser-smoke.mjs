@@ -64,6 +64,7 @@ async function readPageState() {
       statuses: [...document.querySelectorAll('.status-dot')].map((node) => node.className),
       tabSemantics: [...document.querySelectorAll('[role="tab"]')].map((node) => ({
         id: node.id,
+        label: node.getAttribute('aria-label'),
         selected: node.getAttribute('aria-selected') === 'true',
         controls: node.getAttribute('aria-controls'),
         tabIndex: node.tabIndex,
@@ -71,8 +72,57 @@ async function readPageState() {
       selectedIndex: [...document.querySelectorAll('[role="tab"]')]
         .findIndex((node) => node.getAttribute('aria-selected') === 'true'),
       focusedTabIndex: [...document.querySelectorAll('[role="tab"]')].indexOf(document.activeElement),
+      tabStrip: (() => {
+        const strip = document.querySelector('[role="tablist"]');
+        const selectedTab = document.querySelector('[role="tab"][aria-selected="true"]')
+          ?.closest('.tab');
+        const stripRect = strip?.getBoundingClientRect();
+        const selectedRect = selectedTab?.getBoundingClientRect();
+        return strip && stripRect && selectedRect ? {
+          clientWidth: strip.clientWidth,
+          scrollWidth: strip.scrollWidth,
+          scrollLeft: strip.scrollLeft,
+          selectedFullyVisible: (
+            selectedRect.left >= stripRect.left - 0.5
+            && selectedRect.right <= stripRect.right + 0.5
+          ),
+        } : null;
+      })(),
+      settings: (() => {
+        const button = document.querySelector('button[aria-label="终端设置"]');
+        const dialog = document.querySelector('[role="dialog"][aria-label="终端设置"]');
+        return {
+          open: Boolean(dialog),
+          expanded: button?.getAttribute('aria-expanded') === 'true',
+          controls: button?.getAttribute('aria-controls') ?? null,
+          dialogId: dialog?.id ?? null,
+          dialogContainsFocus: Boolean(dialog?.contains(document.activeElement)),
+          buttonHasFocus: document.activeElement === button,
+          focusedControlLabel: document.activeElement?.getAttribute('aria-label') ?? null,
+          fontSize: dialog?.querySelector('.font-stepper strong')?.textContent ?? null,
+        };
+      })(),
       panelLabelledBy: document.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'),
       hasTerminal: Boolean(document.querySelector('.xterm')),
+      terminalFrameRect: (() => {
+        const rect = document.querySelector('.terminal-frame')?.getBoundingClientRect();
+        return rect ? { width: rect.width, height: rect.height } : null;
+      })(),
+      controlSizes: (() => {
+        const measure = (selector) => [...document.querySelectorAll(selector)].map((node) => {
+          const rect = node.getBoundingClientRect();
+          return {
+            label: node.getAttribute('aria-label'),
+            width: rect.width,
+            height: rect.height,
+          };
+        });
+        return {
+          toolbar: measure('.toolbar .icon-button'),
+          tabClose: measure('.tab-close'),
+          fontStepper: measure('.step-button'),
+        };
+      })(),
       terminalScrollbar: (() => {
         const viewport = document.querySelector('.xterm-viewport');
         const track = document.querySelector('.xterm-scrollable-element > .scrollbar.vertical');
@@ -161,6 +211,19 @@ function assertHealthyTerminal(label, state) {
   ) {
     throw new Error(`${label}: terminal tab semantics are invalid`);
   }
+  const statusNames = {
+    'status-dot connected': '已连接',
+    'status-dot connecting': '连接中',
+    'status-dot background': '后台运行',
+    'status-dot disconnected': '已断开',
+    'status-dot exited': '已退出',
+    'status-dot error': '错误',
+  };
+  if (state.tabSemantics.some((tab, index) => (
+    tab.label !== `${state.tabs[index]}，${statusNames[state.statuses[index]]}`
+  ))) {
+    throw new Error(`${label}: terminal tab accessible names omit session status`);
+  }
   if (state.panelLabelledBy !== state.tabSemantics[state.selectedIndex]?.id) {
     throw new Error(`${label}: terminal panel is not labelled by the selected tab`);
   }
@@ -213,9 +276,53 @@ await call('Emulation.setDeviceMetricsOverride', {
   mobile: false,
 });
 await call('Page.navigate', { url: targetUrl });
-await waitForState(
+const initialDesktopState = await waitForState(
   (state) => state.hasTerminal && state.statuses[state.selectedIndex] === 'status-dot connected',
   'desktop terminal did not connect',
+);
+assertHealthyTerminal('initial desktop', initialDesktopState);
+
+await call('Runtime.evaluate', {
+  expression: `(() => {
+    const button = document.querySelector('button[aria-label="终端设置"]');
+    button?.focus();
+    button?.click();
+  })()`,
+});
+const openSettingsState = await waitForState(
+  (state) => (
+    state.settings.open
+    && state.settings.expanded
+    && state.settings.controls === state.settings.dialogId
+    && state.settings.dialogContainsFocus
+  ),
+  'terminal settings dialog did not receive keyboard focus',
+);
+if (
+  openSettingsState.terminalFrameRect?.width !== initialDesktopState.terminalFrameRect?.width
+  || openSettingsState.terminalFrameRect?.height !== initialDesktopState.terminalFrameRect?.height
+) {
+  throw new Error('opening terminal settings changed the terminal frame size');
+}
+await call('Runtime.evaluate', {
+  expression: `(() => {
+    const button = document.querySelector('button[aria-label="增大字号"]');
+    button?.focus();
+    button?.click();
+  })()`,
+});
+const adjustedSettingsState = await waitForState(
+  (state) => (
+    state.settings.fontSize === '15px'
+    && state.settings.dialogContainsFocus
+    && state.settings.focusedControlLabel === '增大字号'
+  ),
+  'changing terminal font size stole focus from settings',
+);
+await dispatchKey('Escape', 'Escape', 27);
+await waitForState(
+  (state) => !state.settings.open && !state.settings.expanded && state.settings.buttonHasFocus,
+  'Escape did not close terminal settings and restore trigger focus',
 );
 
 await call('Runtime.evaluate', {
@@ -287,7 +394,31 @@ const mobileState = await waitForState(
   'mobile terminal statuses did not settle',
 );
 assertHealthyTerminal('mobile', mobileState);
+if (
+  mobileState.controlSizes.toolbar.some((target) => target.width < 40 || target.height < 40)
+  || mobileState.controlSizes.tabClose.some((target) => target.width < 32 || target.height < 32)
+) {
+  throw new Error(`mobile terminal controls are too small: ${JSON.stringify(mobileState.controlSizes)}`);
+}
 await capture(mobileOutput);
+
+await call('Runtime.evaluate', {
+  expression: `document.querySelector('button[aria-label="终端设置"]')?.click()`,
+});
+const mobileSettingsState = await waitForState(
+  (state) => (
+    state.settings.open
+    && state.settings.dialogContainsFocus
+    && state.controlSizes.fontStepper.length === 2
+    && state.controlSizes.fontStepper.every((target) => target.width >= 40 && target.height >= 40)
+  ),
+  'mobile font controls did not expose practical touch targets',
+);
+await dispatchKey('Escape', 'Escape', 27);
+await waitForState(
+  (state) => !state.settings.open && state.settings.buttonHasFocus,
+  'mobile settings did not close cleanly',
+);
 
 await call('Runtime.evaluate', {
   expression: `document.querySelector('[role="tab"][aria-selected="true"]')?.focus()`,
@@ -304,6 +435,47 @@ const afterDeleteState = await waitForState(
 );
 assertHealthyTerminal('mobile after deleting a tab', afterDeleteState);
 
+// Fill the compact tab strip past its visible width. Newly activated tabs must
+// follow the user into view instead of becoming selected off-screen.
+const overflowTabCount = 6;
+for (let expectedCount = 2; expectedCount <= overflowTabCount; expectedCount += 1) {
+  await call('Runtime.evaluate', {
+    expression: `document.querySelector('button[aria-label="新增终端"]')?.click()`,
+  });
+  await waitForState(
+    (state) => (
+      state.tabs.length === expectedCount
+      && state.selectedIndex === expectedCount - 1
+      && state.statuses[state.selectedIndex] === 'status-dot connected'
+    ),
+    `terminal tab ${expectedCount} did not become active`,
+  );
+}
+
+const overflowTabsState = await waitForState(
+  (state) => (
+    state.tabs.length === overflowTabCount
+    && state.tabStrip?.scrollWidth > state.tabStrip?.clientWidth
+    && state.tabStrip?.selectedFullyVisible
+  ),
+  'active terminal tab stayed outside the overflowing mobile tab strip',
+);
+assertHealthyTerminal('mobile with overflowing tabs', overflowTabsState);
+
+for (let expectedCount = overflowTabCount - 1; expectedCount >= 1; expectedCount -= 1) {
+  await call('Runtime.evaluate', {
+    expression: `document.querySelector('.tab.active .tab-close')?.click()`,
+  });
+  await waitForState(
+    (state) => (
+      state.tabs.length === expectedCount
+      && state.selectedIndex === expectedCount - 1
+      && state.statuses[state.selectedIndex] === 'status-dot connected'
+    ),
+    `terminal tabs did not cleanly return to ${expectedCount}`,
+  );
+}
+
 await enterTerminalCommand(`i=0; while [ $i -lt 120 ]; do echo scroll-$i; i=$((i+1)); done`);
 const scrollbackState = await waitForState(
   (state) => (
@@ -319,14 +491,22 @@ await capture(mobileOutput);
 
 await enterTerminalCommand('exit');
 const exitedState = await waitForState(
-  (state) => state.statuses[state.selectedIndex] === 'status-dot exited',
+  (state) => (
+    state.statuses[state.selectedIndex] === 'status-dot exited'
+    && state.tabSemantics[state.selectedIndex]?.label === `${state.tabs[state.selectedIndex]}，已退出`
+  ),
   'smoke-test terminal did not exit cleanly',
 );
 
 console.log(JSON.stringify({
+  initialDesktopState,
+  openSettingsState,
+  adjustedSettingsState,
   desktopState,
   mobileState,
+  mobileSettingsState,
   afterDeleteState,
+  overflowTabsState,
   scrollbackState,
   exitedState,
 }, null, 2));
