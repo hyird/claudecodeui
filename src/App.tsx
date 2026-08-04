@@ -153,6 +153,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   const settingsPanelRef = useRef<HTMLDivElement | null>(null);
   const tabButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingTabFocusRef = useRef<{ closedId: string; focusId: string } | null>(null);
+  const pendingKeyboardTabFocusRef = useRef<string | null>(null);
 
   const { tabs, activeId } = tabsState;
 
@@ -447,6 +448,16 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [activeTab?.id]);
 
+  useLayoutEffect(() => {
+    const pendingFocusId = pendingKeyboardTabFocusRef.current;
+    if (!activeTab || pendingFocusId !== activeTab.id) {
+      return;
+    }
+
+    tabButtonRefs.current.get(pendingFocusId)?.focus();
+    pendingKeyboardTabFocusRef.current = null;
+  }, [activeTab?.id]);
+
   const updateTabStatus = useCallback((tabId: string, status: TerminalStatus) => {
     setTabsState((current) => ({
       ...current,
@@ -572,10 +583,11 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
 
     event.preventDefault();
     const nextTabId = currentTabs[nextIndex].id;
+    if (nextTabId === tabId) {
+      return;
+    }
+    pendingKeyboardTabFocusRef.current = nextTabId;
     selectTab(nextTabId);
-    window.requestAnimationFrame(() => {
-      tabButtonRefs.current.get(nextTabId)?.focus();
-    });
   }, [closeTab, selectTab]);
 
   useEffect(() => {
@@ -753,6 +765,10 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
             <TerminalPane
               tab={activeTab}
               active
+              focusOnMount={
+                pendingKeyboardTabFocusRef.current !== activeTab.id
+                && pendingTabFocusRef.current?.focusId !== activeTab.id
+              }
               authToken={authToken}
               preferences={preferences}
               onStatusChange={updateTabStatus}

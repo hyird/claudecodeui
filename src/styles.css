@@ -706,13 +706,16 @@ button:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 9px;
+  width: 100%;
   min-width: 0;
   height: 100%;
   flex: 1;
   border: 0;
   background: transparent;
   color: inherit;
-  padding: 0 11px;
+  /* The close control overlays this full-width button. Keeping the tab button
+     underneath means a hidden close area still selects the tab on touch. */
+  padding: 0 39px 0 11px;
   font-size: 13px;
 }
 
@@ -776,28 +779,41 @@ button:focus-visible {
 
 /* Close button — hidden until relevant */
 .tab-close {
+  position: absolute;
+  top: 50%;
+  right: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
-  margin-right: 4px;
-  flex: 0 0 auto;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
   transition:
     background-color 120ms ease,
     color 120ms ease,
     opacity 120ms ease;
 }
 
-.tab:hover .tab-close,
 .tab.active .tab-close,
 .tab-close:focus-visible {
   opacity: 1;
+  pointer-events: auto;
+}
+
+/* Touch browsers synthesize :hover between touchstart and click. If hover
+   enables this overlaid button there, the resulting click can be retargeted
+   from the tab to close, terminating an inactive session. */
+@media (hover: hover) and (pointer: fine) {
+  .tab:hover .tab-close {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .tab-close:hover {

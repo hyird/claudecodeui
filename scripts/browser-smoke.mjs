@@ -14,6 +14,7 @@ if (!targetUrl || !authToken || !desktopOutput || !mobileOutput) {
 }
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const CDP_CALL_TIMEOUT_MS = 10000;
 const targets = await fetch(`http://127.0.0.1:${cdpPort}/json/list`).then((response) => response.json());
 const pageTarget = targets.find((target) => target.type === 'page');
 if (!pageTarget?.webSocketDebuggerUrl) {
@@ -38,6 +39,7 @@ socket.on('message', (raw) => {
     return;
   }
   pending.delete(message.id);
+  clearTimeout(request.timeout);
   if (message.error) {
     request.reject(new Error(message.error.message));
   } else {
@@ -49,10 +51,22 @@ function call(method, params = {}) {
   const id = nextId;
   nextId += 1;
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    const timeout = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`Chromium did not respond to ${method} within ${CDP_CALL_TIMEOUT_MS}ms`));
+    }, CDP_CALL_TIMEOUT_MS);
+    pending.set(id, { resolve, reject, timeout });
     socket.send(JSON.stringify({ id, method, params }));
   });
 }
+
+socket.on('close', () => {
+  for (const request of pending.values()) {
+    clearTimeout(request.timeout);
+    request.reject(new Error('Chromium debugging connection closed'));
+  }
+  pending.clear();
+});
 
 async function readPageState() {
   const result = await call('Runtime.evaluate', {
@@ -82,6 +96,8 @@ async function readPageState() {
           clientWidth: strip.clientWidth,
           scrollWidth: strip.scrollWidth,
           scrollLeft: strip.scrollLeft,
+          left: stripRect.left,
+          right: stripRect.right,
           selectedFullyVisible: (
             selectedRect.left >= stripRect.left - 0.5
             && selectedRect.right <= stripRect.right + 0.5
@@ -111,10 +127,21 @@ async function readPageState() {
       controlSizes: (() => {
         const measure = (selector) => [...document.querySelectorAll(selector)].map((node) => {
           const rect = node.getBoundingClientRect();
+          const style = getComputedStyle(node);
+          const hitTarget = document.elementFromPoint(
+            rect.left + rect.width / 2,
+            rect.top + rect.height / 2,
+          );
           return {
             label: node.getAttribute('aria-label'),
             width: rect.width,
             height: rect.height,
+            centerX: rect.left + rect.width / 2,
+            centerY: rect.top + rect.height / 2,
+            opacity: Number(style.opacity),
+            pointerEvents: style.pointerEvents,
+            activeTab: node.closest('.tab')?.classList.contains('active') ?? false,
+            hitTargetLabel: hitTarget?.closest('button')?.getAttribute('aria-label') ?? null,
           };
         });
         return {
@@ -154,6 +181,10 @@ async function readPageState() {
         } : null;
       })(),
       viewport: { width: innerWidth, height: innerHeight },
+      inputCapabilities: {
+        hoverFine: matchMedia('(hover: hover) and (pointer: fine)').matches,
+        touchCoarse: matchMedia('(hover: none) and (pointer: coarse)').matches,
+      },
       documentSize: {
         width: document.documentElement.scrollWidth,
         height: document.documentElement.scrollHeight,
@@ -228,9 +259,12 @@ function assertHealthyTerminal(label, state) {
     throw new Error(`${label}: terminal panel is not labelled by the selected tab`);
   }
   if (
-    state.terminalScrollbar?.rulerWidth !== 4
-    || JSON.stringify(state.terminalScrollbar.rulerBorderPixel)
-      !== JSON.stringify(state.terminalScrollbar.viewportBackgroundPixel)
+    state.terminalScrollbar?.trackHeight > 0
+    && (
+      state.terminalScrollbar.rulerWidth !== 4
+      || JSON.stringify(state.terminalScrollbar.rulerBorderPixel)
+        !== JSON.stringify(state.terminalScrollbar.viewportBackgroundPixel)
+    )
   ) {
     throw new Error(
       `${label}: terminal has a contrasting overview-ruler edge; `
@@ -239,11 +273,12 @@ function assertHealthyTerminal(label, state) {
   }
 }
 
-async function dispatchKey(key, code, keyCode) {
+async function dispatchKey(key, code, keyCode, modifiers = 0) {
   await call('Input.dispatchKeyEvent', {
     type: 'keyDown',
     key,
     code,
+    modifiers,
     windowsVirtualKeyCode: keyCode,
     nativeVirtualKeyCode: keyCode,
   });
@@ -251,8 +286,28 @@ async function dispatchKey(key, code, keyCode) {
     type: 'keyUp',
     key,
     code,
+    modifiers,
     windowsVirtualKeyCode: keyCode,
     nativeVirtualKeyCode: keyCode,
+  });
+}
+
+async function dispatchTap(x, y) {
+  await call('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [{ x, y }],
+  });
+  await call('Input.dispatchTouchEvent', {
+    type: 'touchEnd',
+    touchPoints: [],
+  });
+}
+
+async function dispatchMouseMove(x, y) {
+  await call('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x,
+    y,
   });
 }
 
@@ -269,6 +324,7 @@ await call('Runtime.enable');
 await call('Page.addScriptToEvaluateOnNewDocument', {
   source: `try { localStorage.setItem('auth-token', ${JSON.stringify(authToken)}); } catch {}`,
 });
+await call('Emulation.setTouchEmulationEnabled', { enabled: false });
 await call('Emulation.setDeviceMetricsOverride', {
   width: 1440,
   height: 900,
@@ -277,7 +333,13 @@ await call('Emulation.setDeviceMetricsOverride', {
 });
 await call('Page.navigate', { url: targetUrl });
 const initialDesktopState = await waitForState(
-  (state) => state.hasTerminal && state.statuses[state.selectedIndex] === 'status-dot connected',
+  (state) => (
+    state.hasTerminal
+    && state.statuses[state.selectedIndex] === 'status-dot connected'
+    && state.terminalFrameRect?.height > 0
+    && state.terminalScrollbar?.trackHeight > 0
+    && state.terminalScrollbar?.rulerBorderPixel
+  ),
   'desktop terminal did not connect',
 );
 assertHealthyTerminal('initial desktop', initialDesktopState);
@@ -338,6 +400,27 @@ const addedTabState = await waitForState(
   'new terminal tab did not become active',
 );
 assertHealthyTerminal('desktop after adding a tab', addedTabState);
+let desktopHoverState = addedTabState;
+if (addedTabState.inputCapabilities.hoverFine) {
+  const inactiveDesktopClose = addedTabState.controlSizes.tabClose
+    .find((target) => !target.activeTab);
+  if (!inactiveDesktopClose) {
+    throw new Error('desktop inactive close control is missing');
+  }
+  await dispatchMouseMove(inactiveDesktopClose.centerX, inactiveDesktopClose.centerY);
+  desktopHoverState = await waitForState(
+    (state) => {
+      const target = state.controlSizes.tabClose.find((control) => !control.activeTab);
+      return Boolean(
+        target
+        && target.pointerEvents === 'auto'
+        && target.hitTargetLabel === target.label
+      );
+    },
+    'desktop mouse hover did not reveal the inactive close control',
+  );
+  await dispatchMouseMove(720, 450);
+}
 
 await call('Runtime.evaluate', {
   expression: `document.querySelector('[role="tab"][aria-selected="true"]')?.focus()`,
@@ -360,7 +443,7 @@ assertHealthyTerminal('desktop after keyboard navigation', navigatedDesktopState
 // The second value exercises the trailing pagehide flush rather than only the
 // leading send. Keep the shell busy so its next prompt cannot replace the title.
 await enterTerminalCommand(
-  `printf '\\033]0;Refresh Base\\007'; sleep 0.05; printf '\\033]0;Refresh Check\\007'; sleep 10`,
+  `printf '\\033]0;Refresh Base\\007'; sleep 0.05; printf '\\033]0;Refresh Check\\007'; sleep 30`,
 );
 const desktopState = await waitForState(
   (state) => (
@@ -374,6 +457,21 @@ const desktopState = await waitForState(
 assertHealthyTerminal('desktop after terminal title update', desktopState);
 await capture(desktopOutput);
 
+if (process.env.BROWSER_SMOKE_DESKTOP_ONLY === '1') {
+  console.log(JSON.stringify({
+    initialDesktopState,
+    desktopHoverState,
+    navigatedDesktopState,
+    desktopState,
+  }, null, 2));
+  socket.close();
+  process.exit(0);
+}
+
+await call('Emulation.setTouchEmulationEnabled', {
+  enabled: true,
+  maxTouchPoints: 1,
+});
 await call('Emulation.setDeviceMetricsOverride', {
   width: 390,
   height: 844,
@@ -397,9 +495,52 @@ assertHealthyTerminal('mobile', mobileState);
 if (
   mobileState.controlSizes.toolbar.some((target) => target.width < 40 || target.height < 40)
   || mobileState.controlSizes.tabClose.some((target) => target.width < 32 || target.height < 32)
+  || !mobileState.inputCapabilities.touchCoarse
 ) {
   throw new Error(`mobile terminal controls are too small: ${JSON.stringify(mobileState.controlSizes)}`);
 }
+await call('Runtime.evaluate', {
+  expression: `(() => {
+    const strip = document.querySelector('[role="tablist"]');
+    if (strip) strip.scrollLeft = strip.scrollWidth;
+  })()`,
+});
+const touchTargetState = await waitForState(
+  (state) => {
+    const target = state.controlSizes.tabClose.find((control) => !control.activeTab);
+    return Boolean(
+      target
+      && state.tabStrip
+      && target.centerX >= state.tabStrip.left
+      && target.centerX <= state.tabStrip.right
+    );
+  },
+  'inactive terminal close area could not be revealed for touch testing',
+);
+const inactiveCloseIndex = touchTargetState.controlSizes.tabClose
+  .findIndex((target) => !target.activeTab);
+const inactiveCloseTarget = touchTargetState.controlSizes.tabClose[inactiveCloseIndex];
+if (
+  !inactiveCloseTarget
+  || inactiveCloseTarget.opacity !== 0
+  || inactiveCloseTarget.pointerEvents !== 'none'
+  || inactiveCloseTarget.hitTargetLabel !== touchTargetState.tabSemantics[inactiveCloseIndex].label
+) {
+  throw new Error(
+    `inactive mobile close control still intercepts taps: ${JSON.stringify(inactiveCloseTarget)}`,
+  );
+}
+await dispatchTap(inactiveCloseTarget.centerX, inactiveCloseTarget.centerY);
+const touchSelectedState = await waitForState(
+  (state) => (
+    state.tabs.length === 2
+    && state.selectedIndex === 1
+    && state.statuses[0] === 'status-dot background'
+    && state.statuses[1] === 'status-dot connected'
+  ),
+  'tapping an inactive hidden close area did not select the terminal tab safely',
+);
+assertHealthyTerminal('mobile after tapping an inactive close area', touchSelectedState);
 await capture(mobileOutput);
 
 await call('Runtime.evaluate', {
@@ -476,6 +617,11 @@ for (let expectedCount = overflowTabCount - 1; expectedCount >= 1; expectedCount
   );
 }
 
+await call('Runtime.evaluate', {
+  expression: `document.querySelector('.xterm-helper-textarea')?.focus()`,
+});
+await dispatchKey('c', 'KeyC', 67, 2);
+await delay(100);
 await enterTerminalCommand(`i=0; while [ $i -lt 120 ]; do echo scroll-$i; i=$((i+1)); done`);
 const scrollbackState = await waitForState(
   (state) => (
@@ -500,10 +646,14 @@ const exitedState = await waitForState(
 
 console.log(JSON.stringify({
   initialDesktopState,
+  desktopHoverState,
   openSettingsState,
   adjustedSettingsState,
+  navigatedDesktopState,
   desktopState,
   mobileState,
+  touchTargetState,
+  touchSelectedState,
   mobileSettingsState,
   afterDeleteState,
   overflowTabsState,

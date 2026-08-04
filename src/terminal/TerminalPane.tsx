@@ -18,6 +18,7 @@ import { createUuidV4 } from '../uuid';
 type TerminalPaneProps = {
   tab: TerminalTab;
   active: boolean;
+  focusOnMount: boolean;
   authToken: string;
   preferences: TerminalPreferences;
   onStatusChange: (tabId: string, status: TerminalStatus) => void;
@@ -126,6 +127,7 @@ function copyText(text: string) {
 export default function TerminalPane({
   tab,
   active,
+  focusOnMount,
   authToken,
   preferences,
   onStatusChange,
@@ -138,6 +140,7 @@ export default function TerminalPane({
   const terminalReadyRef = useRef(false);
   const inputStateRef = useRef(getTerminalInputState(tab.id));
   const activeRef = useRef(active);
+  const focusOnMountRef = useRef(focusOnMount);
   const resizeTimersRef = useRef<number[]>([]);
   const resizeFrameRef = useRef(0);
   const lastSizeRef = useRef({ cols: 0, rows: 0 });
@@ -870,7 +873,9 @@ export default function TerminalPane({
     }
 
     resizeAfterLayoutSettles();
-    terminalRef.current?.focus();
+    if (focusOnMountRef.current) {
+      terminalRef.current?.focus();
+    }
   }, [active, resizeAfterLayoutSettles]);
 
   return (

@@ -37,7 +37,17 @@ test('terminal tabs expose standard semantics and keyboard navigation', () => {
   assert.match(source, /event\.key === 'Home'/);
   assert.match(source, /event\.key === 'End'/);
   assert.match(source, /selectTab\(nextTabId\)/);
-  assert.match(source, /tabButtonRefs\.current\.get\(nextTabId\)\?\.focus\(\)/);
+  assert.match(source, /pendingKeyboardTabFocusRef\.current = nextTabId/);
+  assert.match(source, /tabButtonRefs\.current\.get\(pendingFocusId\)\?\.focus\(\)/);
+});
+
+test('keyboard tab navigation cannot race with terminal autofocus', () => {
+  assert.match(source, /focusOnMount=\{[\s\S]*?pendingKeyboardTabFocusRef\.current !== activeTab\.id/);
+  assert.match(terminalPaneSource, /const focusOnMountRef = useRef\(focusOnMount\)/);
+  assert.match(
+    terminalPaneSource,
+    /if \(focusOnMountRef\.current\) \{\s*terminalRef\.current\?\.focus\(\)/,
+  );
 });
 
 test('the active terminal tab stays visible inside an overflowing tab strip', () => {
@@ -72,6 +82,20 @@ test('mobile terminal controls expose practical touch targets', () => {
   assert.match(mobileStyles, /\.tab-close \{\s*width:\s*32px;\s*height:\s*32px;/);
   assert.match(mobileStyles, /\.font-stepper \{\s*height:\s*42px;/);
   assert.match(mobileStyles, /\.step-button \{\s*width:\s*40px;\s*height:\s*40px;/);
+});
+
+test('hidden tab close controls let pointer input reach the tab underneath', () => {
+  assert.match(stylesSource, /\.tab-main \{[\s\S]*?width:\s*100%;/);
+  assert.match(stylesSource, /\.tab-close \{[\s\S]*?position:\s*absolute;/);
+  assert.match(stylesSource, /\.tab-close \{[\s\S]*?pointer-events:\s*none;/);
+  assert.match(
+    stylesSource,
+    /\.tab\.active \.tab-close,[\s\S]*?\.tab-close:focus-visible \{[\s\S]*?pointer-events:\s*auto;/,
+  );
+  assert.match(
+    stylesSource,
+    /@media \(hover: hover\) and \(pointer: fine\) \{\s*\.tab:hover \.tab-close \{\s*opacity:\s*1;\s*pointer-events:\s*auto;/,
+  );
 });
 
 test('closing a terminal tab restores focus to the server-selected fallback', () => {
