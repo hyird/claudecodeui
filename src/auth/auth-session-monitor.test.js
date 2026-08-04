@@ -11,3 +11,13 @@ test('authenticated sessions are monitored without a fixed polling interval', ()
   assert.match(source, /openAuthenticatedSocket\('\/auth\/session'/);
   assert.match(source, /session-invalidated/);
 });
+
+test('initial authentication retries transient failures without deleting a valid token', () => {
+  assert.match(source, /AUTH_BOOTSTRAP_RETRY_DELAYS_MS/);
+  assert.match(
+    source,
+    /catch \(error\) \{\s*if \(isAuthExpiredError\(error\)\) \{\s*clearStoredTokenIfCurrent\(storedToken\);\s*\} else \{\s*throw error;/,
+  );
+  assert.match(source, /const retryDelay = AUTH_BOOTSTRAP_RETRY_DELAYS_MS\[attempt\]/);
+  assert.match(source, /window\.setTimeout\(\(\) => \{\s*void loadAuthState\(attempt \+ 1\)/);
+});

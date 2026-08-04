@@ -5,6 +5,8 @@ import { WebSocket } from 'ws';
 
 const [, , targetUrl, authToken, desktopOutput, mobileOutput] = process.argv;
 const cdpPort = process.env.CDP_PORT || '9223';
+const authFailureMode = process.env.BROWSER_SMOKE_AUTH_FAILURE_MODE
+  ?? (process.env.BROWSER_SMOKE_TRANSIENT_AUTH_FAILURE === '1' ? 'once' : '');
 
 if (!targetUrl || !authToken || !desktopOutput || !mobileOutput) {
   console.error(
@@ -74,6 +76,10 @@ async function readPageState() {
     expression: `(() => ({
       title: document.title,
       bodyText: document.body.innerText,
+      hasStoredAuthToken: Boolean(localStorage.getItem('auth-token')),
+      transientAuthFailureCount: Number(
+        sessionStorage.getItem('qa-auth-failure-count') ?? 0,
+      ),
       tabs: [...document.querySelectorAll('.tab-title')].map((node) => node.textContent),
       statuses: [...document.querySelectorAll('.status-dot')].map((node) => node.className),
       tabSemantics: [...document.querySelectorAll('[role="tab"]')].map((node) => ({
@@ -322,7 +328,35 @@ async function enterTerminalCommand(command) {
 await call('Page.enable');
 await call('Runtime.enable');
 await call('Page.addScriptToEvaluateOnNewDocument', {
-  source: `try { localStorage.setItem('auth-token', ${JSON.stringify(authToken)}); } catch {}`,
+  source: `
+    try { localStorage.setItem('auth-token', ${JSON.stringify(authToken)}); } catch {}
+    ${authFailureMode ? `(() => {
+      const nativeFetch = window.fetch.bind(window);
+      const failureMode = ${JSON.stringify(authFailureMode)};
+      window.fetch = async (...args) => {
+        const input = args[0];
+        const rawUrl = typeof input === 'string'
+          ? input
+          : input instanceof Request
+            ? input.url
+            : String(input);
+        const url = new URL(rawUrl, location.href);
+        const marker = 'qa-auth-failure-count';
+        const failureCount = Number(sessionStorage.getItem(marker) ?? 0);
+        if (
+          url.pathname === '/api/auth/user'
+          && (failureMode === 'persistent' || failureCount === 0)
+        ) {
+          sessionStorage.setItem(marker, String(failureCount + 1));
+          return new Response(JSON.stringify({ error: 'Temporary auth failure' }), {
+            status: 503,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return nativeFetch(...args);
+      };
+    })();` : ''}
+  `,
 });
 await call('Emulation.setTouchEmulationEnabled', { enabled: false });
 await call('Emulation.setDeviceMetricsOverride', {
@@ -332,6 +366,20 @@ await call('Emulation.setDeviceMetricsOverride', {
   mobile: false,
 });
 await call('Page.navigate', { url: targetUrl });
+if (authFailureMode === 'persistent') {
+  const persistentAuthFailureState = await waitForState(
+    (state) => (
+      !state.hasTerminal
+      && state.hasStoredAuthToken
+      && state.transientAuthFailureCount >= 4
+      && state.bodyText.includes('欢迎回来')
+    ),
+    'persistent authentication failure deleted the stored token or did not settle',
+  );
+  console.log(JSON.stringify({ persistentAuthFailureState }, null, 2));
+  socket.close();
+  process.exit(0);
+}
 const initialDesktopState = await waitForState(
   (state) => (
     state.hasTerminal
@@ -343,6 +391,12 @@ const initialDesktopState = await waitForState(
   'desktop terminal did not connect',
 );
 assertHealthyTerminal('initial desktop', initialDesktopState);
+if (!initialDesktopState.hasStoredAuthToken) {
+  throw new Error('initial authentication discarded the stored token');
+}
+if (authFailureMode === 'once' && initialDesktopState.transientAuthFailureCount !== 1) {
+  throw new Error('transient authentication failure was not injected exactly once');
+}
 
 await call('Runtime.evaluate', {
   expression: `(() => {

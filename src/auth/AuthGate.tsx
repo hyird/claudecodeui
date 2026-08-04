@@ -31,6 +31,7 @@ const loadingState: AuthState = {
   token: '',
   user: null,
 };
+const AUTH_BOOTSTRAP_RETRY_DELAYS_MS = [250, 750, 2000] as const;
 
 function authenticatedState(session: AuthSession): AuthState {
   return {
@@ -55,8 +56,9 @@ export default function AuthGate({ children }: AuthGateProps) {
 
   useEffect(() => {
     let disposed = false;
+    let retryTimer = 0;
 
-    const loadAuthState = async () => {
+    const loadAuthState = async (attempt = 0) => {
       try {
         const status = await fetchAuthStatus();
         const storedToken = readStoredToken();
@@ -68,8 +70,12 @@ export default function AuthGate({ children }: AuthGateProps) {
               setState(authenticatedState({ token: storedToken, user }));
             }
             return;
-          } catch {
-            clearStoredToken();
+          } catch (error) {
+            if (isAuthExpiredError(error)) {
+              clearStoredTokenIfCurrent(storedToken);
+            } else {
+              throw error;
+            }
           }
         }
 
@@ -77,9 +83,21 @@ export default function AuthGate({ children }: AuthGateProps) {
           setState({ mode: status.needsSetup ? 'setup' : 'login', token: '', user: null });
         }
       } catch {
-        if (!disposed) {
-          setState({ mode: 'login', token: '', user: null });
+        if (disposed) {
+          return;
         }
+
+        const retryDelay = AUTH_BOOTSTRAP_RETRY_DELAYS_MS[attempt];
+        if (retryDelay !== undefined) {
+          retryTimer = window.setTimeout(() => {
+            void loadAuthState(attempt + 1);
+          }, retryDelay);
+          return;
+        }
+
+        // A server/network failure is not proof that the stored credential is
+        // invalid. Keep it so a later refresh can recover without another login.
+        setState({ mode: 'login', token: '', user: null });
       }
     };
 
@@ -87,6 +105,7 @@ export default function AuthGate({ children }: AuthGateProps) {
 
     return () => {
       disposed = true;
+      window.clearTimeout(retryTimer);
     };
   }, []);
 
