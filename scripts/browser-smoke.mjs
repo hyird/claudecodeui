@@ -31,9 +31,17 @@ await new Promise((resolve, reject) => {
 
 let nextId = 1;
 const pending = new Map();
+const runtimeExceptions = [];
 socket.on('message', (raw) => {
   const message = JSON.parse(raw.toString());
   if (!message.id) {
+    if (message.method === 'Runtime.exceptionThrown') {
+      runtimeExceptions.push(
+        message.params?.exceptionDetails?.exception?.description
+        ?? message.params?.exceptionDetails?.text
+        ?? 'Unknown browser runtime exception',
+      );
+    }
     return;
   }
   const request = pending.get(message.id);
@@ -228,7 +236,10 @@ async function waitForState(predicate, description, timeoutMs = 5000) {
     }
     await delay(50);
   }
-  throw new Error(`${description}; last state: ${JSON.stringify(state)}`);
+  throw new Error(
+    `${description}; last state: ${JSON.stringify(state)}; `
+    + `runtime exceptions: ${JSON.stringify(runtimeExceptions)}`,
+  );
 }
 
 function assertHealthyTerminal(label, state) {
@@ -348,6 +359,21 @@ await call('Page.addScriptToEvaluateOnNewDocument', {
           && (failureMode === 'persistent' || failureCount === 0)
         ) {
           sessionStorage.setItem(marker, String(failureCount + 1));
+          if (failureMode === 'hang-once') {
+            const signal = args[1]?.signal
+              ?? (input instanceof Request ? input.signal : null);
+            return new Promise((resolve, reject) => {
+              if (!signal) return;
+              const rejectAsAborted = () => reject(
+                signal.reason ?? new DOMException('The operation was aborted', 'AbortError'),
+              );
+              if (signal.aborted) {
+                rejectAsAborted();
+              } else {
+                signal.addEventListener('abort', rejectAsAborted, { once: true });
+              }
+            });
+          }
           return new Response(JSON.stringify({ error: 'Temporary auth failure' }), {
             status: 503,
             headers: { 'content-type': 'application/json' },
@@ -389,12 +415,16 @@ const initialDesktopState = await waitForState(
     && state.terminalScrollbar?.rulerBorderPixel
   ),
   'desktop terminal did not connect',
+  authFailureMode === 'hang-once' ? 8000 : 5000,
 );
 assertHealthyTerminal('initial desktop', initialDesktopState);
 if (!initialDesktopState.hasStoredAuthToken) {
   throw new Error('initial authentication discarded the stored token');
 }
-if (authFailureMode === 'once' && initialDesktopState.transientAuthFailureCount !== 1) {
+if (
+  (authFailureMode === 'once' || authFailureMode === 'hang-once')
+  && initialDesktopState.transientAuthFailureCount !== 1
+) {
   throw new Error('transient authentication failure was not injected exactly once');
 }
 

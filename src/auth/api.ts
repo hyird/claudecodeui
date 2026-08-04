@@ -1,6 +1,8 @@
 import type { AuthSession, AuthUser } from './types';
 
 export const AUTH_TOKEN_STORAGE_KEY = 'auth-token';
+const AUTH_REQUEST_TIMEOUT_MS = 4000;
+const AUTH_REQUEST_TIMEOUT_MESSAGE = '认证服务响应超时，请稍后重试。';
 
 type ApiErrorPayload = {
   error?: string;
@@ -62,6 +64,22 @@ function localizeAuthError(message: string) {
   return messages[message] ?? message;
 }
 
+async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AUTH_REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(AUTH_REQUEST_TIMEOUT_MESSAGE);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function readAuthSession(payload: AuthResponsePayload | null, fallback: string): AuthSession {
   if (!payload?.token || !payload.user) {
     throw new Error(resolveApiErrorMessage(payload, fallback));
@@ -92,7 +110,7 @@ export function authHeaders(token: string, headers?: HeadersInit) {
 }
 
 export async function fetchAuthStatus() {
-  const response = await fetch('/api/auth/status');
+  const response = await fetchWithTimeout('/api/auth/status');
   const payload = await parseJsonSafely<AuthStatusPayload>(response);
   if (!response.ok || !payload) {
     throw new Error('Failed to check authentication status');
@@ -101,7 +119,7 @@ export async function fetchAuthStatus() {
 }
 
 export async function fetchCurrentUser(token: string) {
-  const response = await fetch('/api/auth/user', {
+  const response = await fetchWithTimeout('/api/auth/user', {
     headers: authHeaders(token),
   });
   const payload = await parseJsonSafely<{ user?: AuthUser } & ApiErrorPayload>(response);
@@ -112,7 +130,7 @@ export async function fetchCurrentUser(token: string) {
 }
 
 export async function register(username: string, password: string) {
-  const response = await fetch('/api/auth/register', {
+  const response = await fetchWithTimeout('/api/auth/register', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username, password }),
@@ -125,7 +143,7 @@ export async function register(username: string, password: string) {
 }
 
 export async function login(username: string, password: string) {
-  const response = await fetch('/api/auth/login', {
+  const response = await fetchWithTimeout('/api/auth/login', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username, password }),
@@ -138,7 +156,7 @@ export async function login(username: string, password: string) {
 }
 
 export async function logout(token: string) {
-  await fetch('/api/auth/logout', {
+  await fetchWithTimeout('/api/auth/logout', {
     method: 'POST',
     headers: authHeaders(token),
   }).catch(() => {});

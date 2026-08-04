@@ -4,6 +4,7 @@ import {
   AuthApiError,
   authHeaders,
   clearStoredToken,
+  fetchAuthStatus,
   isAuthExpiredError,
   login,
   logout,
@@ -64,6 +65,20 @@ describe('authHeaders', () => {
     const headers = authHeaders('tok', { 'x-test': 'y' });
     expect(headers.get('authorization')).toBe('Bearer tok');
     expect(headers.get('x-test')).toBe('y');
+  });
+});
+
+describe('request timeout', () => {
+  test('auth requests carry an abort signal', async () => {
+    stubFetch((_url, init) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return jsonResponse(200, { needsSetup: false, isAuthenticated: true });
+    });
+
+    await expect(fetchAuthStatus()).resolves.toEqual({
+      needsSetup: false,
+      isAuthenticated: true,
+    });
   });
 });
 
