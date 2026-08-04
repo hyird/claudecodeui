@@ -77,8 +77,19 @@ async function readPageState() {
         const viewport = document.querySelector('.xterm-viewport');
         const track = document.querySelector('.xterm-scrollable-element > .scrollbar.vertical');
         const slider = track?.querySelector('.slider');
+        const ruler = document.querySelector('.xterm-decoration-overview-ruler');
         const trackRect = track?.getBoundingClientRect();
         const sliderRect = slider?.getBoundingClientRect();
+        const rulerRect = ruler?.getBoundingClientRect();
+        const rulerContext = ruler?.getContext('2d');
+        const rulerPixel = rulerContext && ruler.width > 0 && ruler.height > 0
+          ? [...rulerContext.getImageData(0, Math.floor(ruler.height / 2), 1, 1).data]
+          : null;
+        const viewportBackground = viewport
+          ? (getComputedStyle(viewport).backgroundColor.match(/[\\d.]+/g) ?? [])
+            .slice(0, 3)
+            .map(Number)
+          : null;
         return viewport ? {
           hasScrollback: viewport.classList.contains('has-scrollback'),
           nativeWidth: getComputedStyle(viewport, '::-webkit-scrollbar').width,
@@ -87,6 +98,9 @@ async function readPageState() {
           sliderWidth: sliderRect?.width ?? 0,
           sliderHeight: sliderRect?.height ?? 0,
           sliderTop: sliderRect && trackRect ? sliderRect.top - trackRect.top : 0,
+          rulerWidth: rulerRect?.width ?? 0,
+          rulerBorderPixel: rulerPixel,
+          viewportBackgroundPixel: viewportBackground ? [...viewportBackground, 255] : null,
         } : null;
       })(),
       viewport: { width: innerWidth, height: innerHeight },
@@ -149,6 +163,16 @@ function assertHealthyTerminal(label, state) {
   }
   if (state.panelLabelledBy !== state.tabSemantics[state.selectedIndex]?.id) {
     throw new Error(`${label}: terminal panel is not labelled by the selected tab`);
+  }
+  if (
+    state.terminalScrollbar?.rulerWidth !== 4
+    || JSON.stringify(state.terminalScrollbar.rulerBorderPixel)
+      !== JSON.stringify(state.terminalScrollbar.viewportBackgroundPixel)
+  ) {
+    throw new Error(
+      `${label}: terminal has a contrasting overview-ruler edge; `
+      + `scrollbar=${JSON.stringify(state.terminalScrollbar)}`,
+    );
   }
 }
 
@@ -293,5 +317,17 @@ const scrollbackState = await waitForState(
 assertHealthyTerminal('mobile with terminal scrollback', scrollbackState);
 await capture(mobileOutput);
 
-console.log(JSON.stringify({ desktopState, mobileState, afterDeleteState, scrollbackState }, null, 2));
+await enterTerminalCommand('exit');
+const exitedState = await waitForState(
+  (state) => state.statuses[state.selectedIndex] === 'status-dot exited',
+  'smoke-test terminal did not exit cleanly',
+);
+
+console.log(JSON.stringify({
+  desktopState,
+  mobileState,
+  afterDeleteState,
+  scrollbackState,
+  exitedState,
+}, null, 2));
 socket.close();

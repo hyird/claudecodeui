@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 const source = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
 const styles = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+const themeSource = fs.readFileSync(new URL('./themes.ts', import.meta.url), 'utf8');
 
 function extractCallback(name) {
   const match = source.match(new RegExp(`const ${name} = useCallback\\([\\s\\S]*?\\n  \\}, \\[[^\\]]*\\]\\);`));
@@ -89,6 +90,15 @@ test('terminal viewport hides the legacy native scrollbar behind xterm 6 overlay
   assert.match(scrollbar, /height:\s*0/);
   assert.equal(styles.includes('.xterm-viewport.has-scrollback::-webkit-scrollbar'), false);
   assert.match(styles, /\.scrollbar\.vertical > \.slider \{\s*border-radius:\s*999px/);
+});
+
+test('terminal overview-ruler divider blends into the terminal background', () => {
+  const background = themeSource.match(/\bbackground:\s*'([^']+)'/)?.[1];
+  const border = themeSource.match(/\boverviewRulerBorder:\s*'([^']+)'/)?.[1];
+
+  assert.ok(background, 'terminal theme background must be defined');
+  assert.ok(border, 'overview ruler border must be explicitly themed');
+  assert.equal(border, background, 'xterm must not paint a contrasting 1px line at the right edge');
 });
 
 test('terminal viewport scroll affordance follows xterm scrollback state', () => {

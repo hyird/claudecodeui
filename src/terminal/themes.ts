@@ -11,6 +11,10 @@ export const terminalTheme: ITheme = {
   scrollbarSliderBackground: '#ffffff24',
   scrollbarSliderHoverBackground: '#ffffff47',
   scrollbarSliderActiveBackground: '#ffffff66',
+  // xterm paints a 1px overview-ruler divider whenever its compact overlay
+  // scrollbar is enabled. Blend that divider into the terminal instead of
+  // leaving xterm's default white line along the right edge.
+  overviewRulerBorder: '#0a0c11',
   black: '#1c1f24',
   red: '#f4747f',
   green: '#55d187',
