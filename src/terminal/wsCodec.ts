@@ -20,6 +20,7 @@ export type TerminalClientMessage =
   | {
       type: 'init';
       sessionId: string;
+      sessionGeneration?: string;
       cols: number;
       rows: number;
       inputStreamId: string;
@@ -82,6 +83,7 @@ export function encodeTerminalClientMessage(message: TerminalClientMessage): Uin
           forceRestart: message.forceRestart ?? false,
           lastSeq: message.lastSeq ?? 0,
           inputStreamId: message.inputStreamId,
+          sessionGeneration: message.sessionGeneration ?? '',
         },
       }).finish();
     case 'input':
@@ -121,6 +123,7 @@ export async function decodeTerminalServerMessage(
         type: 'ready',
         cwd: message.ready!.cwd,
         sessionId: message.ready!.sessionId,
+        sessionGeneration: message.ready!.sessionGeneration,
         reset: message.ready!.reset,
         gap: message.ready!.gap,
         lastSeq: message.ready!.lastSeq,

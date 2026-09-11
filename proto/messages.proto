@@ -16,6 +16,7 @@ message TerminalInit {
   bool force_restart = 5;
   uint32 last_seq = 6;
   string input_stream_id = 7;
+  string session_generation = 8;
 }
 message TerminalInput {
   string data = 1;
@@ -41,6 +42,7 @@ message TerminalReady {
   bool reset = 3;
   bool gap = 4;
   uint32 last_seq = 5;
+  string session_generation = 6;
 }
 // data holds the terminal bytes; when compressed is true it is raw DEFLATE.
 message TerminalOutput { bytes data = 1; bool compressed = 2; }

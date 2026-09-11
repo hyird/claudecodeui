@@ -2,7 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { Terminal } from '@xterm/xterm';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { terminalTheme } from './themes';
 import type {
@@ -44,6 +44,7 @@ const FIT_EDGE_GUARD_PX = 1;
 // base on a successful open or when the user returns to the tab.
 const TERMINAL_RECONNECT_DELAY_MS = 1000;
 const TERMINAL_RECONNECT_MAX_DELAY_MS = 15000;
+const TERMINAL_CONNECT_TIMEOUT_MS = 10000;
 const TERMINAL_RESUME_PONG_TIMEOUT_MS = 2500;
 // Active liveness check: while the tab is visible, ping on an interval so a silently
 // dropped socket (common on weak/mobile networks, no close event) is detected and
@@ -55,6 +56,7 @@ const TERMINAL_INPUT_MAX_FRAME_BYTES = 4 * 1024;
 
 type ReliableTerminalInputState = {
   streamId: string;
+  generation: string;
   nextSeq: number;
   pending: Map<number, string>;
 };
@@ -76,6 +78,7 @@ function getTerminalInputState(tabId: string) {
   if (!state) {
     state = {
       streamId: createUuidV4(),
+      generation: '',
       nextSeq: 1,
       pending: new Map(),
     };
@@ -139,6 +142,7 @@ export default function TerminalPane({
   const socketRef = useRef<WebSocket | null>(null);
   const terminalReadyRef = useRef(false);
   const inputStateRef = useRef(getTerminalInputState(tab.id));
+  const [sessionRebuiltNoticeVisible, setSessionRebuiltNoticeVisible] = useState(false);
   const activeRef = useRef(active);
   const focusOnMountRef = useRef(focusOnMount);
   const resizeTimersRef = useRef<number[]>([]);
@@ -505,13 +509,28 @@ export default function TerminalPane({
 
     const applyTerminalServerMessage = async (socket: WebSocket, message: TerminalServerMessage) => {
       if (message.type === 'ready') {
+        const inputState = inputStateRef.current;
+        const sessionGeneration = typeof message.sessionGeneration === 'string'
+          ? message.sessionGeneration
+          : '';
+        if (sessionGeneration) {
+          if (inputState.generation && inputState.generation !== sessionGeneration) {
+            const discardedPendingInput = inputState.pending.size > 0;
+            inputState.pending.clear();
+            inputState.nextSeq = 1;
+            if (discardedPendingInput) {
+              setSessionRebuiltNoticeVisible(true);
+            }
+          }
+          inputState.generation = sessionGeneration;
+        }
         if (message.reset) {
           pendingTerminalMessages.clear();
           lastAppliedTerminalSeq = typeof message.lastSeq === 'number' ? message.lastSeq : 0;
           // The serialized server snapshot that follows is the source of truth.
           // Do not prepend internal session ids or cwd lines: they clutter new
           // terminals and can corrupt the cursor position of a restored TUI.
-          terminal.clear();
+          writeTerminalData('\x1bc');
         }
         terminalReadyRef.current = true;
         for (const [inputSeq, data] of inputStateRef.current.pending) {
@@ -610,6 +629,7 @@ export default function TerminalPane({
     let reconnectTimer = 0;
     let reconnectAttempts = 0;
     let heartbeatTimer = 0;
+    let connectionTimer = 0;
     let pongTimer = 0;
     let terminalMessageQueue = Promise.resolve();
 
@@ -617,6 +637,13 @@ export default function TerminalPane({
       if (reconnectTimer) {
         window.clearTimeout(reconnectTimer);
         reconnectTimer = 0;
+      }
+    }
+
+    function clearConnectionTimer() {
+      if (connectionTimer) {
+        window.clearTimeout(connectionTimer);
+        connectionTimer = 0;
       }
     }
 
@@ -657,6 +684,7 @@ export default function TerminalPane({
       }
 
       clearReconnectTimer();
+      clearConnectionTimer();
       clearPongTimer();
       terminalReadyRef.current = false;
 
@@ -664,12 +692,25 @@ export default function TerminalPane({
       socket.binaryType = 'arraybuffer';
       socketRef.current = socket;
       onStatusChange(tab.id, 'connecting');
+      connectionTimer = window.setTimeout(() => {
+        if (disposed || socketRef.current !== socket) {
+          return;
+        }
+
+        connectionTimer = 0;
+        socketRef.current = null;
+        terminalReadyRef.current = false;
+        clearTerminalResyncTimer();
+        socket.close();
+        scheduleReconnect();
+      }, TERMINAL_CONNECT_TIMEOUT_MS);
 
       socket.addEventListener('open', () => {
         if (disposed || socketRef.current !== socket) {
           return;
         }
 
+        clearConnectionTimer();
         // Transport is healthy again — restart backoff from the base delay.
         reconnectAttempts = 0;
 
@@ -688,6 +729,7 @@ export default function TerminalPane({
           rows: terminal.rows,
           lastSeq: lastAppliedTerminalSeq,
           inputStreamId: inputStateRef.current.streamId,
+          sessionGeneration: inputStateRef.current.generation,
         }));
         resizeAfterLayoutSettles();
       });
@@ -706,6 +748,7 @@ export default function TerminalPane({
         if (socketRef.current === socket) {
           socketRef.current = null;
           terminalReadyRef.current = false;
+          clearConnectionTimer();
           clearPongTimer();
           clearTerminalResyncTimer();
           scheduleReconnect();
@@ -715,6 +758,7 @@ export default function TerminalPane({
       socket.addEventListener('error', () => {
         if (socketRef.current === socket) {
           terminalReadyRef.current = false;
+          clearConnectionTimer();
           onStatusChange(tab.id, 'error');
           socket.close();
           scheduleReconnect();
@@ -739,7 +783,10 @@ export default function TerminalPane({
         return;
       }
 
-      clearPongTimer();
+      if (pongTimer) {
+        return;
+      }
+
       try {
         socket.send(encodeTerminalClientMessage({ type: 'ping' }));
       } catch {
@@ -754,6 +801,7 @@ export default function TerminalPane({
           return;
         }
 
+        pongTimer = 0;
         socketRef.current = null;
         socket.close();
         scheduleReconnect();
@@ -766,12 +814,21 @@ export default function TerminalPane({
       if (document.visibilityState === 'hidden') {
         return;
       }
+      const socket = socketRef.current;
       reconnectAttempts = 0;
+
+      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+        clearReconnectTimer();
+        connect();
+        return;
+      }
+
       probeConnection(TERMINAL_RESUME_PONG_TIMEOUT_MS);
     };
 
     document.addEventListener('visibilitychange', probeConnectionAfterResume);
     window.addEventListener('focus', probeConnectionAfterResume);
+    window.addEventListener('online', probeConnectionAfterResume);
     // Passive heartbeat: catches a silently dropped socket while the tab stays open.
     heartbeatTimer = window.setInterval(
       () => probeConnection(TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS),
@@ -824,6 +881,8 @@ export default function TerminalPane({
       privateModeReportGuard.dispose();
       document.removeEventListener('visibilitychange', probeConnectionAfterResume);
       window.removeEventListener('focus', probeConnectionAfterResume);
+      window.removeEventListener('online', probeConnectionAfterResume);
+      clearConnectionTimer();
       resizeObserver.disconnect();
       socketRef.current?.close();
       terminal.dispose();
@@ -881,6 +940,18 @@ export default function TerminalPane({
   return (
     <div className="terminal-pane">
       <div ref={containerRef} className="terminal-frame" />
+      {sessionRebuiltNoticeVisible && (
+        <div className="terminal-session-notice" role="status" aria-live="polite" aria-atomic="true">
+          <span>终端会话已重建，请重新输入尚未完成的命令。</span>
+          <button
+            type="button"
+            aria-label="关闭提示"
+            onClick={() => setSessionRebuiltNoticeVisible(false)}
+          >
+            ×
+          </button>
+        </div>
+      )}
     </div>
   );
 }

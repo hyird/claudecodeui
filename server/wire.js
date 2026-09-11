@@ -44,6 +44,7 @@ export function decodeTerminalClientMessage(raw) {
         forceRestart: init.forceRestart,
         lastSeq: init.lastSeq,
         inputStreamId: init.inputStreamId,
+        sessionGeneration: init.sessionGeneration,
       };
     }
     case 'input':
@@ -75,6 +76,7 @@ export function encodeTerminalServerMessage(message) {
           reset: message.reset === true,
           gap: message.gap === true,
           lastSeq: message.lastSeq ?? 0,
+          sessionGeneration: message.sessionGeneration ?? '',
         },
       };
       break;

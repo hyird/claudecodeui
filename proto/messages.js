@@ -388,6 +388,7 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {boolean|null} [forceRestart] TerminalInit forceRestart
          * @property {number|null} [lastSeq] TerminalInit lastSeq
          * @property {string|null} [inputStreamId] TerminalInit inputStreamId
+         * @property {string|null} [sessionGeneration] TerminalInit sessionGeneration
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -476,6 +477,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalInit.prototype.inputStreamId = "";
 
         /**
+         * TerminalInit sessionGeneration.
+         * @member {string} sessionGeneration
+         * @memberof cloudcli.TerminalInit
+         * @instance
+         */
+        TerminalInit.prototype.sessionGeneration = "";
+
+        /**
          * Encodes the specified TerminalInit message. Does not implicitly {@link cloudcli.TerminalInit.verify|verify} messages.
          * @function encode
          * @memberof cloudcli.TerminalInit
@@ -505,6 +514,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 writer.uint32(/* id 6, wireType 0 =*/48).uint32(message.lastSeq);
             if (message.inputStreamId != null && $Object.hasOwnProperty.call(message, "inputStreamId") && message.inputStreamId !== "")
                 writer.uint32(/* id 7, wireType 2 =*/58).string(message.inputStreamId);
+            if (message.sessionGeneration != null && $Object.hasOwnProperty.call(message, "sessionGeneration") && message.sessionGeneration !== "")
+                writer.uint32(/* id 8, wireType 2 =*/66).string(message.sessionGeneration);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -600,6 +611,15 @@ export const cloudcli = $root.cloudcli = (() => {
                             message.inputStreamId = value;
                         else
                             delete message.inputStreamId;
+                        continue;
+                    }
+                case 8: {
+                        if (wireType !== 2)
+                            break;
+                        if ((value = reader.stringVerify()).length)
+                            message.sessionGeneration = value;
+                        else
+                            delete message.sessionGeneration;
                         continue;
                     }
                 }
@@ -1292,6 +1312,7 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {boolean|null} [reset] TerminalReady reset
          * @property {boolean|null} [gap] TerminalReady gap
          * @property {number|null} [lastSeq] TerminalReady lastSeq
+         * @property {string|null} [sessionGeneration] TerminalReady sessionGeneration
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -1364,6 +1385,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalReady.prototype.lastSeq = 0;
 
         /**
+         * TerminalReady sessionGeneration.
+         * @member {string} sessionGeneration
+         * @memberof cloudcli.TerminalReady
+         * @instance
+         */
+        TerminalReady.prototype.sessionGeneration = "";
+
+        /**
          * Encodes the specified TerminalReady message. Does not implicitly {@link cloudcli.TerminalReady.verify|verify} messages.
          * @function encode
          * @memberof cloudcli.TerminalReady
@@ -1389,6 +1418,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 writer.uint32(/* id 4, wireType 0 =*/32).bool(message.gap);
             if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq") && message.lastSeq !== 0)
                 writer.uint32(/* id 5, wireType 0 =*/40).uint32(message.lastSeq);
+            if (message.sessionGeneration != null && $Object.hasOwnProperty.call(message, "sessionGeneration") && message.sessionGeneration !== "")
+                writer.uint32(/* id 6, wireType 2 =*/50).string(message.sessionGeneration);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -1466,6 +1497,15 @@ export const cloudcli = $root.cloudcli = (() => {
                             message.lastSeq = value;
                         else
                             delete message.lastSeq;
+                        continue;
+                    }
+                case 6: {
+                        if (wireType !== 2)
+                            break;
+                        if ((value = reader.stringVerify()).length)
+                            message.sessionGeneration = value;
+                        else
+                            delete message.sessionGeneration;
                         continue;
                     }
                 }

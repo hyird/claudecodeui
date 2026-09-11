@@ -179,7 +179,11 @@ test('terminal reconnect uses capped exponential backoff with jitter', () => {
   assert.match(terminalPaneSource, /backoff \/ 2 \+ Math\.random\(\) \* \(backoff \/ 2\)/);
   // Backoff resets on a healthy transport and when the user returns to the tab.
   assert.match(terminalPaneSource, /reconnectAttempts = 0;\s*\n\s*\/\/ Size the grid/);
-  assert.match(terminalPaneSource, /reconnectAttempts = 0;\s*\n\s*probeConnection\(TERMINAL_RESUME_PONG_TIMEOUT_MS\)/);
+  const resumeHandler = terminalPaneSource.match(/const probeConnectionAfterResume = \(\) => \{[\s\S]*?\n    \};/)?.[0];
+  assert.ok(resumeHandler, 'terminal resume handler must exist');
+  assert.match(resumeHandler, /reconnectAttempts = 0;/);
+  assert.match(resumeHandler, /clearReconnectTimer\(\);\s*connect\(\);/);
+  assert.match(resumeHandler, /probeConnection\(TERMINAL_RESUME_PONG_TIMEOUT_MS\)/);
 });
 
 test('terminal keeps a visible-tab heartbeat to detect silently dropped sockets', () => {
@@ -220,7 +224,7 @@ test('terminal input remains queued until the server acknowledges it', () => {
 
 test('terminal reset renders only the authoritative server snapshot', () => {
   assert.match(terminalPaneSource, /if \(message\.reset\) \{/);
-  assert.match(terminalPaneSource, /terminal\.clear\(\)/);
+  assert.match(terminalPaneSource, /writeTerminalData\('\\x1bc'\)/);
   assert.equal(terminalPaneSource.includes('Session ${message.sessionId}'), false);
   assert.equal(terminalPaneSource.includes('${message.cwd}'), false);
 });

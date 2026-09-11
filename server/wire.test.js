@@ -94,6 +94,7 @@ test('terminal client messages round-trip through protobuf', () => {
       forceRestart: true,
       lastSeq: 9,
       inputStreamId: INPUT_STREAM_ID,
+      sessionGeneration: 'generation-1',
     },
   }).finish();
   assert.deepEqual(decodeTerminalClientMessage(init), {
@@ -105,6 +106,7 @@ test('terminal client messages round-trip through protobuf', () => {
     forceRestart: true,
     lastSeq: 9,
     inputStreamId: INPUT_STREAM_ID,
+    sessionGeneration: 'generation-1',
   });
 
   const input = TerminalClientMessage.encode({ input: { data: 'ls\r', inputSeq: 7 } }).finish();
@@ -114,11 +116,20 @@ test('terminal client messages round-trip through protobuf', () => {
   assert.deepEqual(decodeTerminalClientMessage(resize), { type: 'resize', cols: 80, rows: 24 });
 });
 
+test('terminal init without a session generation defaults to an empty string', () => {
+  const frame = TerminalClientMessage.encode({
+    init: { sessionId: TERMINAL_ID, inputStreamId: INPUT_STREAM_ID },
+  }).finish();
+
+  assert.equal(decodeTerminalClientMessage(frame).sessionGeneration, '');
+});
+
 test('terminal ready frames carry replay reset metadata', () => {
   const frame = encodeTerminalServerMessage({
     type: 'ready',
     cwd: '/tmp/project',
     sessionId: TERMINAL_ID,
+    sessionGeneration: 'generation-1',
     reset: true,
     gap: true,
     lastSeq: 21,
@@ -128,9 +139,24 @@ test('terminal ready frames carry replay reset metadata', () => {
   assert.equal(message.body, 'ready');
   assert.equal(message.ready.cwd, '/tmp/project');
   assert.equal(message.ready.sessionId, TERMINAL_ID);
+  assert.equal(message.ready.sessionGeneration, 'generation-1');
   assert.equal(message.ready.reset, true);
   assert.equal(message.ready.gap, true);
   assert.equal(message.ready.lastSeq, 21);
+});
+
+test('terminal ready without a session generation decodes with an empty string', () => {
+  const frame = encodeTerminalServerMessage({
+    type: 'ready',
+    cwd: '/tmp/project',
+    sessionId: TERMINAL_ID,
+    reset: false,
+    gap: false,
+    lastSeq: 0,
+  });
+  const message = TerminalServerMessage.decode(frame);
+
+  assert.equal(message.ready.sessionGeneration, '');
 });
 
 test('terminal input acknowledgements carry the cumulative input sequence', () => {

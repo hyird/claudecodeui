@@ -224,6 +224,9 @@ export namespace cloudcli {
         /** TerminalInit inputStreamId. */
         inputStreamId: string;
 
+        /** TerminalInit sessionGeneration. */
+        sessionGeneration: string;
+
         /**
          * Encodes the specified TerminalInit message. Does not implicitly {@link cloudcli.TerminalInit.verify|verify} messages.
          * @param message TerminalInit message or plain object to encode
@@ -275,6 +278,9 @@ export namespace cloudcli {
 
             /** TerminalInit inputStreamId */
             inputStreamId?: (string|null);
+
+            /** TerminalInit sessionGeneration */
+            sessionGeneration?: (string|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -619,6 +625,9 @@ export namespace cloudcli {
         /** TerminalReady lastSeq. */
         lastSeq: number;
 
+        /** TerminalReady sessionGeneration. */
+        sessionGeneration: string;
+
         /**
          * Encodes the specified TerminalReady message. Does not implicitly {@link cloudcli.TerminalReady.verify|verify} messages.
          * @param message TerminalReady message or plain object to encode
@@ -664,6 +673,9 @@ export namespace cloudcli {
 
             /** TerminalReady lastSeq */
             lastSeq?: (number|null);
+
+            /** TerminalReady sessionGeneration */
+            sessionGeneration?: (string|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];

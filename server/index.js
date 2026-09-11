@@ -426,9 +426,11 @@ function createTerminalSnapshot(cols, rows) {
   };
 }
 
-function writeTerminalSnapshot(session, chunk) {
+function writeTerminalSnapshot(session, chunk, onParsed) {
   session.terminal.write(chunk, () => {
+    if (session.disposed) return;
     session.snapshotDirty = true;
+    onParsed?.();
   });
 }
 
@@ -472,8 +474,11 @@ function flushTerminalOutput(session) {
   session.pendingOutput.length = 0;
   session.pendingOutputBytes = 0;
 
-  writeTerminalSnapshot(session, chunk);
-  recordAndSendTerminalEvent(session, { type: 'output', data: chunk });
+  // Commit the sequence only after parsing: the replay log and screen then
+  // describe the same output boundary. xterm batches these queued writes itself.
+  writeTerminalSnapshot(session, chunk, () => {
+    recordAndSendTerminalEvent(session, { type: 'output', data: chunk });
+  });
 }
 
 function queueTerminalOutputPiece(session, chunk, chunkBytes) {
@@ -501,6 +506,7 @@ function queueTerminalOutputPiece(session, chunk, chunkBytes) {
 }
 
 function queueTerminalOutput(session, chunk) {
+  if (session.disposed || session.closed) return;
   forEachTerminalOutputFrame(chunk, (frame, frameBytes) => {
     queueTerminalOutputPiece(session, frame, frameBytes);
   });
@@ -525,10 +531,15 @@ function resizeSession(session, cols, rows) {
   // Reflow the buffered bytes at the old width before resizing, so they are not
   // re-wrapped to a geometry they were never written for.
   flushTerminalOutput(session);
-  session.terminal.resize(cols, rows);
-  session.pty.resize(cols, rows);
-  session.snapshotDirty = true;
-  readTerminalSnapshot(session);
+  // An empty write is a parser barrier, not a separate timer or Promise per
+  // output frame. Earlier output uses the old geometry; later output the new one.
+  session.terminal.write('', () => {
+    if (session.disposed) return;
+    if (session.terminal.cols === cols && session.terminal.rows === rows) return;
+    session.terminal.resize(cols, rows);
+    if (!session.closed) session.pty.resize(cols, rows);
+    session.snapshotDirty = true;
+  });
 }
 
 function sendTerminalEvent(ws, event) {
@@ -546,7 +557,7 @@ function sendTerminalEvent(ws, event) {
 
 function recordAndSendTerminalEvent(session, event) {
   const sequencedEvent = recordTerminalEvent(session.terminalEvents, event);
-  sendTerminalEvent(session.socket, sequencedEvent);
+  if (session.socketReady) sendTerminalEvent(session.socket, sequencedEvent);
   return sequencedEvent;
 }
 
@@ -570,6 +581,7 @@ function createSession(sessionId, options) {
 
   const session = {
     id: sessionId,
+    generation: randomUUID(),
     cwd,
     pty: shellProcess,
     terminal: terminalSnapshot.terminal,
@@ -577,9 +589,11 @@ function createSession(sessionId, options) {
     terminalSnapshot: terminalSnapshot.terminalSnapshot,
     snapshotDirty: false,
     socket: null,
+    socketReady: false,
     terminalEvents: createTerminalEventLog(),
     inputStreams: new Map(),
     closed: false,
+    disposed: false,
     pendingOutput: [],
     pendingOutputBytes: 0,
     outputFlushTimer: null,
@@ -590,23 +604,27 @@ function createSession(sessionId, options) {
   });
 
   shellProcess.onExit(({ exitCode, signal }) => {
+    if (session.disposed) return;
     // Drain buffered output first so the exit notice never overtakes the process's
     // own final bytes.
     flushTerminalOutput(session);
     session.closed = true;
     const suffix = signal ? ` (${signal})` : '';
     const message = `\r\n\x1b[33mProcess exited with code ${exitCode}${suffix}\x1b[0m\r\n`;
-    recordAndSendTerminalEvent(session, { type: 'output', data: message });
-    recordAndSendTerminalEvent(session, { type: 'exit', exitCode, signal });
-    session.socket = null;
     // closeSession may already have removed this PTY because the tab was closed or
     // force-restarted. Ignore that stale process's later onExit callback so it cannot
     // overwrite the replacement session's state.
-    if (sessions.get(sessionId) === session) {
-      exitedTabs.add(sessionId);
-      sessions.delete(sessionId);
-      broadcastTabsState();
-    }
+    writeTerminalSnapshot(session, message, () => {
+      recordAndSendTerminalEvent(session, { type: 'output', data: message });
+      recordAndSendTerminalEvent(session, { type: 'exit', exitCode, signal });
+      session.socket = null;
+      session.socketReady = false;
+      if (sessions.get(sessionId) === session) {
+        exitedTabs.add(sessionId);
+        sessions.delete(sessionId);
+        broadcastTabsState();
+      }
+    });
   });
 
   sessions.set(sessionId, session);
@@ -619,36 +637,45 @@ function attachSocket(ws, session, lastSeq = 0) {
   flushTerminalOutput(session);
   const oldSocket = session.socket;
   session.socket = ws;
+  session.socketReady = false;
   if (oldSocket && oldSocket !== ws && oldSocket.readyState === WS_OPEN) {
     oldSocket.close(1000, 'Replaced by newer terminal view');
   }
 
-  const replayPlan = getTerminalReplayPlan(session.terminalEvents, lastSeq);
-  ws.send(encodeTerminalServerMessage({
-    type: 'ready',
-    cwd: session.cwd,
-    sessionId: session.id,
-    reset: replayPlan.mode === 'reset',
-    gap: replayPlan.gap,
-    lastSeq: replayPlan.lastSeq,
-  }));
+  // Snapshot, replay boundary and ready are produced in the same parser callback.
+  // Writes queued after this barrier cannot overtake the snapshot on the socket.
+  session.terminal.write('', () => {
+    if (session.disposed || session.socket !== ws || ws.readyState !== WS_OPEN) return;
+    const replayPlan = getTerminalReplayPlan(session.terminalEvents, lastSeq);
+    ws.send(encodeTerminalServerMessage({
+      type: 'ready',
+      cwd: session.cwd,
+      sessionId: session.id,
+      sessionGeneration: session.generation,
+      reset: replayPlan.mode === 'reset',
+      gap: replayPlan.gap,
+      lastSeq: replayPlan.lastSeq,
+    }));
 
-  if (replayPlan.mode === 'replay') {
-    for (const event of replayPlan.events) {
-      sendTerminalEvent(ws, event);
+    if (replayPlan.mode === 'replay') {
+      for (const event of replayPlan.events) {
+        sendTerminalEvent(ws, event);
+      }
+    } else {
+      const terminalSnapshot = readTerminalSnapshot(session);
+      if (terminalSnapshot) {
+        sendTerminalSnapshot(ws, terminalSnapshot);
+      }
     }
-  } else {
-    const terminalSnapshot = readTerminalSnapshot(session);
-    if (terminalSnapshot) {
-      sendTerminalSnapshot(ws, terminalSnapshot);
-    }
-  }
-  broadcastTabsState();
+    session.socketReady = true;
+    broadcastTabsState();
+  });
 }
 
 function detachSocket(session, ws) {
   if (session.socket === ws) {
     session.socket = null;
+    session.socketReady = false;
     broadcastTabsState();
   }
 }
@@ -663,10 +690,12 @@ function closeSession(sessionId, broadcast = true) {
   // The session is going away and its socket with it, so buffered output has nowhere
   // left to land — drop it instead of letting a queued flush revive a dead session.
   clearTerminalOutputFlushTimer(session);
+  session.disposed = true;
   session.pendingOutput.length = 0;
   session.pendingOutputBytes = 0;
   session.socket?.close(1000, 'Terminal closed');
   session.socket = null;
+  session.socketReady = false;
   session.pty.kill();
   sessions.delete(sessionId);
   if (broadcast) {
@@ -692,7 +721,7 @@ function handleInit(ws, message) {
   const forceRestart = message.forceRestart === true;
   const lastSeq = readNumber(message.lastSeq, 0);
 
-  if (forceRestart) {
+  if (forceRestart || sessions.get(sessionId)?.closed) {
     closeSession(sessionId, false);
   }
 
@@ -707,7 +736,8 @@ function handleInit(ws, message) {
     session.inputStreams.set(inputStreamId, 0);
   }
   ws.data.inputStreamId = inputStreamId;
-  attachSocket(ws, session, lastSeq);
+  const knownGeneration = readString(message.sessionGeneration);
+  attachSocket(ws, session, knownGeneration && knownGeneration !== session.generation ? 0 : lastSeq);
   return session;
 }
 

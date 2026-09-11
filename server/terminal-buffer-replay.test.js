@@ -24,7 +24,7 @@ test('server snapshot scrollback is bounded for lower memory reconnect state', (
 });
 
 test('terminal output marks snapshots dirty instead of serializing on every chunk', () => {
-  const writeSnapshot = source.match(/function writeTerminalSnapshot\(session, chunk\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  const writeSnapshot = source.match(/function writeTerminalSnapshot\(session, chunk, onParsed\) \{[\s\S]*?\n\}/)?.[0] ?? '';
 
   assert.match(source, /function readTerminalSnapshot\(session\)/);
   assert.match(writeSnapshot, /session\.snapshotDirty = true/);

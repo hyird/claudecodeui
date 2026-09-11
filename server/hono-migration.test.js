@@ -657,6 +657,49 @@ test('terminal input is acknowledged and duplicate delivery is ignored', async (
   socket.close();
 });
 
+test('terminal session generations preserve reconnect input and identify a rebuilt PTY', async (t) => {
+  const sessionId = randomUUID();
+  const inputStreamId = randomUUID();
+  const sockets = [];
+  t.after(() => sockets.forEach((socket) => socket.terminate()));
+
+  async function attach(sessionGeneration = '', forceRestart = false) {
+    const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+    sockets.push(socket);
+    const ready = readTerminalWebSocketMessage(socket, (message) => message.body === 'ready', 'generation ready');
+    socket.on('open', () => {
+      socket.send(TerminalClientMessage.encode({
+        init: { sessionId, inputStreamId, sessionGeneration, forceRestart, cols: 80, rows: 24 },
+      }).finish());
+    });
+    return { socket, ready: (await ready).ready };
+  }
+
+  async function sendInput(socket, inputSeq) {
+    const acknowledgement = readTerminalWebSocketMessage(
+      socket,
+      (message) => message.body === 'inputAck' && message.inputAck.inputSeq === inputSeq,
+      `generation input acknowledgement ${inputSeq}`,
+    );
+    // A newline is valid for cmd, PowerShell and POSIX shells alike.
+    socket.send(TerminalClientMessage.encode({ input: { data: '\r', inputSeq } }).finish());
+    await acknowledgement;
+  }
+
+  const first = await attach();
+  assert.match(first.ready.sessionGeneration, UUID_V4_PATTERN);
+  await sendInput(first.socket, 1);
+  const resumed = await attach(first.ready.sessionGeneration);
+  assert.equal(resumed.ready.sessionGeneration, first.ready.sessionGeneration);
+  await sendInput(resumed.socket, 2);
+
+  const rebuilt = await attach(resumed.ready.sessionGeneration, true);
+  assert.notEqual(rebuilt.ready.sessionGeneration, resumed.ready.sessionGeneration);
+  assert.equal(rebuilt.ready.reset, true);
+  await sendInput(rebuilt.socket, 1);
+  rebuilt.socket.send(TerminalClientMessage.encode({ close: {} }).finish());
+});
+
 test('SPA fallback serves the built index for client routes when dist exists', async () => {
   const response = await fetch(`${baseUrl}/not-a-real-api-route`);
   assert.equal(response.status, 200);

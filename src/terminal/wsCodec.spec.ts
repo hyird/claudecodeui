@@ -28,6 +28,7 @@ describe('terminal client -> server', () => {
     const bytes = encodeTerminalClientMessage({
       type: 'init',
       sessionId: 's1',
+      sessionGeneration: 'generation-1',
       cols: 120,
       rows: 40,
       cwd: '/tmp',
@@ -38,12 +39,28 @@ describe('terminal client -> server', () => {
     expect(decodeTerminalClientMessage(bytes)).toEqual({
       type: 'init',
       sessionId: 's1',
+      sessionGeneration: 'generation-1',
       cols: 120,
       rows: 40,
       cwd: '/tmp',
       forceRestart: true,
       lastSeq: 7,
       inputStreamId: INPUT_STREAM_ID,
+    });
+  });
+
+  test('init without a session generation remains compatible with older callers', () => {
+    const bytes = encodeTerminalClientMessage({
+      type: 'init',
+      sessionId: 's1',
+      cols: 120,
+      rows: 40,
+      inputStreamId: INPUT_STREAM_ID,
+    });
+
+    expect(decodeTerminalClientMessage(bytes)).toMatchObject({
+      type: 'init',
+      sessionGeneration: '',
     });
   });
 
@@ -65,10 +82,23 @@ describe('terminal client -> server', () => {
 describe('terminal server -> client', () => {
   test('ready reflects the resume fields and seq', async () => {
     const frame = encodeTerminalServerMessage({
-      type: 'ready', cwd: '/root', sessionId: 's1', reset: true, gap: false, lastSeq: 3, seq: 1,
+      type: 'ready', cwd: '/root', sessionId: 's1', sessionGeneration: 'generation-1',
+      reset: true, gap: false, lastSeq: 3, seq: 1,
     });
     expect(await decodeTerminalServerMessage(frame)).toEqual({
-      type: 'ready', cwd: '/root', sessionId: 's1', reset: true, gap: false, lastSeq: 3, seq: 1,
+      type: 'ready', cwd: '/root', sessionId: 's1', sessionGeneration: 'generation-1',
+      reset: true, gap: false, lastSeq: 3, seq: 1,
+    });
+  });
+
+  test('ready without a session generation remains compatible with older servers', async () => {
+    const frame = encodeTerminalServerMessage({
+      type: 'ready', cwd: '/root', sessionId: 's1', reset: false, gap: false, lastSeq: 3, seq: 1,
+    });
+
+    expect(await decodeTerminalServerMessage(frame)).toEqual({
+      type: 'ready', cwd: '/root', sessionId: 's1', sessionGeneration: '',
+      reset: false, gap: false, lastSeq: 3, seq: 1,
     });
   });
 

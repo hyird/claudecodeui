@@ -26,6 +26,7 @@ const MAX_FONT_SIZE = 22;
 const TITLE_SYNC_DELAY_MS = 500;
 const TABS_RECONNECT_DELAY_MS = 1000;
 const TABS_RECONNECT_MAX_DELAY_MS = 15000;
+const TABS_CONNECT_TIMEOUT_MS = 10000;
 const TABS_RESUME_PONG_TIMEOUT_MS = 2500;
 const TABS_HEARTBEAT_INTERVAL_MS = 20000;
 const TABS_HEARTBEAT_PONG_TIMEOUT_MS = 8000;
@@ -250,6 +251,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
     let reconnectTimer = 0;
     let reconnectAttempts = 0;
     let heartbeatTimer = 0;
+    let connectionTimer = 0;
     let pongTimer = 0;
     let tabsMessageQueue = Promise.resolve();
 
@@ -257,6 +259,13 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       if (reconnectTimer) {
         window.clearTimeout(reconnectTimer);
         reconnectTimer = 0;
+      }
+    };
+
+    const clearConnectionTimer = () => {
+      if (connectionTimer) {
+        window.clearTimeout(connectionTimer);
+        connectionTimer = 0;
       }
     };
 
@@ -295,16 +304,28 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       }
 
       clearReconnectTimer();
+      clearConnectionTimer();
       clearPongTimer();
       const nextSocket = createTabsSocket(authToken);
       socket = nextSocket;
       nextSocket.binaryType = 'arraybuffer';
       tabsSocketRef.current = nextSocket;
+      connectionTimer = window.setTimeout(() => {
+        if (disposed || tabsSocketRef.current !== nextSocket) {
+          return;
+        }
+
+        connectionTimer = 0;
+        tabsSocketRef.current = null;
+        nextSocket.close();
+        scheduleReconnect();
+      }, TABS_CONNECT_TIMEOUT_MS);
       nextSocket.addEventListener('open', () => {
         if (disposed || tabsSocketRef.current !== nextSocket) {
           return;
         }
 
+        clearConnectionTimer();
         reconnectAttempts = 0;
         const pendingCommands = pendingTabsCommandsRef.current;
         pendingTabsCommandsRef.current = [];
@@ -342,6 +363,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       nextSocket.addEventListener('close', () => {
         if (tabsSocketRef.current === nextSocket) {
           tabsSocketRef.current = null;
+          clearConnectionTimer();
           clearPongTimer();
           scheduleReconnect();
         }
@@ -349,6 +371,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       nextSocket.addEventListener('error', () => {
         if (tabsSocketRef.current === nextSocket) {
           tabsSocketRef.current = null;
+          clearConnectionTimer();
           clearPongTimer();
           nextSocket.close();
           scheduleReconnect();
@@ -374,7 +397,10 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
         return;
       }
 
-      clearPongTimer();
+      if (pongTimer) {
+        return;
+      }
+
       try {
         currentSocket.send(encodeTabsClientMessage({ type: 'ping' }));
       } catch {
@@ -389,6 +415,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
           return;
         }
 
+        pongTimer = 0;
         tabsSocketRef.current = null;
         currentSocket.close();
         scheduleReconnect();
@@ -399,12 +426,25 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       if (document.visibilityState === 'hidden') {
         return;
       }
+      const currentSocket = tabsSocketRef.current;
       reconnectAttempts = 0;
+
+      if (
+        !currentSocket
+        || currentSocket.readyState === WebSocket.CLOSED
+        || currentSocket.readyState === WebSocket.CLOSING
+      ) {
+        clearReconnectTimer();
+        connect();
+        return;
+      }
+
       probeTabsConnection(TABS_RESUME_PONG_TIMEOUT_MS);
     };
 
     document.addEventListener('visibilitychange', probeTabsConnectionAfterResume);
     window.addEventListener('focus', probeTabsConnectionAfterResume);
+    window.addEventListener('online', probeTabsConnectionAfterResume);
     heartbeatTimer = window.setInterval(
       () => probeTabsConnection(TABS_HEARTBEAT_PONG_TIMEOUT_MS),
       TABS_HEARTBEAT_INTERVAL_MS,
@@ -421,6 +461,8 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       }
       document.removeEventListener('visibilitychange', probeTabsConnectionAfterResume);
       window.removeEventListener('focus', probeTabsConnectionAfterResume);
+      window.removeEventListener('online', probeTabsConnectionAfterResume);
+      clearConnectionTimer();
       if (tabsSocketRef.current === socket) {
         tabsSocketRef.current = null;
       }
