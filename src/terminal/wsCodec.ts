@@ -34,6 +34,7 @@ export type TerminalClientMessage =
   | { type: 'ping' };
 
 export type TabsClientMessage =
+  | { type: 'move-tab'; tabId: string; targetId: string; after: boolean }
   | { type: 'ping' }
   | { type: 'add-tab' }
   | { type: 'set-active'; activeId: string }
@@ -155,6 +156,8 @@ export async function decodeTerminalServerMessage(
 // ---- /terminal/tabs -----------------------------------------------------
 export function encodeTabsClientMessage(message: TabsClientMessage): Uint8Array {
   switch (message.type) {
+    case 'move-tab':
+      return TabsClientMessage.encode({ moveTab: { tabId: message.tabId, targetId: message.targetId, after: message.after } }).finish();
     case 'ping':
       return TabsClientMessage.encode({ ping: {} }).finish();
     case 'add-tab':

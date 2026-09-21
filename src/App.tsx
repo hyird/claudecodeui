@@ -1,6 +1,6 @@
 import { LogOut, Minus, Plus, Settings, Terminal as TerminalIcon, X } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 
 import { AuthGate } from './auth';
 import type { AuthUser } from './auth';
@@ -52,6 +52,7 @@ type TerminalAppProps = {
 };
 
 type TabsClientCommand =
+  | { type: 'move-tab'; tabId: string; targetId: string; after: boolean }
   | { type: 'add-tab' }
   | { type: 'set-active'; activeId: string }
   | { type: 'update-title'; tabId: string; title: string }
@@ -145,6 +146,12 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   const [tabsState, setTabsState] = useState<TerminalTabsState>(EMPTY_TABS_STATE);
   const [preferences, setPreferences] = useState<TerminalPreferences>(readPreferences);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const draggedTabRef = useRef<string | null>(null);
+  const dropTargetRef = useRef<{ id: string; after: boolean } | null>(null);
+  const tabsStripRef = useRef<HTMLElement | null>(null);
+  const suppressTabClickRef = useRef(false);
+  const [draggedTab, setDraggedTab] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; after: boolean } | null>(null);
   const tabsStateRef = useRef(tabsState);
   const tabsSocketRef = useRef<WebSocket | null>(null);
   const pendingTabsCommandsRef = useRef<TabsClientCommand[]>([]);
@@ -164,21 +171,34 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
 
   const applyTabsState = useCallback((state: TerminalTabsState) => {
     const normalized = normalizeTabsState(state);
-    setTabsState({
-      ...normalized,
-      tabs: normalized.tabs.map((tab) => {
-        const pendingTitle = pendingTitlesRef.current[tab.id];
-        if (!pendingTitle) {
-          return tab;
-        }
-        if (pendingTitle === tab.title) {
-          delete pendingTitlesRef.current[tab.id];
-          return tab;
-        }
-        // A status broadcast may race ahead of the title mutation. Keep the latest
-        // local title visible until the server echoes that exact value back.
-        return { ...tab, title: pendingTitle };
-      }),
+    setTabsState((current) => {
+      const dragging = Boolean(draggedTabRef.current);
+      const orderedTabs = dragging
+        ? current.tabs
+            .map((tab) => normalized.tabs.find((item) => item.id === tab.id) ?? tab)
+            .filter((tab) => normalized.tabs.some((item) => item.id === tab.id))
+        : normalized.tabs;
+      const activeId = dragging && orderedTabs.some((tab) => tab.id === current.activeId)
+        ? current.activeId
+        : normalized.activeId;
+
+      return {
+        ...normalized,
+        activeId,
+        tabs: orderedTabs.map((tab) => {
+          const pendingTitle = pendingTitlesRef.current[tab.id];
+          if (!pendingTitle) {
+            return tab;
+          }
+          if (pendingTitle === tab.title) {
+            delete pendingTitlesRef.current[tab.id];
+            return tab;
+          }
+          // A status broadcast may race ahead of the title mutation. Keep the latest
+          // local title visible until the server echoes that exact value back.
+          return { ...tab, title: pendingTitle };
+        }),
+      };
     });
   }, []);
 
@@ -484,10 +504,24 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       return;
     }
 
-    tabButtonRefs.current
+    const tab = tabButtonRefs.current
       .get(activeTab.id)
-      ?.closest<HTMLElement>('.tab')
-      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      ?.closest<HTMLElement>('.tab');
+    const strip = tab?.closest<HTMLElement>('.tabs');
+    if (!tab || !strip) {
+      return;
+    }
+
+    // Do not use Element.scrollIntoView: it walks overflow:auto ancestors. xterm 6
+    // still has a full-size `.xterm-viewport` with overflow-y:auto, so revealing
+    // the first tab can yank that viewport to y=0 (the terminal jumps to the top).
+    const tabRect = tab.getBoundingClientRect();
+    const stripRect = strip.getBoundingClientRect();
+    if (tabRect.left < stripRect.left) {
+      strip.scrollLeft -= stripRect.left - tabRect.left;
+    } else if (tabRect.right > stripRect.right) {
+      strip.scrollLeft += tabRect.right - stripRect.right;
+    }
   }, [activeTab?.id]);
 
   useLayoutEffect(() => {
@@ -567,6 +601,123 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
     sendTabsCommand({ type: 'set-active', activeId: tabId });
   }, [sendTabsCommand]);
 
+  const moveTab = useCallback((tabId: string, targetId: string, after: boolean) => {
+    const current = tabsStateRef.current;
+    const tab = current.tabs.find((item) => item.id === tabId);
+    if (!tab || tabId === targetId || !current.tabs.some((item) => item.id === targetId)) return;
+    const reordered = current.tabs.filter((item) => item.id !== tabId);
+    const index = reordered.findIndex((item) => item.id === targetId);
+    reordered.splice(index + (after ? 1 : 0), 0, tab);
+    const next = { ...current, tabs: reordered };
+    tabsStateRef.current = next;
+    setTabsState(next);
+    sendTabsCommand({ type: 'move-tab', tabId, targetId, after });
+  }, [sendTabsCommand]);
+
+  const endTabDrag = useCallback(() => {
+    draggedTabRef.current = null;
+    dropTargetRef.current = null;
+    setDraggedTab(null);
+    setDropTarget(null);
+  }, []);
+
+  const updateTabDropTarget = useCallback((clientX: number) => {
+    const draggedId = draggedTabRef.current;
+    const strip = tabsStripRef.current;
+    if (!draggedId || !strip) {
+      return;
+    }
+
+    const bounds = strip.getBoundingClientRect();
+    if (clientX < bounds.left + 32) {
+      strip.scrollLeft -= 24;
+    } else if (clientX > bounds.right - 32) {
+      strip.scrollLeft += 24;
+    }
+
+    const pills = [...strip.querySelectorAll<HTMLElement>('.tab[data-tab-id]')];
+    const others = pills.filter((pill) => pill.dataset.tabId !== draggedId);
+    const hit = others.find((pill) => {
+      const rect = pill.getBoundingClientRect();
+      return clientX >= rect.left && clientX <= rect.right;
+    }) ?? others.reduce<HTMLElement | null>((nearest, pill) => {
+      if (!nearest) {
+        return pill;
+      }
+      const rect = pill.getBoundingClientRect();
+      const nearestRect = nearest.getBoundingClientRect();
+      const dist = Math.abs(clientX - (rect.left + rect.width / 2));
+      const nearestDist = Math.abs(clientX - (nearestRect.left + nearestRect.width / 2));
+      return dist < nearestDist ? pill : nearest;
+    }, null);
+
+    const targetId = hit?.dataset.tabId;
+    if (!hit || !targetId) {
+      dropTargetRef.current = null;
+      setDropTarget(null);
+      return;
+    }
+
+    const rect = hit.getBoundingClientRect();
+    const next = { id: targetId, after: clientX > rect.left + rect.width / 2 };
+    const prev = dropTargetRef.current;
+    if (prev?.id === next.id && prev.after === next.after) {
+      return;
+    }
+    dropTargetRef.current = next;
+    setDropTarget(next);
+  }, []);
+
+  const handleTabPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>, tabId: string) => {
+    if (event.button !== 0 || tabsStateRef.current.tabs.length < 2) {
+      return;
+    }
+    if ((event.target as HTMLElement | null)?.closest('.tab-close')) {
+      return;
+    }
+
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    let dragging = false;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) {
+        return;
+      }
+      if (!dragging) {
+        if (Math.abs(moveEvent.clientX - startX) < 8) {
+          return;
+        }
+        dragging = true;
+        draggedTabRef.current = tabId;
+        setDraggedTab(tabId);
+      }
+      moveEvent.preventDefault();
+      updateTabDropTarget(moveEvent.clientX);
+    };
+
+    const onUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) {
+        return;
+      }
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      if (dragging) {
+        suppressTabClickRef.current = true;
+        const target = dropTargetRef.current;
+        if (target) {
+          moveTab(tabId, target.id, target.after);
+        }
+      }
+      endTabDrag();
+    };
+
+    window.addEventListener('pointermove', onMove, { passive: false });
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }, [endTabDrag, moveTab, updateTabDropTarget]);
+
   const closeTab = useCallback((tabId: string) => {
     const currentTabs = tabsStateRef.current.tabs;
     if (currentTabs.length <= 1) {
@@ -610,6 +761,14 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
       return;
     }
 
+    if (event.altKey && event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      event.preventDefault();
+      const after = event.key === 'ArrowRight';
+      const target = currentTabs[currentIndex + (after ? 1 : -1)];
+      if (target) moveTab(tabId, target.id, after);
+      return;
+    }
+
     let nextIndex = currentIndex;
     if (event.key === 'ArrowRight') {
       nextIndex = (currentIndex + 1) % currentTabs.length;
@@ -630,7 +789,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
     }
     pendingKeyboardTabFocusRef.current = nextTabId;
     selectTab(nextTabId);
-  }, [closeTab, selectTab]);
+  }, [closeTab, moveTab, selectTab]);
 
   useEffect(() => {
     const pendingFocus = pendingTabFocusRef.current;
@@ -715,6 +874,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
         </div>
 
         <nav
+          ref={tabsStripRef}
           className="tabs"
           role="tablist"
           aria-label="终端标签"
@@ -723,10 +883,16 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
           {tabs.map((tab) => {
             const isActive = tab.id === activeTab?.id;
             return (
-              <div className={`tab ${isActive ? 'active' : ''}`} key={tab.id}>
+              <div
+                className={`tab ${isActive ? 'active' : ''} ${draggedTab === tab.id ? 'dragging' : ''} ${dropTarget?.id === tab.id ? (dropTarget.after ? 'drop-after' : 'drop-before') : ''}`}
+                data-tab-id={tab.id}
+                key={tab.id}
+                onPointerDown={(event) => handleTabPointerDown(event, tab.id)}
+              >
                 <button
                   type="button"
                   className="tab-main"
+                  aria-keyshortcuts="Alt+Shift+ArrowLeft Alt+Shift+ArrowRight"
                   id={`terminal-tab-${tab.id}`}
                   ref={(button) => {
                     if (button) {
@@ -736,14 +902,20 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
                     }
                   }}
                   role="tab"
-                  onClick={() => selectTab(tab.id)}
+                  onClick={() => {
+                    if (suppressTabClickRef.current) {
+                      suppressTabClickRef.current = false;
+                      return;
+                    }
+                    selectTab(tab.id);
+                  }}
                   onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
                   aria-selected={isActive}
                   aria-label={`${tab.title}，${statusLabel(tab.status)}`}
                   aria-controls="active-terminal-panel"
                   aria-current={isActive ? 'page' : undefined}
                   tabIndex={isActive ? 0 : -1}
-                  title={`${tab.title} - ${statusLabel(tab.status)}`}
+                  title={`${tab.title} - ${statusLabel(tab.status)} · 拖动排序 / Alt+Shift+方向键`}
                 >
                   <span className={`status-dot ${tab.status}`} aria-hidden="true" />
                   <span className="tab-title">{tab.title}</span>

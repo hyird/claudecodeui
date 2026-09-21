@@ -151,6 +151,12 @@ test('terminal output and scroll events refresh without blocking later frames', 
   assert.match(source, /terminal\.onWriteParsed\(\(\) => \{/);
   assert.match(source, /terminal\.onResize\(\(\) => \{/);
   assert.match(source, /forceFullRefresh\(\)/);
+  // A glitch that sets ydisp to 0 would otherwise leave the first/oldest session
+  // stuck at the top of scrollback. Snap back unless the user just wheeled away.
+  assert.match(source, /let followOutput = true/);
+  assert.match(source, /terminal\.scrollToBottom\(\)/);
+  assert.match(source, /stickToBottomIfFollowing\(\)/);
+  assert.match(source, /lastUserScrollAt = Date\.now\(\)/);
 });
 
 test('terminal DOM lookups are cached instead of re-queried every frame', () => {

@@ -41,6 +41,21 @@ test('terminal tabs expose standard semantics and keyboard navigation', () => {
   assert.match(source, /tabButtonRefs\.current\.get\(pendingFocusId\)\?\.focus\(\)/);
 });
 
+test('tabs can be reordered by pointer drag without using HTML5 draggable', () => {
+  assert.match(source, /type: 'move-tab'/);
+  assert.match(source, /data-tab-id=\{tab.id\}/);
+  assert.match(source, /handleTabPointerDown/);
+  assert.match(source, /onPointerDown=\{\(event\) => handleTabPointerDown\(event, tab.id\)\}/);
+  assert.match(source, /suppressTabClickRef/);
+  assert.match(source, /draggedTabRef\.current/);
+  assert.match(source, /event\.altKey && event\.shiftKey && \(event\.key === 'ArrowLeft' \|\| event\.key === 'ArrowRight'\)/);
+  assert.match(serverSource, /message\?\.type === 'move-tab'/);
+  assert.match(stylesSource, /\.tab\.dragging \{[^}]*pointer-events:\s*none/);
+  assert.equal(source.includes('draggable={'), false);
+  assert.equal(source.includes('onDragStart'), false);
+  assert.equal(source.includes('onDrop='), false);
+});
+
 test('keyboard tab navigation cannot race with terminal autofocus', () => {
   assert.match(source, /focusOnMount=\{[\s\S]*?pendingKeyboardTabFocusRef\.current !== activeTab\.id/);
   assert.match(terminalPaneSource, /const focusOnMountRef = useRef\(focusOnMount\)/);
@@ -54,7 +69,9 @@ test('the active terminal tab stays visible inside an overflowing tab strip', ()
   assert.match(source, /useLayoutEffect/);
   assert.match(source, /tabButtonRefs\.current\s*\.get\(activeTab\.id\)/);
   assert.match(source, /\.closest<HTMLElement>\('\.tab'\)/);
-  assert.match(source, /scrollIntoView\(\{ block: 'nearest', inline: 'nearest' \}\)/);
+  assert.match(source, /tab\?\.closest<HTMLElement>\('\.tabs'\)/);
+  assert.match(source, /strip\.scrollLeft/);
+  assert.equal(source.includes('scrollIntoView({'), false);
 });
 
 test('terminal settings dialog receives focus and is linked to its trigger', () => {
@@ -125,6 +142,7 @@ test('tab mutations use the tabs websocket instead of HTTP mutation endpoints', 
   assert.match(source, /sendTabsCommand/);
   assert.match(source, /type:\s*'add-tab'/);
   assert.match(source, /type:\s*'set-active'/);
+  assert.match(source, /type:\s*'move-tab'/);
   assert.match(source, /type:\s*'close-tab'/);
   assert.equal(source.includes("sendTabsMutation('/api/terminal/tabs'"), false);
   assert.equal(source.includes('/api/terminal/tabs/active'), false);

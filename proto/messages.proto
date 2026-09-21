@@ -66,6 +66,7 @@ message AddTab {}
 message SetActive { string active_id = 1; }
 message UpdateTitle { string tab_id = 1; string title = 2; }
 message CloseTab { string tab_id = 1; }
+message MoveTab { string tab_id = 1; string target_id = 2; bool after = 3; }
 
 message TabsClientMessage {
   oneof body {
@@ -74,6 +75,7 @@ message TabsClientMessage {
     SetActive set_active = 3;
     UpdateTitle update_title = 4;
     CloseTab close_tab = 5;
+    MoveTab move_tab = 6;
   }
 }
 

@@ -1263,6 +1263,82 @@ export namespace cloudcli {
     }
 
     /**
+     * Properties of a MoveTab.
+     * @deprecated Use cloudcli.MoveTab.$Properties instead.
+     */
+    interface IMoveTab extends cloudcli.MoveTab.$Properties {
+    }
+
+    /** Represents a MoveTab. */
+    class MoveTab {
+
+        /**
+         * Constructs a new MoveTab.
+         * @param [properties] Properties to set
+         */
+        constructor(properties?: cloudcli.MoveTab.$Properties);
+
+        /** Unknown fields preserved while decoding when enabled */
+        $unknowns?: Uint8Array[];
+
+        /** MoveTab tabId. */
+        tabId: string;
+
+        /** MoveTab targetId. */
+        targetId: string;
+
+        /** MoveTab after. */
+        after: boolean;
+
+        /**
+         * Encodes the specified MoveTab message. Does not implicitly {@link cloudcli.MoveTab.verify|verify} messages.
+         * @param message MoveTab message or plain object to encode
+         * @param [writer] Writer to encode to
+         * @returns Writer
+         */
+        static encode(message: cloudcli.MoveTab.$Properties, writer?: $protobuf.Writer): $protobuf.Writer;
+
+        /**
+         * Decodes a MoveTab message from the specified reader or buffer.
+         * @param reader Reader or buffer to decode from
+         * @param [length] Message length if known beforehand
+         * @returns {cloudcli.MoveTab & cloudcli.MoveTab.$Shape} MoveTab
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        static decode(reader: ($protobuf.Reader|Uint8Array), length?: number): cloudcli.MoveTab & cloudcli.MoveTab.$Shape;
+
+        /**
+         * Gets the type url for MoveTab
+         * @param [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns The type url
+         */
+        static getTypeUrl(prefix?: string): string;
+    }
+
+    namespace MoveTab {
+
+        /** Properties of a MoveTab. */
+        interface $Properties {
+
+            /** MoveTab tabId */
+            tabId?: (string|null);
+
+            /** MoveTab targetId */
+            targetId?: (string|null);
+
+            /** MoveTab after */
+            after?: (boolean|null);
+
+            /** Unknown fields preserved while decoding when enabled */
+            $unknowns?: Uint8Array[];
+        }
+
+        /** Shape of a MoveTab. */
+        type $Shape = cloudcli.MoveTab.$Properties;
+    }
+
+    /**
      * Properties of a TabsClientMessage.
      * @deprecated Use cloudcli.TabsClientMessage.$Properties instead.
      */
@@ -1296,8 +1372,11 @@ export namespace cloudcli {
         /** TabsClientMessage closeTab. */
         closeTab?: (cloudcli.CloseTab.$Properties|null);
 
+        /** TabsClientMessage moveTab. */
+        moveTab?: (cloudcli.MoveTab.$Properties|null);
+
         /** TabsClientMessage body. */
-        body?: ("ping"|"addTab"|"setActive"|"updateTitle"|"closeTab");
+        body?: ("ping"|"addTab"|"setActive"|"updateTitle"|"closeTab"|"moveTab");
 
         /**
          * Encodes the specified TabsClientMessage message. Does not implicitly {@link cloudcli.TabsClientMessage.verify|verify} messages.
@@ -1345,8 +1424,11 @@ export namespace cloudcli {
             /** TabsClientMessage closeTab */
             closeTab?: (cloudcli.CloseTab.$Properties|null);
 
+            /** TabsClientMessage moveTab */
+            moveTab?: (cloudcli.MoveTab.$Properties|null);
+
             /** TabsClientMessage body */
-            body?: ("ping"|"addTab"|"setActive"|"updateTitle"|"closeTab");
+            body?: ("ping"|"addTab"|"setActive"|"updateTitle"|"closeTab"|"moveTab");
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -1359,9 +1441,10 @@ export namespace cloudcli {
           setActive?: cloudcli.SetActive.$Shape|null;
           updateTitle?: cloudcli.UpdateTitle.$Shape|null;
           closeTab?: cloudcli.CloseTab.$Shape|null;
+          moveTab?: cloudcli.MoveTab.$Shape|null;
           $unknowns?: Uint8Array[];
         } & (
-          ({ body?: undefined; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "ping"; ping: cloudcli.Ping.$Shape; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "addTab"; ping?: null; addTab: cloudcli.AddTab.$Shape; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "setActive"; ping?: null; addTab?: null; setActive: cloudcli.SetActive.$Shape; updateTitle?: null; closeTab?: null }|{ body?: "updateTitle"; ping?: null; addTab?: null; setActive?: null; updateTitle: cloudcli.UpdateTitle.$Shape; closeTab?: null }|{ body?: "closeTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab: cloudcli.CloseTab.$Shape })
+          ({ body?: undefined; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null; moveTab?: null }|{ body?: "ping"; ping: cloudcli.Ping.$Shape; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null; moveTab?: null }|{ body?: "addTab"; ping?: null; addTab: cloudcli.AddTab.$Shape; setActive?: null; updateTitle?: null; closeTab?: null; moveTab?: null }|{ body?: "setActive"; ping?: null; addTab?: null; setActive: cloudcli.SetActive.$Shape; updateTitle?: null; closeTab?: null; moveTab?: null }|{ body?: "updateTitle"; ping?: null; addTab?: null; setActive?: null; updateTitle: cloudcli.UpdateTitle.$Shape; closeTab?: null; moveTab?: null }|{ body?: "closeTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab: cloudcli.CloseTab.$Shape; moveTab?: null }|{ body?: "moveTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null; moveTab: cloudcli.MoveTab.$Shape })
         );
     }
 

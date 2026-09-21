@@ -342,6 +342,19 @@ function sendTabsError(ws, message) {
 }
 
 function handleTabsCommand(ws, message) {
+  if (message?.type === 'move-tab') {
+    const from = tabsState.tabs.findIndex((tab) => tab.id === message.tabId);
+    const target = tabsState.tabs.findIndex((tab) => tab.id === message.targetId);
+    if (from < 0 || target < 0 || from === target) {
+      sendTabsError(ws, 'Invalid tab move');
+      return;
+    }
+    const [tab] = tabsState.tabs.splice(from, 1);
+    const insertion = tabsState.tabs.findIndex((item) => item.id === message.targetId);
+    tabsState.tabs.splice(insertion + (message.after === true ? 1 : 0), 0, tab);
+    broadcastTabsState();
+    return;
+  }
   if (message?.type === 'ping') {
     ws.send(encodeTabsServerMessage({ type: 'pong' }));
     return;

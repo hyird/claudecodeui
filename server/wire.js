@@ -158,6 +158,8 @@ export function decodeTabsClientMessage(raw) {
       return { type: 'update-title', tabId: message.updateTitle.tabId, title: message.updateTitle.title };
     case 'closeTab':
       return { type: 'close-tab', tabId: message.closeTab.tabId };
+    case 'moveTab':
+      return { type: 'move-tab', tabId: message.moveTab.tabId, targetId: message.moveTab.targetId, after: message.moveTab.after };
     default:
       return null;
   }

@@ -435,6 +435,31 @@ export default function TerminalPane({
     const ansiModeReportGuard = registerModeReportGuard(true);
     const privateModeReportGuard = registerModeReportGuard(false);
 
+    // Keep the live prompt in view unless the user has wheeled away from the
+    // bottom. xterm 6's overlay viewport can report ydisp=0 after a resize,
+    // buffer switch, or ancestor scroll, which looks like the terminal jumped
+    // to the top of scrollback — especially on the oldest/first session.
+    let followOutput = true;
+    let stickingToBottom = false;
+    let lastUserScrollAt = 0;
+
+    const isAtBottom = () => {
+      const buffer = terminal.buffer.active;
+      return buffer.viewportY >= buffer.baseY;
+    };
+
+    const stickToBottomIfFollowing = () => {
+      if (!followOutput || stickingToBottom || isAtBottom()) {
+        return;
+      }
+      stickingToBottom = true;
+      try {
+        terminal.scrollToBottom();
+      } finally {
+        stickingToBottom = false;
+      }
+    };
+
     // Input handling mirrors cloudcli-plugin-terminal's TerminalSession.
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
@@ -465,6 +490,7 @@ export default function TerminalPane({
         return false;
       }
 
+      lastUserScrollAt = Date.now();
       return true;
     });
 
@@ -530,6 +556,7 @@ export default function TerminalPane({
           // The serialized server snapshot that follows is the source of truth.
           // Do not prepend internal session ids or cwd lines: they clutter new
           // terminals and can corrupt the cursor position of a restored TUI.
+          followOutput = true;
           writeTerminalData('\x1bc');
         }
         terminalReadyRef.current = true;
@@ -845,9 +872,22 @@ export default function TerminalPane({
       forceFullRefresh();
     };
     const scrollSubscription = terminal.onScroll(() => {
+      if (stickingToBottom) {
+        refreshAfterTerminalChange();
+        return;
+      }
+
+      if (isAtBottom()) {
+        followOutput = true;
+      } else if (Date.now() - lastUserScrollAt < 500) {
+        followOutput = false;
+      } else if (followOutput) {
+        stickToBottomIfFollowing();
+      }
       refreshAfterTerminalChange();
     });
     const writeParsedSubscription = terminal.onWriteParsed(() => {
+      stickToBottomIfFollowing();
       refreshAfterTerminalChange();
     });
     const resizeSubscription = terminal.onResize(() => {

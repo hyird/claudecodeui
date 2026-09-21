@@ -19,6 +19,13 @@ import {
 const TERMINAL_ID = '11111111-1111-4111-8111-111111111111';
 const INPUT_STREAM_ID = '33333333-3333-4333-8333-333333333333';
 
+test('tab moves preserve relative placement through the protobuf wire', () => {
+  for (const after of [false, true]) {
+    const command = { type: 'move-tab' as const, tabId: TERMINAL_ID, targetId: INPUT_STREAM_ID, after };
+    expect(decodeTabsClientMessage(encodeTabsClientMessage(command))).toEqual(command);
+  }
+});
+
 // The client codec (wsCodec) and the server codec (wire.js) are two ends of the same
 // protobuf wire. These tests drive real bytes between them, so a schema or compression
 // mismatch fails here instead of only at runtime against a live shell.

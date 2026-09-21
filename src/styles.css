@@ -998,6 +998,14 @@ button:focus-visible {
   display: block;
 }
 
+.tab.dragging { opacity: 0.45; pointer-events: none; }
+.tab.drop-before { box-shadow: inset 3px 0 var(--accent); }
+.tab.drop-after { box-shadow: inset -3px 0 var(--accent); }
+.tabs .tab { touch-action: none; }
+.tabs .tab-main { cursor: grab; }
+.tab.dragging .tab-main,
+.tabs .tab-main:active { cursor: grabbing; }
+
 .terminal-pane {
   position: relative;
   width: 100%;

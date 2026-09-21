@@ -2788,6 +2788,181 @@ export const cloudcli = $root.cloudcli = (() => {
         return CloseTab;
     })();
 
+    cloudcli.MoveTab = (function() {
+
+        /**
+         * Properties of a MoveTab.
+         * @typedef {Object} cloudcli.MoveTab.$Properties
+         * @property {string|null} [tabId] MoveTab tabId
+         * @property {string|null} [targetId] MoveTab targetId
+         * @property {boolean|null} [after] MoveTab after
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+
+        /**
+         * Properties of a MoveTab.
+         * @memberof cloudcli
+         * @interface IMoveTab
+         * @augments cloudcli.MoveTab.$Properties
+         * @deprecated Use cloudcli.MoveTab.$Properties instead.
+         */
+
+        /**
+         * Shape of a MoveTab.
+         * @typedef {cloudcli.MoveTab.$Properties} cloudcli.MoveTab.$Shape
+         */
+
+        /**
+         * Constructs a new MoveTab.
+         * @memberof cloudcli
+         * @classdesc Represents a MoveTab.
+         * @constructor
+         * @param {cloudcli.MoveTab.$Properties=} [properties] Properties to set
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+        const MoveTab = function (properties) {
+            if (properties)
+                for (let keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                    if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                        this[keys[i]] = properties[keys[i]];
+        };
+
+        /**
+         * MoveTab tabId.
+         * @member {string} tabId
+         * @memberof cloudcli.MoveTab
+         * @instance
+         */
+        MoveTab.prototype.tabId = "";
+
+        /**
+         * MoveTab targetId.
+         * @member {string} targetId
+         * @memberof cloudcli.MoveTab
+         * @instance
+         */
+        MoveTab.prototype.targetId = "";
+
+        /**
+         * MoveTab after.
+         * @member {boolean} after
+         * @memberof cloudcli.MoveTab
+         * @instance
+         */
+        MoveTab.prototype.after = false;
+
+        /**
+         * Encodes the specified MoveTab message. Does not implicitly {@link cloudcli.MoveTab.verify|verify} messages.
+         * @function encode
+         * @memberof cloudcli.MoveTab
+         * @static
+         * @param {cloudcli.MoveTab.$Properties} message MoveTab message or plain object to encode
+         * @param {$protobuf.Writer} [writer] Writer to encode to
+         * @returns {$protobuf.Writer} Writer
+         */
+        MoveTab.encode = function (message, writer, _depth) {
+            if (!writer)
+                writer = $Writer.create();
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $util.recursionLimit)
+                throw $Error("max depth exceeded");
+            if (message.tabId != null && $Object.hasOwnProperty.call(message, "tabId") && message.tabId !== "")
+                writer.uint32(/* id 1, wireType 2 =*/10).string(message.tabId);
+            if (message.targetId != null && $Object.hasOwnProperty.call(message, "targetId") && message.targetId !== "")
+                writer.uint32(/* id 2, wireType 2 =*/18).string(message.targetId);
+            if (message.after != null && $Object.hasOwnProperty.call(message, "after") && message.after !== false)
+                writer.uint32(/* id 3, wireType 0 =*/24).bool(message.after);
+            if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                for (let i = 0; i < message.$unknowns.length; ++i)
+                    writer.raw(message.$unknowns[i]);
+            return writer;
+        };
+
+        /**
+         * Decodes a MoveTab message from the specified reader or buffer.
+         * @function decode
+         * @memberof cloudcli.MoveTab
+         * @static
+         * @param {$protobuf.Reader|Uint8Array} reader Reader or buffer to decode from
+         * @param {number} [length] Message length if known beforehand
+         * @returns {cloudcli.MoveTab & cloudcli.MoveTab.$Shape} MoveTab
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        MoveTab.decode = function (reader, length, _end, _depth, _target) {
+            if (!(reader instanceof $Reader))
+                reader = $Reader.create(reader);
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $Reader.recursionLimit)
+                throw $Error("max depth exceeded");
+            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.MoveTab(), value;
+            while (reader.pos < end) {
+                let start = reader.pos;
+                let tag = reader.tag();
+                if (tag === _end) {
+                    _end = $undefined;
+                    break;
+                }
+                let wireType = tag & 7;
+                switch (tag >>>= 3) {
+                case 1: {
+                        if (wireType !== 2)
+                            break;
+                        if ((value = reader.stringVerify()).length)
+                            message.tabId = value;
+                        else
+                            delete message.tabId;
+                        continue;
+                    }
+                case 2: {
+                        if (wireType !== 2)
+                            break;
+                        if ((value = reader.stringVerify()).length)
+                            message.targetId = value;
+                        else
+                            delete message.targetId;
+                        continue;
+                    }
+                case 3: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.bool())
+                            message.after = value;
+                        else
+                            delete message.after;
+                        continue;
+                    }
+                }
+                reader.skipType(wireType, _depth, tag);
+                if (!reader.discardUnknown) {
+                    $util.makeProp(message, "$unknowns", false);
+                    (message.$unknowns || (message.$unknowns = [])).push(reader.raw(start, reader.pos));
+                }
+            }
+            if (_end !== $undefined)
+                throw $Error("missing end group");
+            return message;
+        };
+
+        /**
+         * Gets the type url for MoveTab
+         * @function getTypeUrl
+         * @memberof cloudcli.MoveTab
+         * @static
+         * @param {string} [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns {string} The type url
+         */
+        MoveTab.getTypeUrl = function(prefix) {
+            if (prefix === $undefined)
+                prefix = "type.googleapis.com";
+            return prefix + "/cloudcli.MoveTab";
+        };
+
+        return MoveTab;
+    })();
+
     cloudcli.TabsClientMessage = (function() {
 
         /**
@@ -2798,7 +2973,8 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {cloudcli.SetActive.$Properties|null} [setActive] TabsClientMessage setActive
          * @property {cloudcli.UpdateTitle.$Properties|null} [updateTitle] TabsClientMessage updateTitle
          * @property {cloudcli.CloseTab.$Properties|null} [closeTab] TabsClientMessage closeTab
-         * @property {"ping"|"addTab"|"setActive"|"updateTitle"|"closeTab"} [body] TabsClientMessage body
+         * @property {cloudcli.MoveTab.$Properties|null} [moveTab] TabsClientMessage moveTab
+         * @property {"ping"|"addTab"|"setActive"|"updateTitle"|"closeTab"|"moveTab"} [body] TabsClientMessage body
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -2818,9 +2994,10 @@ export const cloudcli = $root.cloudcli = (() => {
          *   setActive?: cloudcli.SetActive.$Shape|null;
          *   updateTitle?: cloudcli.UpdateTitle.$Shape|null;
          *   closeTab?: cloudcli.CloseTab.$Shape|null;
+         *   moveTab?: cloudcli.MoveTab.$Shape|null;
          *   $unknowns?: Array.<Uint8Array>;
          * } & (
-         *   ({ body?: undefined; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "ping"; ping: cloudcli.Ping.$Shape; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "addTab"; ping?: null; addTab: cloudcli.AddTab.$Shape; setActive?: null; updateTitle?: null; closeTab?: null }|{ body?: "setActive"; ping?: null; addTab?: null; setActive: cloudcli.SetActive.$Shape; updateTitle?: null; closeTab?: null }|{ body?: "updateTitle"; ping?: null; addTab?: null; setActive?: null; updateTitle: cloudcli.UpdateTitle.$Shape; closeTab?: null }|{ body?: "closeTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab: cloudcli.CloseTab.$Shape })
+         *   ({ body?: undefined; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null; moveTab?: null }|{ body?: "ping"; ping: cloudcli.Ping.$Shape; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null; moveTab?: null }|{ body?: "addTab"; ping?: null; addTab: cloudcli.AddTab.$Shape; setActive?: null; updateTitle?: null; closeTab?: null; moveTab?: null }|{ body?: "setActive"; ping?: null; addTab?: null; setActive: cloudcli.SetActive.$Shape; updateTitle?: null; closeTab?: null; moveTab?: null }|{ body?: "updateTitle"; ping?: null; addTab?: null; setActive?: null; updateTitle: cloudcli.UpdateTitle.$Shape; closeTab?: null; moveTab?: null }|{ body?: "closeTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab: cloudcli.CloseTab.$Shape; moveTab?: null }|{ body?: "moveTab"; ping?: null; addTab?: null; setActive?: null; updateTitle?: null; closeTab?: null; moveTab: cloudcli.MoveTab.$Shape })
          * )} cloudcli.TabsClientMessage.$Shape
          */
 
@@ -2879,17 +3056,25 @@ export const cloudcli = $root.cloudcli = (() => {
          */
         TabsClientMessage.prototype.closeTab = null;
 
+        /**
+         * TabsClientMessage moveTab.
+         * @member {cloudcli.MoveTab.$Properties|null|undefined} moveTab
+         * @memberof cloudcli.TabsClientMessage
+         * @instance
+         */
+        TabsClientMessage.prototype.moveTab = null;
+
         // OneOf field names bound to virtual getters and setters
         let $oneOfFields;
 
         /**
          * TabsClientMessage body.
-         * @member {"ping"|"addTab"|"setActive"|"updateTitle"|"closeTab"|undefined} body
+         * @member {"ping"|"addTab"|"setActive"|"updateTitle"|"closeTab"|"moveTab"|undefined} body
          * @memberof cloudcli.TabsClientMessage
          * @instance
          */
         $Object.defineProperty(TabsClientMessage.prototype, "body", {
-            get: $util.oneOfGetter($oneOfFields = ["ping", "addTab", "setActive", "updateTitle", "closeTab"]),
+            get: $util.oneOfGetter($oneOfFields = ["ping", "addTab", "setActive", "updateTitle", "closeTab", "moveTab"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -2919,6 +3104,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 $root.cloudcli.UpdateTitle.encode(message.updateTitle, writer.uint32(/* id 4, wireType 2 =*/34).fork(), _depth + 1).ldelim();
             if (message.closeTab != null && $Object.hasOwnProperty.call(message, "closeTab"))
                 $root.cloudcli.CloseTab.encode(message.closeTab, writer.uint32(/* id 5, wireType 2 =*/42).fork(), _depth + 1).ldelim();
+            if (message.moveTab != null && $Object.hasOwnProperty.call(message, "moveTab"))
+                $root.cloudcli.MoveTab.encode(message.moveTab, writer.uint32(/* id 6, wireType 2 =*/50).fork(), _depth + 1).ldelim();
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -2986,6 +3173,13 @@ export const cloudcli = $root.cloudcli = (() => {
                             break;
                         message.closeTab = $root.cloudcli.CloseTab.decode(reader, reader.uint32(), $undefined, _depth + 1, message.closeTab);
                         message.body = "closeTab";
+                        continue;
+                    }
+                case 6: {
+                        if (wireType !== 2)
+                            break;
+                        message.moveTab = $root.cloudcli.MoveTab.decode(reader, reader.uint32(), $undefined, _depth + 1, message.moveTab);
+                        message.body = "moveTab";
                         continue;
                     }
                 }
