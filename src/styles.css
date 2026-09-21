@@ -1095,15 +1095,17 @@ button:focus-visible {
 }
 
 /* xterm 6 owns a custom overlay scrollbar inside `.xterm-scrollable-element`.
-   Keep the legacy native viewport scrollbar hidden so the two implementations
-   never stack into a thick double bar. Wheel events still flow through `auto`. */
+   The leftover `.xterm-viewport` must not natively scroll: overflow:auto lets
+   ancestor/focus scrolling set its scrollTop to 0, which looks like the
+   terminal jumped to the top of history. Wheel is handled by xterm's overlay. */
 .terminal-pane .xterm .xterm-viewport {
-  overflow-y: auto !important;
+  overflow: hidden !important;
   /* xterm defaults the viewport to pure black. Whole-cell fitting can leave a
      few remainder pixels below the last row, so match the terminal theme here
      instead of exposing that remainder as a black strip. */
   background-color: var(--bg-terminal);
   scrollbar-width: none;
+  overscroll-behavior: none;
 }
 
 .terminal-pane .xterm .xterm-viewport::-webkit-scrollbar {

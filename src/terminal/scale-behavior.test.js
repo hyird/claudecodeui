@@ -82,7 +82,7 @@ test('terminal viewport hides the legacy native scrollbar behind xterm 6 overlay
   const rule = viewportRule?.[0] ?? '';
   const scrollbar = scrollbarRule?.[0] ?? '';
 
-  assert.match(rule, /overflow-y:\s*auto\s*!important/);
+  assert.match(rule, /overflow:\s*hidden\s*!important/);
   assert.match(rule, /background-color:\s*var\(--bg-terminal\)/);
   assert.match(rule, /scrollbar-width:\s*none/);
   assert.equal(rule.includes('overflow-y: scroll'), false);
@@ -151,12 +151,8 @@ test('terminal output and scroll events refresh without blocking later frames', 
   assert.match(source, /terminal\.onWriteParsed\(\(\) => \{/);
   assert.match(source, /terminal\.onResize\(\(\) => \{/);
   assert.match(source, /forceFullRefresh\(\)/);
-  // A glitch that sets ydisp to 0 would otherwise leave the first/oldest session
-  // stuck at the top of scrollback. Snap back unless the user just wheeled away.
-  assert.match(source, /let followOutput = true/);
-  assert.match(source, /terminal\.scrollToBottom\(\)/);
-  assert.match(source, /stickToBottomIfFollowing\(\)/);
-  assert.match(source, /lastUserScrollAt = Date\.now\(\)/);
+  assert.equal(source.includes('followOutput'), false);
+  assert.equal(source.includes('scrollToBottom'), false);
 });
 
 test('terminal DOM lookups are cached instead of re-queried every frame', () => {
