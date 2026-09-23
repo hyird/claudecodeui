@@ -3,12 +3,17 @@ import fs from 'node:fs';
 import { test } from 'node:test';
 
 const paneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+const clipboardSource = fs.readFileSync(new URL('./clipboard.ts', import.meta.url), 'utf8');
 
 test('terminal keyboard input mirrors the original plugin handler', () => {
   assert.match(paneSource, /if \(event\.type !== 'keydown'\) return true/);
   assert.match(paneSource, /const mod = event\.ctrlKey \|\| event\.metaKey/);
   assert.match(paneSource, /mod && event\.key\.toLowerCase\(\) === 'c' && terminal\.hasSelection\(\)/);
-  assert.match(paneSource, /copyText\(terminal\.getSelection\(\)\)/);
+  const copyBranch = paneSource.match(/if \(mod && event\.key\.toLowerCase\(\) === 'c' && terminal\.hasSelection\(\)\) \{[\s\S]*?\n\s*\}/);
+  assert.ok(copyBranch, 'Could not find copy shortcut branch');
+  assert.match(copyBranch[0], /return false/);
+  assert.match(copyBranch[0], /event\.preventDefault\(\)/);
+  assert.match(copyBranch[0], /writeClipboard\(terminal\.getSelection\(\)\)/);
   assert.match(paneSource, /mod && event\.key\.toLowerCase\(\) === 'v'/);
   assert.equal(paneSource.includes('navigator.clipboard?.readText'), false);
   assert.match(paneSource, /return true/);
@@ -30,7 +35,11 @@ test('all ordinary xterm input is sent directly by onData', () => {
 });
 
 test('xterm input addons and initialization order mirror the original plugin', () => {
-  assert.match(paneSource, /terminal\.loadAddon\(new ClipboardAddon\(\)\)/);
+  assert.match(paneSource, /terminal\.loadAddon\(new ClipboardAddon\(undefined, \{/);
+  assert.match(paneSource, /writeText: \(selection, text\) =>/);
+  assert.match(paneSource, /return writeClipboard\(text\)/);
+  assert.match(paneSource, /pendingCopyText !== null/);
+  assert.match(clipboardSource, /document\.execCommand\('copy'\)/);
   assert.ok(paneSource.indexOf('terminal.open(container)') < paneSource.indexOf('terminal.attachCustomKeyEventHandler'));
 });
 
@@ -41,8 +50,7 @@ test('Vim mode reports cannot crash xterm 6 write processing', () => {
   assert.match(paneSource, /mode\};0\$y/);
 });
 
-test('no project-specific terminal clipboard handlers remain', () => {
-  assert.equal(paneSource.includes("from './clipboard'"), false);
+test('paste remains on xterm native event handling', () => {
   assert.equal(paneSource.includes("addEventListener('paste'"), false);
   assert.equal(paneSource.includes("addEventListener('copy'"), false);
   assert.equal(paneSource.includes('pasteTerminalClipboard'), false);

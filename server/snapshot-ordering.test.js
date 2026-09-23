@@ -25,6 +25,7 @@ const functions = [
 function setup(t, cols = 20, rows = 4) {
   const terminals = [];
   const ptys = [];
+  const ptyOptions = [];
   const context = vm.createContext({
     Buffer, setTimeout, clearTimeout, randomUUID, process,
     HeadlessTerminal: class extends headlessXterm.Terminal {
@@ -44,7 +45,8 @@ function setup(t, cols = 20, rows = 4) {
     encodeTerminalServerMessage: (message) => message,
     decodeTerminalClientMessage: (message) => message,
     sendTerminalOutput: (ws, data, seq) => ws.send({ type: 'output', data, seq }),
-    ptySpawn() {
+    ptySpawn(_command, _args, options) {
+      ptyOptions.push(options);
       const pty = {
         writes: [], sizes: [],
         onData(callback) { this.emitData = callback; },
@@ -63,7 +65,7 @@ function setup(t, cols = 20, rows = 4) {
     for (const value of context.sessions.values()) context.clearTerminalOutputFlushTimer(value);
     for (const terminal of terminals) terminal.dispose();
   });
-  return { context, session, ptys };
+  return { context, session, ptys, ptyOptions };
 }
 
 function socket() {
@@ -75,6 +77,12 @@ function socket() {
 }
 
 const drain = (terminal) => new Promise((resolve) => terminal.write('', resolve));
+
+test('web PTYs advertise a remote clipboard route to fullscreen programs', (t) => {
+  const { ptyOptions } = setup(t);
+  assert.ok(ptyOptions[0].env.SSH_CLIENT);
+  assert.equal(ptyOptions[0].env.TERM, 'xterm-256color');
+});
 
 test('attach snapshot includes pending parsed output at exactly the advertised sequence', async (t) => {
   const { context, session } = setup(t);
@@ -95,6 +103,47 @@ test('attach snapshot includes pending parsed output at exactly the advertised s
   assert.equal(live.data, '-after');
   assert.equal(live.seq, 2);
   assert.equal(ws.messages.length, 3);
+});
+
+test('fullscreen mouse encoding survives a reset snapshot', async (t) => {
+  const { context, session } = setup(t);
+  // Pi fullscreen enables the alternate screen, mouse tracking and SGR reports.
+  context.queueTerminalOutput(session, '\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006hfullscreen');
+  context.flushTerminalOutput(session);
+  await drain(session.terminal);
+  assert.equal(session.serializer.serialize().includes('\x1b[?1006h'), false,
+    'xterm serialization does not include the mouse report encoding');
+
+  const ws = socket();
+  context.attachSocket(ws, session);
+  await drain(session.terminal);
+  const snapshot = ws.messages.slice(1).filter((message) => message.type === 'output')
+    .map((message) => message.data).join('');
+  assert.match(snapshot, /\x1b\[\?1006h$/);
+
+  const restored = new headlessXterm.Terminal({ allowProposedApi: true, cols: 20, rows: 4 });
+  t.after(() => restored.dispose());
+  await new Promise((resolve) => restored.write('\x1bc' + snapshot, resolve));
+  assert.equal(restored.buffer.active.type, 'alternate');
+  assert.equal(restored.modes.mouseTrackingMode, 'any');
+  assert.equal(restored._core.coreMouseService.activeEncoding, 'SGR');
+  const input = [];
+  restored.onData((data) => input.push(data));
+  restored._core.coreMouseService.triggerMouseEvent({
+    col: 0, row: 0, x: 0, y: 0, button: 4, action: 1,
+    ctrl: false, alt: false, shift: false,
+  });
+  assert.deepEqual(input, ['\x1b[<65;1;1M']);
+
+  context.queueTerminalOutput(session, '\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l');
+  context.flushTerminalOutput(session);
+  await drain(session.terminal);
+  assert.equal(context.readTerminalSnapshot(session).endsWith('\x1b[?1006h'), false);
+
+  context.queueTerminalOutput(session, '\x1b[?1006h\x1bc');
+  context.flushTerminalOutput(session);
+  await drain(session.terminal);
+  assert.equal(context.readTerminalSnapshot(session).endsWith('\x1b[?1006h'), false);
 });
 
 test('incremental reconnect replays pending output once before newer live frames', async (t) => {

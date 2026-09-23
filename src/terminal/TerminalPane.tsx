@@ -5,6 +5,7 @@ import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { terminalTheme } from './themes';
+import { copyToClipboard, readClipboardText } from './clipboard';
 import type {
   TerminalPreferences,
   TerminalServerMessage,
@@ -108,25 +109,6 @@ function createTerminalSocket(authToken: string) {
   return openAuthenticatedSocket('/terminal', authToken);
 }
 
-function fallbackCopy(text: string) {
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.style.cssText = 'position:fixed;top:-9999px';
-  document.body.appendChild(textarea);
-  textarea.select();
-  document.execCommand('copy');
-  document.body.removeChild(textarea);
-}
-
-function copyText(text: string) {
-  if (!text) return;
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
-  } else {
-    fallbackCopy(text);
-  }
-}
-
 export default function TerminalPane({
   tab,
   active,
@@ -143,6 +125,8 @@ export default function TerminalPane({
   const terminalReadyRef = useRef(false);
   const inputStateRef = useRef(getTerminalInputState(tab.id));
   const [sessionRebuiltNoticeVisible, setSessionRebuiltNoticeVisible] = useState(false);
+  const [pendingCopyText, setPendingCopyText] = useState<string | null>(null);
+  const [manualCopyText, setManualCopyText] = useState<string | null>(null);
   const activeRef = useRef(active);
   const focusOnMountRef = useRef(focusOnMount);
   const resizeTimersRef = useRef<number[]>([]);
@@ -415,9 +399,26 @@ export default function TerminalPane({
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    let disposed = false;
+    let clipboardWriteSeq = 0;
+    const writeClipboard = (text: string) => {
+      const writeSeq = ++clipboardWriteSeq;
+      return copyToClipboard(text).then((copied) => {
+        if (!disposed && writeSeq === clipboardWriteSeq) {
+          setPendingCopyText(copied ? null : text);
+          setManualCopyText(null);
+        }
+      });
+    };
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
-    terminal.loadAddon(new ClipboardAddon());
+    terminal.loadAddon(new ClipboardAddon(undefined, {
+      readText: (selection) => selection === 'c' ? readClipboardText() : '',
+      writeText: (selection, text) => {
+        if (selection !== 'c') return;
+        return writeClipboard(text);
+      },
+    }));
 
     terminal.open(container);
     // xterm 6.0.0's bundled DECRPM handler throws while Vim probes terminal
@@ -441,7 +442,7 @@ export default function TerminalPane({
       const mod = event.ctrlKey || event.metaKey;
       if (mod && event.key.toLowerCase() === 'c' && terminal.hasSelection()) {
         event.preventDefault();
-        copyText(terminal.getSelection());
+        void writeClipboard(terminal.getSelection());
         return false;
       }
       if (mod && event.key.toLowerCase() === 'v') {
@@ -625,7 +626,6 @@ export default function TerminalPane({
       await applyOrderedTerminalServerMessage(socket, message);
     };
 
-    let disposed = false;
     let reconnectTimer = 0;
     let reconnectAttempts = 0;
     let heartbeatTimer = 0;
@@ -940,18 +940,63 @@ export default function TerminalPane({
   return (
     <div className="terminal-pane">
       <div ref={containerRef} className="terminal-frame" />
-      {sessionRebuiltNoticeVisible && (
-        <div className="terminal-session-notice" role="status" aria-live="polite" aria-atomic="true">
-          <span>终端会话已重建，请重新输入尚未完成的命令。</span>
-          <button
-            type="button"
-            aria-label="关闭提示"
-            onClick={() => setSessionRebuiltNoticeVisible(false)}
-          >
-            ×
-          </button>
-        </div>
-      )}
+      <div className="terminal-notices">
+        {sessionRebuiltNoticeVisible && (
+          <div className="terminal-session-notice" role="status" aria-live="polite" aria-atomic="true">
+            <span>终端会话已重建，请重新输入尚未完成的命令。</span>
+            <button
+              type="button"
+              aria-label="关闭提示"
+              onClick={() => setSessionRebuiltNoticeVisible(false)}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {pendingCopyText !== null && (
+          <div className="terminal-session-notice terminal-copy-notice" role="status" aria-live="polite" aria-atomic="true">
+            <span>{manualCopyText === pendingCopyText
+              ? '浏览器阻止自动复制，请在文本框内复制。'
+              : '终端请求复制内容，请点击复制。'}</span>
+            <button
+              type="button"
+              className="terminal-copy-button"
+              onClick={() => {
+                const text = pendingCopyText;
+                void copyToClipboard(text).then((copied) => {
+                  if (copied) {
+                    setPendingCopyText((current) => current === text ? null : current);
+                    setManualCopyText(null);
+                    terminalRef.current?.focus();
+                  } else {
+                    setManualCopyText(text);
+                  }
+                });
+              }}
+            >
+              复制
+            </button>
+            <button
+              type="button"
+              aria-label="关闭复制提示"
+              onClick={() => {
+                setPendingCopyText(null);
+                setManualCopyText(null);
+              }}
+            >
+              ×
+            </button>
+            {manualCopyText === pendingCopyText && (
+              <textarea
+                aria-label="待复制内容"
+                readOnly
+                value={manualCopyText}
+                onFocus={(event) => event.currentTarget.select()}
+              />
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

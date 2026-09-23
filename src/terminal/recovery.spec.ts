@@ -396,6 +396,10 @@ function loadLoop(kind: LoopKind, harness: Harness) {
     if (specifier === '@xterm/addon-web-links') return emptyAddon;
     if (specifier === '@xterm/xterm') return xtermRuntime;
     if (specifier === './themes') return { terminalTheme: {} };
+    if (specifier === './clipboard') return {
+      copyToClipboard: async () => true,
+      readClipboardText: async () => '',
+    };
     if (specifier === './terminal/wsCodec' || specifier === './wsCodec') return wsCodecRuntime;
     if (specifier === '../wsHost' || specifier === './wsHost') {
       return { openAuthenticatedSocket: harness.openAuthenticatedSocket };

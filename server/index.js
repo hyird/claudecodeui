@@ -432,9 +432,28 @@ function createTerminalSnapshot(cols, rows) {
   const serializer = new SerializeAddon();
   terminal.loadAddon(serializer);
 
+  // SerializeAddon preserves mouse tracking (1000/1002/1003), but omits the
+  // encoding (1006/1016). Remember it while parsing output so a snapshot sent
+  // after reconnect still produces SGR mouse reports for fullscreen TUIs.
+  const mouseEncoding = { mode: '' };
+  for (const [final, enabled] of [['h', true], ['l', false]]) {
+    terminal.parser.registerCsiHandler({ prefix: '?', final }, (params) => {
+      for (const mode of params) {
+        if (mode === 1006) mouseEncoding.mode = enabled ? '\x1b[?1006h' : '';
+        if (mode === 1016) mouseEncoding.mode = enabled ? '\x1b[?1016h' : '';
+      }
+      return false;
+    });
+  }
+  terminal.parser.registerEscHandler({ final: 'c' }, () => {
+    mouseEncoding.mode = '';
+    return false;
+  });
+
   return {
     terminal,
     serializer,
+    mouseEncoding,
     terminalSnapshot: '',
   };
 }
@@ -533,7 +552,7 @@ function sendTerminalSnapshot(ws, snapshot) {
 
 function readTerminalSnapshot(session) {
   if (session.snapshotDirty || !session.terminalSnapshot) {
-    session.terminalSnapshot = session.serializer.serialize();
+    session.terminalSnapshot = session.serializer.serialize() + session.mouseEncoding.mode;
     session.snapshotDirty = false;
   }
 
@@ -588,6 +607,9 @@ function createSession(sessionId, options) {
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       FORCE_COLOR: '3',
+      // Web clients need OSC 52 copies even if a TUI can write the server's
+      // clipboard. Pi uses SSH_CLIENT to detect that its terminal is remote.
+      SSH_CLIENT: process.env.SSH_CLIENT || '127.0.0.1 0 0',
     },
   });
   exitedTabs.delete(sessionId);
@@ -599,6 +621,7 @@ function createSession(sessionId, options) {
     pty: shellProcess,
     terminal: terminalSnapshot.terminal,
     serializer: terminalSnapshot.serializer,
+    mouseEncoding: terminalSnapshot.mouseEncoding,
     terminalSnapshot: terminalSnapshot.terminalSnapshot,
     snapshotDirty: false,
     socket: null,
