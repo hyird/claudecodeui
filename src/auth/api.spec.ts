@@ -101,15 +101,15 @@ describe('register', () => {
     expect(fetchCalls[0]?.init?.body).toBe(JSON.stringify({ username: 'alice', password: 'secret123' }));
   });
 
-  test('localizes the single-user server error', async () => {
-    stubFetch(() => jsonResponse(403, { error: 'User already exists. This is a single-user system.' }));
+  test('localizes the existing-administrator server error', async () => {
+    stubFetch(() => jsonResponse(403, { error: 'Initial administrator already exists' }));
     try {
       await register('alice', 'secret123');
       throw new Error('register should have rejected');
     } catch (error) {
       expect(error).toBeInstanceOf(AuthApiError);
       expect((error as AuthApiError).status).toBe(403);
-      expect((error as AuthApiError).message).toBe('已经创建过账户，此系统只允许一个账户。');
+      expect((error as AuthApiError).message).toBe('管理员账户已创建，请登录。');
     }
   });
 });

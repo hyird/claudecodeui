@@ -405,6 +405,7 @@ function loadLoop(kind: LoopKind, harness: Harness) {
       return { openAuthenticatedSocket: harness.openAuthenticatedSocket };
     }
     if (specifier === '../uuid') return { createUuidV4: () => '00000000-0000-4000-8000-000000000001' };
+    if (specifier === './auth/CollaboratorsDialog') return { default: () => null };
     throw new Error(`Unexpected VM import: ${specifier}`);
   };
 

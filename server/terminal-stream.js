@@ -15,7 +15,7 @@ const COMPACT_MIN_DROPPED = 1024;
 
 function eventBytes(event) {
   return typeof event.data === 'string'
-    ? event.data.length + EVENT_OVERHEAD_BYTES
+    ? Buffer.byteLength(event.data, 'utf8') + EVENT_OVERHEAD_BYTES
     : EVENT_OVERHEAD_BYTES;
 }
 

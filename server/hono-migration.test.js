@@ -228,6 +228,20 @@ function readTabsWebSocketMessage(ws, predicate, description) {
   });
 }
 
+async function createTestTab() {
+  const tabsSocket = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
+  const initial = await readTabsWebSocketMessage(tabsSocket, (message) => message.type === 'tabs', 'initial test tabs');
+  const updated = readTabsWebSocketMessage(
+    tabsSocket,
+    (message) => message.type === 'tabs' && message.state.tabs.length === initial.state.tabs.length + 1,
+    'new test tab',
+  );
+  tabsSocket.send(encodeTabsClientMessage({ type: 'add-tab' }));
+  const tabId = (await updated).state.activeId;
+  tabsSocket.close();
+  return tabId;
+}
+
 function readTerminalWebSocketMessage(ws, predicate, description) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), 5000);
@@ -238,6 +252,11 @@ function readTerminalWebSocketMessage(ws, predicate, description) {
         ws.off('message', onMessage);
         ws.off('error', onError);
         resolve(message);
+      } else if (message.body === 'error') {
+        clearTimeout(timeout);
+        ws.off('message', onMessage);
+        ws.off('error', onError);
+        reject(new Error(`Terminal rejected ${description}: ${message.error.message}`));
       }
     };
     const onError = (error) => {
@@ -327,7 +346,7 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
   });
   assert.equal(currentUser.status, 200);
   assert.deepEqual(await currentUser.json(), {
-    user: { id: registered.user.id, username: TEST_USERNAME },
+    user: { id: registered.user.id, username: TEST_USERNAME, role: 'admin' },
   });
 
   const authSessionSocket = new WebSocket(`${wsBaseUrl}/auth/session?token=${encodeURIComponent(registrationToken)}`);
@@ -391,6 +410,67 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
     headers: { authorization: `Bearer ${authToken}` },
   });
   assert.equal(activeUser.status, 200);
+});
+
+test('collaborator accounts have isolated tabs and cannot open another user terminal', async () => {
+  const ownerHeaders = { authorization: `Bearer ${authToken}` };
+  const created = await fetch(`${baseUrl}/api/auth/users`, {
+    method: 'POST',
+    headers: { ...ownerHeaders, 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'teammate', password: 'secret456' }),
+  });
+  assert.equal(created.status, 201);
+  const collaborator = (await created.json()).user;
+  assert.equal(collaborator.role, 'member');
+
+  const login = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'teammate', password: 'secret456' }),
+  });
+  assert.equal(login.status, 200);
+  const memberToken = (await login.json()).token;
+  const forbidden = await fetch(`${baseUrl}/api/auth/users`, {
+    headers: { authorization: `Bearer ${memberToken}` },
+  });
+  assert.equal(forbidden.status, 403);
+
+  const ownerTabs = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
+  const memberTabs = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(memberToken)}`);
+  const ownerState = await readTabsWebSocketMessage(ownerTabs, (message) => message.type === 'tabs', 'owner tabs');
+  const memberState = await readTabsWebSocketMessage(memberTabs, (message) => message.type === 'tabs', 'member tabs');
+  const ownerTabId = ownerState.state.tabs[0].id;
+  assert.notEqual(ownerTabId, memberState.state.tabs[0].id);
+
+  const foreignTerminal = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(memberToken)}`);
+  await new Promise((resolve, reject) => { foreignTerminal.once('open', resolve); foreignTerminal.once('error', reject); });
+  const denied = readTerminalWebSocketMessage(
+    foreignTerminal,
+    (message) => message.body === 'error',
+    'foreign terminal denial',
+  );
+  foreignTerminal.send(TerminalClientMessage.encode({ init: {
+    sessionId: ownerTabId, inputStreamId: randomUUID(), cols: 80, rows: 24,
+  } }).finish());
+  assert.equal((await denied).error.message, 'Terminal is not available');
+  foreignTerminal.close();
+  ownerTabs.close();
+  const memberDisconnected = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for removed user tabs to close')), 5000);
+    memberTabs.once('close', (code) => { clearTimeout(timeout); resolve(code); });
+    memberTabs.once('error', reject);
+  });
+
+  const removed = await fetch(`${baseUrl}/api/auth/users/${collaborator.id}`, {
+    method: 'DELETE', headers: ownerHeaders,
+  });
+  assert.equal(removed.status, 200);
+  assert.equal(await memberDisconnected, 4001);
+  const invalidated = await fetch(`${baseUrl}/api/auth/user`, {
+    headers: { authorization: `Bearer ${memberToken}` },
+  });
+  assert.equal(invalidated.status, 403);
+  assert.equal((await fetch(`${baseUrl}/api/auth/user`, { headers: ownerHeaders })).status, 200);
 });
 
 test('terminal tab WebSocket requires auth and generates UUID ids', async () => {
@@ -579,8 +659,8 @@ test('terminal WebSocket rejects legacy non-UUID session ids', async () => {
 });
 
 test('terminal input is acknowledged and duplicate delivery is ignored', async () => {
+  const sessionId = await createTestTab();
   const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
-  const sessionId = randomUUID();
   const inputStreamId = randomUUID();
   let output = '';
   let markerResolve;
@@ -658,7 +738,7 @@ test('terminal input is acknowledged and duplicate delivery is ignored', async (
 });
 
 test('terminal session generations preserve reconnect input and identify a rebuilt PTY', async (t) => {
-  const sessionId = randomUUID();
+  const sessionId = await createTestTab();
   const inputStreamId = randomUUID();
   const sockets = [];
   t.after(() => sockets.forEach((socket) => socket.terminate()));
@@ -774,8 +854,8 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
   // write per 4 KB. The server batches a turn's reads into a single output event; this
   // drives a real shell through a real socket to confirm both halves of that: many
   // fewer frames, and every byte still arriving in order.
+  const sessionId = await createTestTab();
   const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
-  const sessionId = randomUUID();
   const inputStreamId = randomUUID();
 
   let outputFrames = 0;

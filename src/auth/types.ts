@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 export type AuthUser = {
   id: number;
   username: string;
+  role: 'admin' | 'member';
 };
 
 export type AuthActionResult =

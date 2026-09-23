@@ -73,6 +73,19 @@ test('terminal event log drops oldest payloads once the byte budget is exceeded'
   assert.equal(log.lastSeq, 100);
 });
 
+test('multibyte terminal output stays within the replay byte budget', () => {
+  const log = createTerminalEventLog(100, 512);
+  const chunk = '终'.repeat(80);
+  for (let index = 0; index < 3; index += 1) {
+    recordTerminalEvent(log, { type: 'output', data: chunk });
+  }
+
+  assert.ok(log.bytes <= 512);
+  assert.deepEqual(log.events.map((event) => event.seq), [3]);
+  assert.equal(getTerminalReplayPlan(log, 1).mode, 'reset');
+  assert.deepEqual(getTerminalReplayPlan(log, 2).events.map((event) => event.seq), [3]);
+});
+
 test('terminal event log keeps replay coherent after byte-budget eviction', () => {
   const log = createTerminalEventLog(1000, 4096);
   const chunk = 'y'.repeat(1024);

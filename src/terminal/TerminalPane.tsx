@@ -577,9 +577,8 @@ export default function TerminalPane({
 
       if (message.type === 'input-ack' && typeof message.inputSeq === 'number') {
         for (const inputSeq of inputStateRef.current.pending.keys()) {
-          if (inputSeq <= message.inputSeq) {
-            inputStateRef.current.pending.delete(inputSeq);
-          }
+          if (inputSeq > message.inputSeq) break;
+          inputStateRef.current.pending.delete(inputSeq);
         }
         return;
       }

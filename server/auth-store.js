@@ -11,6 +11,8 @@ const DEFAULT_DB_PATH = path.join(rootDir, '.cloudcli.sqlite');
 const DB_PATH = process.env.CLOUDCLI_DB_PATH || DEFAULT_DB_PATH;
 const TOKEN_BYTES = 32;
 const PASSWORD_KEY_LENGTH = 64;
+const MAX_USERNAME_LENGTH = 80;
+const MAX_PASSWORD_LENGTH = 1024;
 
 // Column names below match the schema TypeORM previously synchronized, so an existing
 // auth.sqlite created by the old better-sqlite3/TypeORM stack is read/written unchanged.
@@ -24,6 +26,7 @@ function ensureSchema(database) {
       username VARCHAR(80) NOT NULL UNIQUE,
       password_hash VARCHAR(160) NOT NULL,
       password_salt VARCHAR(64) NOT NULL,
+      role VARCHAR(16) NOT NULL DEFAULT 'member',
       created_at VARCHAR(32) NOT NULL,
       updated_at VARCHAR(32) NOT NULL,
       last_login_at VARCHAR(32)
@@ -36,6 +39,13 @@ function ensureSchema(database) {
       last_seen_at VARCHAR(32) NOT NULL
     );
   `);
+  // Existing installations have no role column. Promote only the oldest user
+  // when upgrading, so an unexpected extra account never gains admin rights.
+  const userColumns = database.query('PRAGMA table_info(users)').all();
+  if (!userColumns.some((column) => column.name === 'role')) {
+    database.exec("ALTER TABLE users ADD COLUMN role VARCHAR(16) NOT NULL DEFAULT 'member'");
+    database.exec("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users)");
+  }
 }
 
 function requireDb() {
@@ -60,6 +70,7 @@ function mapUser(row) {
   return {
     id: row.id,
     username: row.username,
+    role: row.role,
     passwordHash: row.password_hash,
     passwordSalt: row.password_salt,
     createdAt: row.created_at,
@@ -72,6 +83,7 @@ function toPublicUser(user) {
   return {
     id: user.id,
     username: user.username,
+    role: user.role,
   };
 }
 
@@ -140,8 +152,10 @@ export function onSessionInvalidated(listener) {
 }
 
 export async function initializeAuthStore() {
-  const directory = path.dirname(DB_PATH);
-  fs.mkdirSync(directory, { recursive: true });
+  if (DB_PATH !== ':memory:') {
+    const directory = path.dirname(DB_PATH);
+    fs.mkdirSync(directory, { recursive: true });
+  }
 
   if (!db) {
     db = new Database(DB_PATH, { create: true });
@@ -155,33 +169,90 @@ export async function hasUsers() {
   return (row?.count ?? 0) > 0;
 }
 
+function requireAdmin(actor) {
+  if (actor?.role !== 'admin') {
+    throw createHttpError(403, 'Administrator access required');
+  }
+}
+
+export async function listUsers(actor) {
+  requireAdmin(actor);
+  return requireDb().query('SELECT id, username, role FROM users ORDER BY id').all();
+}
+
+export async function createCollaborator(actor, usernameInput, password) {
+  requireAdmin(actor);
+  const username = normalizeUsername(usernameInput);
+  if (!username || typeof password !== 'string' || !password) {
+    throw createHttpError(400, 'Username and password are required');
+  }
+  if (username.length < 3 || password.length < 6) {
+    throw createHttpError(400, 'Username must be at least 3 characters, password at least 6 characters');
+  }
+  if (username.length > MAX_USERNAME_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
+    throw createHttpError(400, 'Username or password is too long');
+  }
+
+  const database = requireDb();
+  if (database.query('SELECT id FROM users WHERE username = ?').get(username)) {
+    throw createHttpError(409, 'Username already exists');
+  }
+  const { hash, salt } = hashPassword(password);
+  const timestamp = nowIso();
+  const inserted = database.query(
+    `INSERT INTO users (username, password_hash, password_salt, role, created_at, updated_at)
+     VALUES (?, ?, ?, 'member', ?, ?) RETURNING id`,
+  ).get(username, hash, salt, timestamp, timestamp);
+  return { id: inserted.id, username, role: 'member' };
+}
+
+export async function removeCollaborator(actor, userId) {
+  requireAdmin(actor);
+  const database = requireDb();
+  const user = database.query('SELECT id, role FROM users WHERE id = ?').get(userId);
+  if (!user || user.role !== 'member') {
+    throw createHttpError(404, 'Collaborator not found');
+  }
+  const sessions = database.query('SELECT token_hash FROM auth_sessions WHERE user_id = ?').all(userId);
+  const remove = database.transaction(() => {
+    database.query('DELETE FROM auth_sessions WHERE user_id = ?').run(userId);
+    database.query('DELETE FROM users WHERE id = ?').run(userId);
+  });
+  remove();
+  for (const session of sessions) notifySessionInvalidated(session.token_hash);
+  return true;
+}
+
 export async function registerUser(usernameInput, password) {
   const username = normalizeUsername(usernameInput);
-  if (!username || !password) {
+  if (!username || typeof password !== 'string' || !password) {
     throw createHttpError(400, 'Username and password are required');
   }
 
   if (username.length < 3 || password.length < 6) {
     throw createHttpError(400, 'Username must be at least 3 characters, password at least 6 characters');
   }
+  if (username.length > MAX_USERNAME_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
+    throw createHttpError(400, 'Username or password is too long');
+  }
 
   const database = requireDb();
   const register = database.transaction(() => {
     const { count } = database.query('SELECT COUNT(*) AS count FROM users').get();
     if (count > 0) {
-      throw createHttpError(403, 'User already exists. This is a single-user system.');
+      throw createHttpError(403, 'Initial administrator already exists');
     }
 
     const timestamp = nowIso();
     const passwordParts = hashPassword(password);
     const inserted = database
       .query(
-        `INSERT INTO users (username, password_hash, password_salt, created_at, updated_at, last_login_at)
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+        `INSERT INTO users (username, password_hash, password_salt, role, created_at, updated_at, last_login_at)
+         VALUES (?, ?, ?, 'admin', ?, ?, ?) RETURNING id`,
       )
       .get(username, passwordParts.hash, passwordParts.salt, timestamp, timestamp, timestamp);
 
-    const user = { id: inserted.id, username };
+    const user = { id: inserted.id, username, role: 'admin' };
     const token = createSessionForUser(user);
 
     return {

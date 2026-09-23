@@ -53,12 +53,16 @@ function localizeAuthError(message: string) {
   const messages: Record<string, string> = {
     'Username and password are required': '请填写用户名和密码。',
     'Username must be at least 3 characters, password at least 6 characters': '用户名至少 3 个字符，密码至少 6 个字符。',
-    'User already exists. This is a single-user system.': '已经创建过账户，此系统只允许一个账户。',
+    'Initial administrator already exists': '管理员账户已创建，请登录。',
+    'Username or password is too long': '用户名或密码过长。',
     'Invalid username or password': '用户名或密码无效。',
     'Failed to check authentication status': '无法检查登录状态。',
     'Failed to load user': '无法加载当前用户。',
     'Registration failed': '创建账户失败。',
     'Login failed': '登录失败。',
+    'Administrator access required': '需要管理员权限。',
+    'Username already exists': '用户名已存在。',
+    'Collaborator not found': '协作者不存在。',
   };
 
   return messages[message] ?? message;
@@ -160,4 +164,37 @@ export async function logout(token: string) {
     method: 'POST',
     headers: authHeaders(token),
   }).catch(() => {});
+}
+
+export async function listUsers(token: string): Promise<AuthUser[]> {
+  const response = await fetchWithTimeout('/api/auth/users', { headers: authHeaders(token) });
+  const payload = await parseJsonSafely<{ users?: AuthUser[] } & ApiErrorPayload>(response);
+  if (!response.ok || !Array.isArray(payload?.users)) {
+    throw new AuthApiError(response.status, resolveApiErrorMessage(payload, '无法加载协作者。'));
+  }
+  return payload.users;
+}
+
+export async function createCollaborator(token: string, username: string, password: string): Promise<AuthUser> {
+  const response = await fetchWithTimeout('/api/auth/users', {
+    method: 'POST',
+    headers: authHeaders(token, { 'content-type': 'application/json' }),
+    body: JSON.stringify({ username, password }),
+  });
+  const payload = await parseJsonSafely<{ user?: AuthUser } & ApiErrorPayload>(response);
+  if (!response.ok || !payload?.user) {
+    throw new AuthApiError(response.status, resolveApiErrorMessage(payload, '无法创建协作者。'));
+  }
+  return payload.user;
+}
+
+export async function removeCollaborator(token: string, userId: number): Promise<void> {
+  const response = await fetchWithTimeout(`/api/auth/users/${userId}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  });
+  if (!response.ok) {
+    const payload = await parseJsonSafely<ApiErrorPayload>(response);
+    throw new AuthApiError(response.status, resolveApiErrorMessage(payload, '无法移除协作者。'));
+  }
 }

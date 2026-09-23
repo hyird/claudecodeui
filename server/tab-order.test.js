@@ -8,6 +8,7 @@ const handler = source.match(/function handleTabsCommand\(ws, message\) \{[^]*?\
 
 function setup() {
   const tabsState = { tabs: ['a', 'b', 'c', 'd'].map((id) => ({ id, title: id })), activeId: 'b' };
+  const workspace = { tabsState };
   const broadcasts = [];
   const errors = [];
   const context = vm.createContext({
@@ -16,7 +17,8 @@ function setup() {
     sendTabsError: (_, message) => errors.push(message),
   });
   vm.runInContext(handler, context);
-  return { tabsState, broadcasts, errors, move: (tabId, targetId, after) => context.handleTabsCommand({}, { type: 'move-tab', tabId, targetId, after }) };
+  const command = (targetWorkspace, message) => context.handleTabsCommand({ data: { workspace: targetWorkspace } }, message);
+  return { tabsState, workspace, broadcasts, errors, command, move: (tabId, targetId, after) => command(workspace, { type: 'move-tab', tabId, targetId, after }) };
 }
 
 test('tab move inserts on either side without changing the active terminal or tab objects', () => {
@@ -46,4 +48,16 @@ test('missing, closed and self-targeted tabs cannot corrupt the order', () => {
   assert.equal(state.errors.length, 3);
   assert.equal(state.broadcasts.length, 0);
   assert.deepEqual(state.tabsState.tabs.map((tab) => tab.id), ['a', 'b', 'c', 'd']);
+});
+
+test('tab moves affect only the authenticated user workspace', () => {
+  const state = setup();
+  const other = {
+    tabsState: { tabs: ['x', 'y', 'z'].map((id) => ({ id, title: id })), activeId: 'x' },
+  };
+  state.command(other, { type: 'move-tab', tabId: 'x', targetId: 'z', after: true });
+  assert.deepEqual(other.tabsState.tabs.map((tab) => tab.id), ['y', 'z', 'x']);
+  assert.deepEqual(state.tabsState.tabs.map((tab) => tab.id), ['a', 'b', 'c', 'd']);
+  state.move('a', 'c', true);
+  assert.deepEqual(other.tabsState.tabs.map((tab) => tab.id), ['y', 'z', 'x']);
 });

@@ -14,14 +14,17 @@ import { spawn as ptySpawn } from 'bun-pty';
 
 import {
   authenticateToken,
+  createCollaborator,
   hashSessionToken,
   hasUsers,
   initializeAuthStore,
+  listUsers,
   loginUser,
   logoutToken,
   onSessionInvalidated,
   readBearerToken,
   registerUser,
+  removeCollaborator,
   toAuthErrorResponse,
 } from './auth-store.js';
 import {
@@ -49,6 +52,7 @@ const distDir = fs.existsSync(bundledDist) ? bundledDist : path.join(rootDir, 'd
 
 const PORT = Number(process.env.PORT || 3001);
 const SERVER_SNAPSHOT_SCROLLBACK = 1000;
+const TERMINAL_SOCKET_BUFFER_LIMIT = 1024 * 1024;
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SPINNER_TITLE_PREFIX = /^[\u2800-\u28ff]+[\s:·.-]*/u;
 const { Terminal: HeadlessTerminal } = headlessXterm;
@@ -67,10 +71,8 @@ const WS_ROUTES = {
 const WS_SUBPROTOCOL = 'cloudcli.v1';
 
 const sessions = new Map();
-const exitedTabs = new Set();
 const authSessionSubscribers = new Map();
-const tabSubscribers = new Set();
-const tabsState = createInitialTabsState();
+const workspaces = new Map();
 
 await initializeAuthStore();
 
@@ -180,7 +182,7 @@ onSessionInvalidated((tokenHash) => {
   const payload = encodeAuthServerMessage({ type: 'session-invalidated' });
   for (const ws of subscribers) {
     if (ws.readyState === WS_OPEN) {
-      ws.send(payload);
+      if (ws.data.kind === 'auth') ws.send(payload);
       ws.close(4001, 'Session invalidated');
     } else {
       subscribers.delete(ws);
@@ -205,6 +207,30 @@ function createInitialTabsState() {
   };
 }
 
+function workspaceFor(userId) {
+  let workspace = workspaces.get(userId);
+  if (!workspace) {
+    workspace = {
+      userId,
+      tabsState: createInitialTabsState(),
+      exitedTabs: new Set(),
+      tabSubscribers: new Set(),
+    };
+    workspaces.set(userId, workspace);
+  }
+  return workspace;
+}
+
+function closeUserWorkspace(userId) {
+  const workspace = workspaces.get(userId);
+  if (!workspace) return;
+  for (const ws of workspace.tabSubscribers) ws.close(4001, 'User removed');
+  for (const [sessionId, session] of sessions) {
+    if (session.workspace === workspace) closeSession(sessionId, false);
+  }
+  workspaces.delete(userId);
+}
+
 function cleanTerminalTitle(title) {
   return readString(title)
     .replace(/[\u0000-\u001F\u007F]/g, '')
@@ -214,10 +240,10 @@ function cleanTerminalTitle(title) {
     .slice(0, 80);
 }
 
-function getTabStatus(tabId) {
+function getTabStatus(workspace, tabId) {
   const session = sessions.get(tabId);
-  if (!session) {
-    return exitedTabs.has(tabId) ? 'exited' : 'disconnected';
+  if (!session || session.workspace !== workspace) {
+    return workspace.exitedTabs.has(tabId) ? 'exited' : 'disconnected';
   }
 
   if (session.closed) {
@@ -231,10 +257,11 @@ function getTabStatus(tabId) {
   // Only the selected pane owns a browser WebSocket. Its PTY keeps running after
   // the pane is unmounted, so an inactive session without a viewer is healthy
   // background work rather than a broken connection.
-  return tabId === tabsState.activeId ? 'disconnected' : 'background';
+  return tabId === workspace.tabsState.activeId ? 'disconnected' : 'background';
 }
 
-function serializeTabsState() {
+function serializeTabsState(workspace) {
+  const { tabsState } = workspace;
   if (tabsState.tabs.length === 0) {
     const firstTab = createTab(1);
     tabsState.tabs.push(firstTab);
@@ -250,7 +277,7 @@ function serializeTabsState() {
     tabs: tabsState.tabs.map((tab) => ({
       ...tab,
       title: cleanTerminalTitle(tab.title) || tab.title,
-      status: getTabStatus(tab.id),
+      status: getTabStatus(workspace, tab.id),
     })),
     activeId: tabsState.activeId,
   };
@@ -258,40 +285,43 @@ function serializeTabsState() {
 
 function sendTabsState(ws) {
   if (ws.readyState === WS_OPEN) {
-    ws.send(encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState() }));
+    ws.send(encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState(ws.data.workspace) }));
   }
 }
 
-function broadcastTabsState() {
-  const payload = encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState() });
-  for (const ws of tabSubscribers) {
+function broadcastTabsState(workspace) {
+  const payload = encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState(workspace) });
+  for (const ws of workspace.tabSubscribers) {
     if (ws.readyState === WS_OPEN) {
       ws.send(payload);
     } else {
-      tabSubscribers.delete(ws);
+      workspace.tabSubscribers.delete(ws);
     }
   }
 }
 
-function addTab() {
+function addTab(workspace) {
+  const { tabsState } = workspace;
   const tab = createTab(tabsState.nextIndex);
   tabsState.tabs.push(tab);
   tabsState.activeId = tab.id;
   tabsState.nextIndex += 1;
-  broadcastTabsState();
+  broadcastTabsState(workspace);
 }
 
-function setActiveTab(activeId) {
+function setActiveTab(workspace, activeId) {
+  const { tabsState } = workspace;
   if (!UUID_V4_PATTERN.test(activeId) || !tabsState.tabs.some((tab) => tab.id === activeId)) {
     return false;
   }
 
   tabsState.activeId = activeId;
-  broadcastTabsState();
+  broadcastTabsState(workspace);
   return true;
 }
 
-function updateTabTitle(tabId, rawTitle) {
+function updateTabTitle(workspace, tabId, rawTitle) {
+  const { tabsState } = workspace;
   if (!UUID_V4_PATTERN.test(tabId)) {
     return false;
   }
@@ -308,13 +338,14 @@ function updateTabTitle(tabId, rawTitle) {
 
   if (tab.title !== title) {
     tab.title = title;
-    broadcastTabsState();
+    broadcastTabsState(workspace);
   }
 
   return true;
 }
 
-function removeTab(tabId) {
+function removeTab(workspace, tabId) {
+  const { tabsState } = workspace;
   if (!UUID_V4_PATTERN.test(tabId) || tabsState.tabs.length <= 1) {
     return false;
   }
@@ -329,9 +360,9 @@ function removeTab(tabId) {
     tabsState.activeId = tabsState.tabs[Math.max(0, closedIndex - 1)]?.id ?? tabsState.tabs[0].id;
   }
 
-  exitedTabs.delete(tabId);
-  closeSession(tabId, false);
-  broadcastTabsState();
+  workspace.exitedTabs.delete(tabId);
+  if (sessions.get(tabId)?.workspace === workspace) closeSession(tabId, false);
+  broadcastTabsState(workspace);
   return true;
 }
 
@@ -342,6 +373,8 @@ function sendTabsError(ws, message) {
 }
 
 function handleTabsCommand(ws, message) {
+  const workspace = ws.data.workspace;
+  const { tabsState } = workspace;
   if (message?.type === 'move-tab') {
     const from = tabsState.tabs.findIndex((tab) => tab.id === message.tabId);
     const target = tabsState.tabs.findIndex((tab) => tab.id === message.targetId);
@@ -352,7 +385,7 @@ function handleTabsCommand(ws, message) {
     const [tab] = tabsState.tabs.splice(from, 1);
     const insertion = tabsState.tabs.findIndex((item) => item.id === message.targetId);
     tabsState.tabs.splice(insertion + (message.after === true ? 1 : 0), 0, tab);
-    broadcastTabsState();
+    broadcastTabsState(workspace);
     return;
   }
   if (message?.type === 'ping') {
@@ -361,13 +394,13 @@ function handleTabsCommand(ws, message) {
   }
 
   if (message?.type === 'add-tab') {
-    addTab();
+    addTab(workspace);
     return;
   }
 
   if (message?.type === 'set-active') {
     const activeId = readString(message.activeId);
-    if (!activeId || !setActiveTab(activeId)) {
+    if (!activeId || !setActiveTab(workspace, activeId)) {
       sendTabsError(ws, 'Invalid active tab');
     }
     return;
@@ -375,7 +408,7 @@ function handleTabsCommand(ws, message) {
 
   if (message?.type === 'update-title') {
     const tabId = readString(message.tabId);
-    if (!tabId || !updateTabTitle(tabId, message.title)) {
+    if (!tabId || !updateTabTitle(workspace, tabId, message.title)) {
       sendTabsError(ws, 'Invalid tab update');
     }
     return;
@@ -383,7 +416,7 @@ function handleTabsCommand(ws, message) {
 
   if (message?.type === 'close-tab') {
     const tabId = readString(message.tabId);
-    if (!tabId || !removeTab(tabId)) {
+    if (!tabId || !removeTab(workspace, tabId)) {
       sendTabsError(ws, 'Invalid tab close');
     }
     return;
@@ -462,6 +495,7 @@ function writeTerminalSnapshot(session, chunk, onParsed) {
   session.terminal.write(chunk, () => {
     if (session.disposed) return;
     session.snapshotDirty = true;
+    session.terminalSnapshot = '';
     onParsed?.();
   });
 }
@@ -546,8 +580,20 @@ function queueTerminalOutput(session, chunk) {
 
 function sendTerminalSnapshot(ws, snapshot) {
   forEachTerminalOutputFrame(snapshot, (frame) => {
-    sendTerminalOutput(ws, frame);
+    if (terminalSocketWritable(ws)) {
+      if (sendTerminalOutput(ws, frame) === 0) ws.close(1013, 'Terminal output dropped');
+    }
   });
+}
+
+function terminalSocketWritable(ws) {
+  if (ws?.readyState !== WS_OPEN) return false;
+  if (typeof ws.getBufferedAmount === 'function'
+    && ws.getBufferedAmount() > TERMINAL_SOCKET_BUFFER_LIMIT) {
+    ws.close(1013, 'Terminal viewer is too slow');
+    return false;
+  }
+  return true;
 }
 
 function readTerminalSnapshot(session) {
@@ -571,16 +617,19 @@ function resizeSession(session, cols, rows) {
     session.terminal.resize(cols, rows);
     if (!session.closed) session.pty.resize(cols, rows);
     session.snapshotDirty = true;
+    session.terminalSnapshot = '';
   });
 }
 
 function sendTerminalEvent(ws, event) {
-  if (ws?.readyState !== WS_OPEN) {
+  if (!terminalSocketWritable(ws)) {
     return;
   }
 
   if (event.type === 'output') {
-    sendTerminalOutput(ws, event.data, event.seq);
+    if (sendTerminalOutput(ws, event.data, event.seq) === 0) {
+      ws.close(1013, 'Terminal output dropped');
+    }
     return;
   }
 
@@ -593,7 +642,7 @@ function recordAndSendTerminalEvent(session, event) {
   return sequencedEvent;
 }
 
-function createSession(sessionId, options) {
+function createSession(sessionId, options, workspace) {
   const cwd = resolveCwd(options.cwd);
   const shell = resolveShell();
   const terminalSnapshot = createTerminalSnapshot(options.cols, options.rows);
@@ -612,10 +661,11 @@ function createSession(sessionId, options) {
       SSH_CLIENT: process.env.SSH_CLIENT || '127.0.0.1 0 0',
     },
   });
-  exitedTabs.delete(sessionId);
+  workspace.exitedTabs.delete(sessionId);
 
   const session = {
     id: sessionId,
+    workspace,
     generation: randomUUID(),
     cwd,
     pty: shellProcess,
@@ -656,9 +706,9 @@ function createSession(sessionId, options) {
       session.socket = null;
       session.socketReady = false;
       if (sessions.get(sessionId) === session) {
-        exitedTabs.add(sessionId);
+        workspace.exitedTabs.add(sessionId);
         sessions.delete(sessionId);
-        broadcastTabsState();
+        broadcastTabsState(workspace);
       }
     });
   });
@@ -704,7 +754,7 @@ function attachSocket(ws, session, lastSeq = 0) {
       }
     }
     session.socketReady = true;
-    broadcastTabsState();
+    broadcastTabsState(session.workspace);
   });
 }
 
@@ -712,16 +762,17 @@ function detachSocket(session, ws) {
   if (session.socket === ws) {
     session.socket = null;
     session.socketReady = false;
-    broadcastTabsState();
+    broadcastTabsState(session.workspace);
   }
 }
 
 function closeSession(sessionId, broadcast = true) {
-  exitedTabs.delete(sessionId);
   const session = sessions.get(sessionId);
   if (!session) {
     return false;
   }
+
+  session.workspace.exitedTabs.delete(sessionId);
 
   // The session is going away and its socket with it, so buffered output has nowhere
   // left to land — drop it instead of letting a queued flush revive a dead session.
@@ -735,15 +786,20 @@ function closeSession(sessionId, broadcast = true) {
   session.pty.kill();
   sessions.delete(sessionId);
   if (broadcast) {
-    broadcastTabsState();
+    broadcastTabsState(session.workspace);
   }
   return true;
 }
 
 function handleInit(ws, message) {
+  const workspace = ws.data.workspace;
   const sessionId = readString(message.sessionId);
   if (!sessionId || !UUID_V4_PATTERN.test(sessionId)) {
     ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid session id' }));
+    return null;
+  }
+  if (!workspace.tabsState.tabs.some((tab) => tab.id === sessionId)) {
+    ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not available' }));
     return null;
   }
   const inputStreamId = readString(message.inputStreamId);
@@ -757,7 +813,12 @@ function handleInit(ws, message) {
   const forceRestart = message.forceRestart === true;
   const lastSeq = readNumber(message.lastSeq, 0);
 
-  if (forceRestart || sessions.get(sessionId)?.closed) {
+  const existingSession = sessions.get(sessionId);
+  if (existingSession && existingSession.workspace !== workspace) {
+    ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not available' }));
+    return null;
+  }
+  if (forceRestart || existingSession?.closed) {
     closeSession(sessionId, false);
   }
 
@@ -765,10 +826,17 @@ function handleInit(ws, message) {
     cwd: message.cwd,
     cols,
     rows,
-  });
+  }, workspace);
+  if (session.workspace !== workspace) {
+    ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not available' }));
+    return null;
+  }
 
   resizeSession(session, cols, rows);
   if (!session.inputStreams.has(inputStreamId)) {
+    // A new browser input stream replaces the previous one for this PTY. Keep
+    // sequence history only for the stream that can currently send input.
+    session.inputStreams.clear();
     session.inputStreams.set(inputStreamId, 0);
   }
   ws.data.inputStreamId = inputStreamId;
@@ -848,13 +916,13 @@ function handleTerminalMessage(ws, raw) {
 const websocketHandlers = {
   open(ws) {
     const { kind } = ws.data;
+    addAuthSessionSubscriber(ws.data.auth.tokenHash, ws);
     if (kind === 'tabs') {
-      tabSubscribers.add(ws);
+      ws.data.workspace.tabSubscribers.add(ws);
       sendTabsState(ws);
       return;
     }
     if (kind === 'auth') {
-      addAuthSessionSubscriber(ws.data.auth.tokenHash, ws);
       ws.send(encodeAuthServerMessage({ type: 'session-active' }));
     }
   },
@@ -877,6 +945,7 @@ const websocketHandlers = {
   },
   close(ws) {
     const { kind } = ws.data;
+    removeAuthSessionSubscriber(ws.data.auth.tokenHash, ws);
     if (kind === 'terminal') {
       const activeSession = ws.data.activeSession;
       if (activeSession && sessions.get(activeSession.id) === activeSession) {
@@ -885,11 +954,8 @@ const websocketHandlers = {
       return;
     }
     if (kind === 'tabs') {
-      tabSubscribers.delete(ws);
+      ws.data.workspace.tabSubscribers.delete(ws);
       return;
-    }
-    if (kind === 'auth') {
-      removeAuthSessionSubscriber(ws.data.auth.tokenHash, ws);
     }
   },
 };
@@ -932,6 +998,40 @@ app.get('/api/auth/user', requireAuth, (c) => c.json({
 app.post('/api/auth/logout', requireAuth, async (c) => {
   await logoutToken(c.get('authToken'));
   return c.json({ success: true, message: 'Logged out successfully' });
+});
+
+app.get('/api/auth/users', requireAuth, async (c) => {
+  try {
+    return c.json({ users: await listUsers(c.get('user')) });
+  } catch (error) {
+    const response = toAuthErrorResponse(error);
+    return c.json(response.body, response.status);
+  }
+});
+
+app.post('/api/auth/users', requireAuth, async (c) => {
+  try {
+    const body = await readJsonBody(c);
+    return c.json({ user: await createCollaborator(c.get('user'), body.username, body.password) }, 201);
+  } catch (error) {
+    const response = toAuthErrorResponse(error);
+    return c.json(response.body, response.status);
+  }
+});
+
+app.delete('/api/auth/users/:userId', requireAuth, async (c) => {
+  try {
+    const userId = Number(c.req.param('userId'));
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      return c.json({ error: 'Invalid user id' }, 400);
+    }
+    await removeCollaborator(c.get('user'), userId);
+    closeUserWorkspace(userId);
+    return c.json({ success: true });
+  } catch (error) {
+    const response = toAuthErrorResponse(error);
+    return c.json(response.body, response.status);
+  }
 });
 
 // The built frontend is a handful of files that never change while the process is
@@ -1022,11 +1122,12 @@ const server = Bun.serve({
       if (auth.rejectStatus) {
         return new Response(auth.rejectMessage, { status: auth.rejectStatus });
       }
-      const data = kind === 'terminal'
-        ? { kind, activeSession: null }
-        : kind === 'auth'
-          ? { kind, auth }
-          : { kind };
+      const data = {
+        kind,
+        auth,
+        workspace: workspaceFor(auth.user.id),
+        ...(kind === 'terminal' ? { activeSession: null } : {}),
+      };
       // Only select a subprotocol the client actually offered — selecting one it did
       // not offer makes the browser fail the handshake.
       const headers = offered.includes(WS_SUBPROTOCOL)

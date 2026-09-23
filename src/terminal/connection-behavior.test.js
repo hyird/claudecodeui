@@ -130,7 +130,7 @@ test('closing a terminal tab restores focus to the server-selected fallback', ()
 });
 
 test('inactive live sessions are presented as background work, not disconnections', () => {
-  assert.match(serverSource, /return tabId === tabsState\.activeId \? 'disconnected' : 'background'/);
+  assert.match(serverSource, /return tabId === workspace\.tabsState\.activeId \? 'disconnected' : 'background'/);
   assert.match(serverSource, /exitedTabs\.has\(tabId\) \? 'exited' : 'disconnected'/);
   assert.match(source, /'background'/);
   assert.match(source, /if \(status === 'background'\) return '后台运行'/);

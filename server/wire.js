@@ -135,7 +135,7 @@ export function sendTerminalOutput(ws, text, seq = 0) {
   if (!value) {
     return;
   }
-  ws.send(encodeTerminalOutput(value, seq));
+  return ws.send(encodeTerminalOutput(value, seq));
 }
 
 // ---- /terminal/tabs : client -> server ----------------------------------

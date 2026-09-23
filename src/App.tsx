@@ -1,9 +1,10 @@
-import { LogOut, Minus, Plus, Settings, Terminal as TerminalIcon, X } from 'lucide-react';
+import { LogOut, Minus, Plus, Settings, Terminal as TerminalIcon, Users, X } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 
 import { AuthGate } from './auth';
 import type { AuthUser } from './auth';
+import CollaboratorsDialog from './auth/CollaboratorsDialog';
 import TerminalPane, {
   clearTerminalInputStates,
   discardTerminalInputState,
@@ -146,6 +147,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   const [tabsState, setTabsState] = useState<TerminalTabsState>(EMPTY_TABS_STATE);
   const [preferences, setPreferences] = useState<TerminalPreferences>(readPreferences);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [collaboratorsOpen, setCollaboratorsOpen] = useState(false);
   const draggedTabRef = useRef<string | null>(null);
   const dropTargetRef = useRef<{ id: string; after: boolean } | null>(null);
   const tabsStripRef = useRef<HTMLElement | null>(null);
@@ -940,6 +942,11 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
           <button type="button" className="icon-button" onClick={addTab} title="新增终端" aria-label="新增终端">
             <Plus size={16} aria-hidden="true" />
           </button>
+          {user.role === 'admin' && (
+            <button type="button" className="icon-button" onClick={() => setCollaboratorsOpen(true)} title="管理协作者" aria-label="管理协作者">
+              <Users size={16} aria-hidden="true" />
+            </button>
+          )}
           <button
             type="button"
             ref={settingsButtonRef}
@@ -1028,6 +1035,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
           </div>
         </div>
       )}
+      {collaboratorsOpen && <CollaboratorsDialog token={authToken} onClose={() => setCollaboratorsOpen(false)} />}
     </main>
   );
 }
