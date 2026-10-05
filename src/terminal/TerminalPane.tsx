@@ -1,6 +1,7 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -34,8 +35,8 @@ type TerminalDimensions = {
 const MIN_TERMINAL_COLS = 2;
 const MIN_TERMINAL_ROWS = 1;
 // Width of the scrollback scrollbar to reserve so the rightmost column is never
-// rendered beneath it. MUST match `.xterm-viewport.has-scrollback::-webkit-scrollbar`
-// in styles.css. xterm's own FitAddon reserves the same gutter (`- scrollBarWidth`).
+// rendered beneath it. Match the xterm overlay's `overviewRuler.width` below.
+// xterm's own FitAddon reserves the same gutter (`- scrollBarWidth`).
 const TERMINAL_SCROLLBAR_GUTTER = 4;
 // Sub-pixel guard shaved off each fit axis so integer/HiDPI cell-size rounding can
 // never round the last whole cell up past the frame edge (bottom row / right column).
@@ -421,6 +422,29 @@ export default function TerminalPane({
     }));
 
     terminal.open(container);
+    // DOM text runs accumulate fractional glyph widths, making Pi's character
+    // scrollbar stagger across rows. WebGL places every glyph on the cell grid.
+    let webglAddon: WebglAddon | undefined;
+    let webglContextLoss: { dispose(): void } | undefined;
+    try {
+      const addon = new WebglAddon();
+      webglAddon = addon;
+      webglContextLoss = addon.onContextLoss(() => {
+        webglContextLoss?.dispose();
+        webglContextLoss = undefined;
+        addon.dispose();
+        webglAddon = undefined;
+        resizeAfterLayoutSettles();
+        forceFullRefresh();
+      });
+      terminal.loadAddon(addon);
+    } catch {
+      // Keep the DOM renderer usable when hardware rendering is unavailable.
+      webglContextLoss?.dispose();
+      webglContextLoss = undefined;
+      webglAddon?.dispose();
+      webglAddon = undefined;
+    }
     // xterm 6.0.0's bundled DECRPM handler throws while Vim probes terminal
     // modes. Handle the probes first so xterm's write queue stays alive.
     const registerModeReportGuard = (ansi: boolean) => terminal.parser.registerCsiHandler({
@@ -884,6 +908,7 @@ export default function TerminalPane({
       clearConnectionTimer();
       resizeObserver.disconnect();
       socketRef.current?.close();
+      webglContextLoss?.dispose();
       terminal.dispose();
       socketRef.current = null;
       fitAddonRef.current = null;

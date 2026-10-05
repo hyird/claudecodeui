@@ -179,8 +179,7 @@ test('terminal DOM lookups are cached instead of re-queried every frame', () => 
   assert.match(source, /hasScrollbackRef\.current = false;/);
 });
 
-test('terminal uses xterm default renderer for reliable in-place TUI updates', () => {
+test('terminal preserves the compact frame inset', () => {
   assert.match(styles, /\.terminal-frame \{\s+inset:\s*6px;/);
   assert.equal(styles.includes('inset: 7px;'), false);
-  assert.doesNotMatch(source, /WebglAddon/);
 });

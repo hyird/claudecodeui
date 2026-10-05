@@ -199,12 +199,13 @@ class FakeTerminal {
   readonly writes: string[] = [];
   private dataListener: ((data: string) => void) | undefined;
   disposed = false;
+  refreshCalls = 0;
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
   }
 
-  loadAddon() {}
+  loadAddon(addon: { activate?: (terminal: FakeTerminal) => void }) { addon.activate?.(this); }
   open() {}
   attachCustomKeyEventHandler() {}
   attachCustomWheelEventHandler() {}
@@ -226,7 +227,7 @@ class FakeTerminal {
   writeln() {}
   write(data: string) { this.writes.push(data); }
   clear() {}
-  refresh() {}
+  refresh() { this.refreshCalls += 1; }
   resize(cols: number, rows: number) {
     this.cols = cols;
     this.rows = rows;
@@ -258,6 +259,7 @@ function createHarness() {
   const container = makeElement().element;
   const localStorage = new Map<string, string>();
   const terminalInstances: FakeTerminal[] = [];
+  const rendererAddons: Array<{ disposed: boolean; contextLossListener?: () => void }> = [];
   const stateUpdates: unknown[] = [];
 
   Object.assign(window, {
@@ -328,6 +330,8 @@ function createHarness() {
     localStorage: setLocalStorage,
     navigator,
     terminalInstances,
+    rendererAddons,
+    rendererUnavailable: false,
     stateUpdates,
     hooks,
     openAuthenticatedSocket,
@@ -373,6 +377,19 @@ function loadLoop(kind: LoopKind, harness: Harness) {
   };
   const fitRuntime = { FitAddon: class { proposeDimensions() { return { cols: 80, rows: 24 }; } } };
   const emptyAddon = { ClipboardAddon: class {}, WebLinksAddon: class {} };
+  const webglRuntime = { WebglAddon: class {
+    disposed = false;
+    contextLossListener?: () => void;
+    constructor() { harness.rendererAddons.push(this); }
+    activate() {
+      if (harness.rendererUnavailable) throw new Error('WebGL unavailable');
+    }
+    onContextLoss(listener: () => void) {
+      this.contextLossListener = listener;
+      return { dispose: () => { this.contextLossListener = undefined; } };
+    }
+    dispose() { this.disposed = true; }
+  } };
   const xtermRuntime = { Terminal: class extends harness.FakeTerminal {
     constructor(options: Record<string, unknown>) {
       super(options);
@@ -394,6 +411,7 @@ function loadLoop(kind: LoopKind, harness: Harness) {
     if (specifier === '@xterm/addon-fit') return fitRuntime;
     if (specifier === '@xterm/addon-clipboard') return emptyAddon;
     if (specifier === '@xterm/addon-web-links') return emptyAddon;
+    if (specifier === '@xterm/addon-webgl') return webglRuntime;
     if (specifier === '@xterm/xterm') return xtermRuntime;
     if (specifier === './themes') return { terminalTheme: {} };
     if (specifier === './clipboard') return {
@@ -609,6 +627,42 @@ describe('runtime socket recovery', () => {
       cleanup();
     });
   }
+});
+
+describe('terminal renderer recovery', () => {
+  test('unavailable WebGL keeps the terminal connection usable', () => {
+    const harness = createHarness();
+    harness.rendererUnavailable = true;
+    const { cleanup } = loadLoop('terminal', harness);
+    const socket = harness.sockets[0];
+    socket.open();
+
+    expect(sentMessagesOfType(socket, 'init')).toHaveLength(1);
+    expect(harness.rendererAddons[0].disposed).toBe(true);
+    expect(harness.rendererAddons[0].contextLossListener).toBeUndefined();
+    expect(harness.terminalInstances[0].disposed).toBe(false);
+    cleanup();
+  });
+
+  test('context loss redraws the same terminal without replacing its socket', () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const socket = harness.sockets[0];
+    socket.open();
+    const terminal = harness.terminalInstances[0];
+    const before = terminal.refreshCalls;
+    const addon = harness.rendererAddons[0];
+    addon.contextLossListener?.();
+
+    expect(addon.disposed).toBe(true);
+    expect(addon.contextLossListener).toBeUndefined();
+    expect(terminal.refreshCalls).toBeGreaterThan(before);
+    expect(terminal.disposed).toBe(false);
+    expect(socket.closeCalls).toBe(0);
+    expect(harness.sockets).toHaveLength(1);
+    cleanup();
+    expect(harness.clock.pendingCount).toBe(0);
+  });
 });
 
 describe('terminal client snapshot recovery', () => {
