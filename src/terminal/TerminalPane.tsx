@@ -474,7 +474,12 @@ export default function TerminalPane({
     }, (params) => {
       const value = params[0];
       const mode = typeof value === 'number' ? value : (value?.[0] ?? 0);
-      terminal.input(`\x1b[${ansi ? '' : '?'}${mode};0$y`, false);
+      // OMP trusts this probe: reporting 0 disables its atomic repaint wrappers.
+      // Keep the Vim workaround while advertising xterm's real DEC 2026 state.
+      const status = !ansi && mode === 2026
+        ? (terminal.modes.synchronizedOutputMode ? 1 : 2)
+        : 0;
+      terminal.input(`\x1b[${ansi ? '' : '?'}${mode};${status}$y`, false);
       return true;
     });
     const ansiModeReportGuard = registerModeReportGuard(true);

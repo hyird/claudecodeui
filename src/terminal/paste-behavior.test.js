@@ -47,7 +47,7 @@ test('Vim mode reports cannot crash xterm 6 write processing', () => {
   assert.match(paneSource, /registerModeReportGuard/);
   assert.match(paneSource, /registerCsiHandler/);
   assert.match(paneSource, /terminal\.input/);
-  assert.match(paneSource, /mode\};0\$y/);
+  assert.match(paneSource, /mode\};\$\{status\}\$y/);
 });
 
 test('paste remains on xterm native event handling', () => {

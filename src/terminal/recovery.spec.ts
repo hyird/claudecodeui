@@ -194,8 +194,13 @@ class FakeTerminal {
   rows = 24;
   readonly options: Record<string, unknown>;
   readonly buffer = { active: { baseY: 0, viewportY: 0, type: 'normal' } };
-  readonly modes = { mouseTrackingMode: 'none' };
-  readonly parser = { registerCsiHandler: () => ({ dispose() {} }) };
+  readonly modes = { mouseTrackingMode: 'none', synchronizedOutputMode: false };
+  readonly modeReportHandlers = new Map<string, (params: number[]) => boolean>();
+  readonly parser = { registerCsiHandler: (id: { prefix?: string }, handler: (params: number[]) => boolean) => {
+    const key = id.prefix ?? '';
+    this.modeReportHandlers.set(key, handler);
+    return { dispose: () => { this.modeReportHandlers.delete(key); } };
+  } };
   readonly element = makeElement().element;
   readonly writes: string[] = [];
   private dataListener: ((data: string) => void) | undefined;
@@ -236,7 +241,7 @@ class FakeTerminal {
     this.cols = cols;
     this.rows = rows;
   }
-  input() {}
+  input(data: string) { this.emitData(data); }
   hasSelection() { return false; }
   getSelection() { return ''; }
   focus() {}
@@ -645,6 +650,29 @@ describe('runtime socket recovery', () => {
 });
 
 describe('terminal renderer recovery', () => {
+  test('OMP sees synchronized output support and its current state through the input socket', async () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const output = harness.sockets[0];
+    output.open();
+    emitServerMessage(harness, output, { type: 'ready', sessionGeneration: 'mode-probe' });
+    const input = await readyInputConnection(harness, 'mode-probe');
+    const terminal = harness.terminalInstances[0];
+    const query = terminal.modeReportHandlers.get('?')!;
+    query([2026]);
+    terminal.modes.synchronizedOutputMode = true;
+    query([2026]);
+    terminal.modes.synchronizedOutputMode = false;
+    query([2026]);
+    query([9999]);
+    terminal.modeReportHandlers.get('')!([2026]);
+    expect(sentMessagesOfType(input, 'input').map((message) => message.data)).toEqual([
+      '\x1b[?2026;2$y', '\x1b[?2026;1$y', '\x1b[?2026;2$y', '\x1b[?9999;0$y', '\x1b[2026;0$y',
+    ]);
+    cleanup();
+    expect(terminal.modeReportHandlers.size).toBe(0);
+  });
+
   test('alternate-screen animation parses only dirty rows instead of forcing a full refresh', () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);
