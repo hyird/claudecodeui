@@ -1,15 +1,11 @@
 import assert from 'node:assert/strict';
+import { extractServerFunction } from './test-support/read-source.js';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { test } from 'node:test';
 
-const source = fs.readFileSync(new URL('./index.js', import.meta.url), 'utf8');
-const handler = source.match(/function handleTabsCommand\(ws, message\) \{[^]*?\n\}/)[0];
-const broadcastFunctions = ['websocketWritable', 'broadcastTabsState'].map((name) => {
-  const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
-  assert.ok(match, `missing ${name}`);
-  return match[0];
-}).join('\n');
+const handler = extractServerFunction('handleTabsCommand');
+const broadcastFunctions = ['websocketWritable', 'broadcastTabsState'].map(extractServerFunction).join('\n');
 
 function setup() {
   const tabsState = { tabs: ['a', 'b', 'c', 'd'].map((id) => ({ id, title: id })), activeId: 'b' };

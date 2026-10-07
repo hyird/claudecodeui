@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { readTerminalSource } from './test-support/read-source.js';
 import fs from 'node:fs';
 import { test } from 'node:test';
 
-const paneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+const paneSource = readTerminalSource();
 const clipboardSource = fs.readFileSync(new URL('./clipboard.ts', import.meta.url), 'utf8');
 
 test('terminal keyboard input mirrors the original plugin handler', () => {

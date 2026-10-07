@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { extractServerFunction } from './test-support/read-source.js';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { randomUUID } from 'node:crypto';
@@ -10,7 +11,6 @@ import { createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent } fr
 
 // Exercise the actual server functions with a real xterm parser and a fake PTY.
 // Importing the server itself would start Bun's HTTP listener and auth database.
-const source = fs.readFileSync(new URL('./index.js', import.meta.url), 'utf8');
 const functions = [
   'createTerminalSnapshot', 'writeTerminalSnapshot', 'forEachTerminalOutputFrame',
   'clearTerminalOutputFlushTimer', 'flushTerminalOutput', 'queueTerminalOutputPiece',
@@ -18,11 +18,7 @@ const functions = [
   'sendTerminalEvent', 'recordAndSendTerminalEvent', 'createSession', 'attachSocket',
   'detachSocket', 'closeSession', 'handleInit', 'handleTerminalMessage',
   'websocketWritable', 'closeUserWorkspace',
-].map((name) => {
-  const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
-  assert.ok(match, `missing server function ${name}`);
-  return match[0];
-}).join('\n');
+].map(extractServerFunction).join('\n');
 
 function setup(t, cols = 20, rows = 4) {
   const terminals = [];
@@ -41,9 +37,9 @@ function setup(t, cols = 20, rows = 4) {
       constructor(options) { super(options); terminals.push(this); }
     },
     SerializeAddon, UnicodeGraphemesAddon, createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent,
-    SERVER_SNAPSHOT_SCROLLBACK: 1000,
+    SERVER_SNAPSHOT_SCROLLBACK: 10000,
     TERMINAL_OUTPUT_MAX_FRAME_BYTES: 16 * 1024,
-    TERMINAL_OUTPUT_FLUSH_INTERVAL_MS: 8,
+    TERMINAL_OUTPUT_FLUSH_INTERVAL_MS: 2,
     TERMINAL_SOCKET_BUFFER_LIMIT: 1024 * 1024,
     WS_OPEN: 1,
     UUID_V4_PATTERN: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,

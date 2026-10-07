@@ -30,6 +30,13 @@ bun run dev
 
 打开 http://localhost:5173。
 
+代码按职责组织：
+
+- `server/index.js` 负责装配，HTTP 鉴权、WebSocket 分发、标签状态、终端会话和输出回放分别在独立模块中。
+- `src/App.tsx` 负责页面组合；标签状态与连接在 `use-terminal-tabs.ts`，拖动和键盘交互在 `TerminalTabs.tsx`。
+- `TerminalPane.tsx` 负责终端组件生命周期；双 WebSocket 连接在 `connection.ts`，输入确认状态在 `input-state.ts`，尺寸计算和渲染配置分别在布局与渲染模块中。
+- `server/pty-broker.js` 仍是独立进程入口，通过 `pty-channel.js` 与 Web 服务通信。
+
 终端字体使用 Maple Mono NF CN v7.9，字体与授权文件在 `packages/terminal-fonts/`。
 这是私有 Bun 工作区依赖 `@cloud-terminal/maple-mono-nf-cn`，`bun install` 安装后
 自动复制到生成目录 `public/fonts/`，构建与开发时也会检查并复制。
@@ -37,8 +44,7 @@ bun run dev
 `scripts/build-terminal-fonts.py` 可用官方 ZIP 和 SHA256 文件重新生成网页字体，
 只改变压缩格式，保留原始字形。
 
-`bun-pty 0.4.11` 的读取循环通过 `patches/` 中的 Bun 补丁优化：输入会唤醒等待，
-交互期间以 1ms 检查新输出，闲置后恢复 8ms 间隔。补丁随 `bun install` 自动应用。
+PTY 使用官方 `bun-pty` 包，依赖安装以 `bun.lock` 为准。
 
 测试跑在 node:test 上（Bun 的 runner 无法承载 node:test 文件），所以还需要 Node：
 

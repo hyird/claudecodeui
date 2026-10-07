@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { readTerminalSource, readAppSource } from './test-support/read-source.js';
+import { readServerSource } from '../../server/test-support/read-source.js';
 import fs from 'node:fs';
 import { test } from 'node:test';
 
-const source = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
-const terminalPaneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
-const serverSource = fs.readFileSync(new URL('../../server/index.js', import.meta.url), 'utf8');
+const source = readAppSource();
+const terminalPaneSource = readTerminalSource();
+const serverSource = readServerSource();
 const stylesSource = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 function extractTerminalStack() {
@@ -234,10 +236,10 @@ test('terminal input remains queued until the server acknowledges it', () => {
   assert.match(terminalPaneSource, /TERMINAL_INPUT_MAX_FRAME_BYTES = 4 \* 1024/);
   assert.match(terminalPaneSource, /streamId:\s*createUuidV4\(\)/);
   assert.match(terminalPaneSource, /inputState\.pending\.set\(inputSeq, frame\)/);
-  assert.match(terminalPaneSource, /for \(const \[inputSeq, data\] of inputStateRef\.current\.pending\)/);
+  assert.match(terminalPaneSource, /for \(const \[inputSeq, data\] of inputState\.pending\)/);
   assert.match(terminalPaneSource, /type:\s*'input', data, inputSeq/);
   assert.match(terminalPaneSource, /message\.type === 'input-ack'/);
-  assert.match(terminalPaneSource, /inputStateRef\.current\.pending\.delete\(inputSeq\)/);
+  assert.match(terminalPaneSource, /inputState\.pending\.delete\(inputSeq\)/);
 });
 
 test('terminal reset renders only the authoritative server snapshot', () => {

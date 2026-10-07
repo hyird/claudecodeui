@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { readTerminalSource } from './test-support/read-source.js';
 import fs from 'node:fs';
 import { test } from 'node:test';
 
 const codecSource = fs.existsSync(new URL('./wsCodec.ts', import.meta.url))
   ? fs.readFileSync(new URL('./wsCodec.ts', import.meta.url), 'utf8')
   : '';
-const paneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+const paneSource = readTerminalSource();
 
 // The codec's own behaviour (encode/decode round-trips, including the compressed
 // output path) is covered end to end against the server codec in wsCodec.spec.ts.
@@ -20,7 +21,7 @@ test('terminal pane routes websocket messages through async binary-aware decoder
 
 test('terminal pane preserves websocket frame order while async decoding output', () => {
   assert.match(paneSource, /const handleTerminalServerMessage = async/);
-  assert.match(paneSource, /socketRef\.current !== socket/);
+  assert.match(paneSource, /currentOutputSocket !== socket/);
   assert.match(paneSource, /let terminalMessageQueue = Promise\.resolve\(\)/);
   assert.match(paneSource, /terminalMessageQueue = terminalMessageQueue[\s\S]*\.then\(\(\) => handleTerminalServerMessage\(socket, event\.data\)\)/);
 });

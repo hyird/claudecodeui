@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { readTerminalSource } from './test-support/read-source.js';
 import fs from 'node:fs';
 import { test } from 'node:test';
 
-const source = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+const source = readTerminalSource();
 const styles = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 test('inactive terminals do not keep a visible xterm cursor', () => {

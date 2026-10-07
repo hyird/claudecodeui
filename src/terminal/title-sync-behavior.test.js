@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { readAppSource } from './test-support/read-source.js';
 import fs from 'node:fs';
 import { test } from 'node:test';
 
-const source = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+const source = readAppSource();
 
 test('terminal title sync strips volatile spinner prefixes', () => {
   assert.match(source, /SPINNER_TITLE_PREFIX/);

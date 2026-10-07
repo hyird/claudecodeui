@@ -411,7 +411,8 @@ function loadLoop(kind: LoopKind, harness: Harness) {
     encodeTerminalClientMessage: harness.encode,
     decodeTerminalServerMessage: harness.decode,
   };
-  const require = (specifier: string) => {
+  const moduleCache = new Map<string, Record<string, unknown>>();
+  const require = (specifier: string, from = sourceUrl): any => {
     if (specifier === 'react') return reactRuntime;
     if (specifier === 'react/jsx-runtime') return jsxRuntime;
     if (specifier === 'lucide-react') return iconRuntime;
@@ -434,6 +435,23 @@ function loadLoop(kind: LoopKind, harness: Harness) {
     }
     if (specifier === '../uuid') return { createUuidV4: () => '00000000-0000-4000-8000-000000000001' };
     if (specifier === './auth/CollaboratorsDialog') return { default: () => null };
+    if (specifier.startsWith('.')) {
+      const candidates = ['.ts', '.tsx'].map((extension) => new URL(specifier + extension, from));
+      const file = candidates.find((candidate) => fs.existsSync(candidate));
+      if (file) {
+        const cached = moduleCache.get(file.href);
+        if (cached) return cached;
+        const child = { exports: {} as Record<string, unknown> };
+        moduleCache.set(file.href, child.exports);
+        const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+          compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+          fileName: file.pathname,
+        }).outputText;
+        const run = vm.runInContext(`(function(require,module,exports){${compiled}\n})`, context);
+        run((name: string) => require(name, file), child, child.exports);
+        return child.exports;
+      }
+    }
     throw new Error(`Unexpected VM import: ${specifier}`);
   };
 
@@ -475,7 +493,7 @@ function loadLoop(kind: LoopKind, harness: Harness) {
     harness.hooks.refs[0].current = harness.container;
   }
 
-  const marker = kind === 'tabs' ? 'createTabsSocket' : 'createTerminalSocket';
+  const marker = kind === 'tabs' ? 'createTabsSocket' : 'connectTerminal';
   const effect = harness.hooks.effects.find((candidate) => candidate.toString().includes(marker));
   if (!effect) {
     throw new Error(`Could not locate ${kind} recovery effect`);
@@ -992,7 +1010,7 @@ describe('terminal client snapshot recovery', () => {
   });
 
   test('RIS restores dirty normal and alternate screens before a serialized snapshot', async () => {
-    const paneSource = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+    const paneSource = fs.readFileSync(new URL('./connection.ts', import.meta.url), 'utf8');
     const resetMatch = paneSource.match(/writeTerminalData\('([^']+)'\)/);
     expect(resetMatch?.[1]).toBeDefined();
     const resetSequence = resetMatch![1].replace(/\\x([0-9a-f]{2})/gi, (_, value: string) => (

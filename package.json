@@ -44,8 +44,5 @@
     "vite": "^6.4.4",
     "vite-plugin-singlefile": "^2.3.3",
     "ws": "^8.22.0"
-  },
-  "patchedDependencies": {
-    "bun-pty@0.4.11": "patches/bun-pty@0.4.11.patch"
   }
 }

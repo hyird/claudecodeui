@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { readServerSource } from './test-support/read-source.js';
 import fs from 'node:fs';
 import { test } from 'node:test';
 
-const source = fs.readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+const source = readServerSource();
 
 test('terminal attach replays a serialized screen snapshot instead of raw PTY history', () => {
   assert.match(source, /HeadlessTerminal/);
@@ -18,7 +19,7 @@ test('terminal attach replays a serialized screen snapshot instead of raw PTY hi
 });
 
 test('server snapshot scrollback is bounded for lower memory reconnect state', () => {
-  assert.match(source, /const SERVER_SNAPSHOT_SCROLLBACK = 1000/);
+  assert.match(source, /const SERVER_SNAPSHOT_SCROLLBACK = 10000/);
   assert.match(source, /scrollback:\s*SERVER_SNAPSHOT_SCROLLBACK/);
   assert.equal(source.includes('scrollback: BUFFER_LIMIT'), false);
 });

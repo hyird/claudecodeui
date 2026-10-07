@@ -39,9 +39,6 @@
       "version": "7.9.0",
     },
   },
-  "patchedDependencies": {
-    "bun-pty@0.4.11": "patches/bun-pty@0.4.11.patch",
-  },
   "packages": {
     "@babel/code-frame": ["@babel/code-frame@7.29.7", "", { "dependencies": { "@babel/helper-validator-identifier": "^7.29.7", "js-tokens": "^4.0.0", "picocolors": "^1.1.1" } }, ""],
 

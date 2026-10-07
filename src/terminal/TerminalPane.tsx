@@ -1,7 +1,6 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -10,13 +9,15 @@ import { terminalTheme } from './themes';
 import { copyToClipboard, readClipboardText } from './clipboard';
 import type {
   TerminalPreferences,
-  TerminalServerMessage,
   TerminalStatus,
   TerminalTab,
 } from './types';
-import { decodeTerminalServerMessage, encodeTerminalClientMessage } from './wsCodec';
-import { openAuthenticatedSocket } from '../wsHost';
-import { createUuidV4 } from '../uuid';
+import { connectTerminal, type TerminalConnection } from './connection';
+import { useTerminalLayout } from './use-terminal-layout';
+import {
+  configureTerminalRenderer, registerTerminalModeReports, TERMINAL_FONT_FAMILY,
+  TERMINAL_SCROLLBAR_GUTTER,
+} from './renderer';
 
 type TerminalPaneProps = {
   tab: TerminalTab;
@@ -27,90 +28,6 @@ type TerminalPaneProps = {
   onStatusChange: (tabId: string, status: TerminalStatus) => void;
   onTitleChange: (tabId: string, title: string) => void;
 };
-
-type TerminalDimensions = {
-  cols: number;
-  rows: number;
-};
-
-const MIN_TERMINAL_COLS = 2;
-const MIN_TERMINAL_ROWS = 1;
-const TERMINAL_FONT_FAMILY = '"Maple Mono NF CN", "CaskaydiaMono Nerd Font", "JetBrainsMono Nerd Font", "Symbols Nerd Font Mono", Consolas, monospace';
-// Width of the scrollback scrollbar to reserve so the rightmost column is never
-// rendered beneath it. Match the xterm overlay's `overviewRuler.width` below.
-// xterm's own FitAddon reserves the same gutter (`- scrollBarWidth`).
-const TERMINAL_SCROLLBAR_GUTTER = 8;
-// Sub-pixel guard shaved off each fit axis so integer/HiDPI cell-size rounding can
-// never round the last whole cell up past the frame edge (bottom row / right column).
-const FIT_EDGE_GUARD_PX = 1;
-// Reconnect backoff: the base delay doubles each consecutive failure up to the cap,
-// so a flaky network is retried gently instead of hammered every second. Reset to the
-// base on a successful open or when the user returns to the tab.
-const TERMINAL_RECONNECT_DELAY_MS = 1000;
-const TERMINAL_RECONNECT_MAX_DELAY_MS = 15000;
-const TERMINAL_CONNECT_TIMEOUT_MS = 10000;
-const TERMINAL_RESUME_PONG_TIMEOUT_MS = 2500;
-// Active liveness check: while the tab is visible, ping on an interval so a silently
-// dropped socket (common on weak/mobile networks, no close event) is detected and
-// resumed. The pong window is deliberately generous so high latency is not mistaken
-// for a dead connection and does not trigger a needless reconnect.
-const TERMINAL_HEARTBEAT_INTERVAL_MS = 20000;
-const TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS = 8000;
-const TERMINAL_INPUT_MAX_FRAME_BYTES = 4 * 1024;
-
-type ReliableTerminalInputState = {
-  streamId: string;
-  generation: string;
-  nextSeq: number;
-  pending: Map<number, string>;
-};
-
-const terminalInputEncoder = new TextEncoder();
-const terminalInputDecoder = new TextDecoder();
-const terminalInputStates = new Map<string, ReliableTerminalInputState>();
-
-export function discardTerminalInputState(tabId: string) {
-  terminalInputStates.delete(tabId);
-}
-
-export function clearTerminalInputStates() {
-  terminalInputStates.clear();
-}
-
-function getTerminalInputState(tabId: string) {
-  let state = terminalInputStates.get(tabId);
-  if (!state) {
-    state = {
-      streamId: createUuidV4(),
-      generation: '',
-      nextSeq: 1,
-      pending: new Map(),
-    };
-    terminalInputStates.set(tabId, state);
-  }
-  return state;
-}
-
-function splitTerminalInput(data: string) {
-  const bytes = terminalInputEncoder.encode(data);
-  const frames: string[] = [];
-  let offset = 0;
-
-  while (offset < bytes.length) {
-    let end = Math.min(offset + TERMINAL_INPUT_MAX_FRAME_BYTES, bytes.length);
-    while (end < bytes.length && end > offset && (bytes[end] & 0xc0) === 0x80) {
-      end -= 1;
-    }
-    frames.push(terminalInputDecoder.decode(bytes.subarray(offset, end)));
-    offset = end;
-  }
-
-  return frames;
-}
-
-function createTerminalSocket(authToken: string) {
-  return openAuthenticatedSocket('/terminal/output', authToken);
-}
 
 export default function TerminalPane({
   tab,
@@ -124,263 +41,18 @@ export default function TerminalPane({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
-  const inputSocketRef = useRef<WebSocket | null>(null);
-  const terminalReadyRef = useRef(false);
-  const inputStateRef = useRef(getTerminalInputState(tab.id));
+  const connectionRef = useRef<TerminalConnection | null>(null);
   const [sessionRebuiltNoticeVisible, setSessionRebuiltNoticeVisible] = useState(false);
   const [pendingCopyText, setPendingCopyText] = useState<string | null>(null);
   const [manualCopyText, setManualCopyText] = useState<string | null>(null);
   const activeRef = useRef(active);
   const focusOnMountRef = useRef(focusOnMount);
-  const resizeTimersRef = useRef<number[]>([]);
-  const resizeFrameRef = useRef(0);
-  const lastSizeRef = useRef({ cols: 0, rows: 0 });
-  const screenElementRef = useRef<HTMLElement | null>(null);
-  const viewportElementRef = useRef<HTMLElement | null>(null);
-  const hasScrollbackRef = useRef(false);
+  useEffect(() => { activeRef.current = active; }, [active]);
 
-  // xterm builds .xterm-screen and .xterm-viewport once in terminal.open() and keeps
-  // them for the terminal's lifetime, but the scrollback affordance runs off every
-  // parsed write and every scroll — re-querying the DOM there costs a tree walk per
-  // frame of output. Resolve each once and reuse it; isConnected re-resolves if xterm
-  // ever rebuilds its DOM.
-  const readScreenElement = useCallback(() => {
-    if (!screenElementRef.current?.isConnected) {
-      screenElementRef.current = terminalRef.current?.element
-        ?.querySelector<HTMLElement>('.xterm-screen') ?? null;
-    }
-    return screenElementRef.current;
-  }, []);
-
-  const readViewportElement = useCallback(() => {
-    if (!viewportElementRef.current?.isConnected) {
-      viewportElementRef.current = terminalRef.current?.element
-        ?.querySelector<HTMLElement>('.xterm-viewport') ?? null;
-    }
-    return viewportElementRef.current;
-  }, []);
-
-  useEffect(() => {
-    activeRef.current = active;
-  }, [active]);
-
-  const clearResizeTimers = useCallback(() => {
-    resizeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-    resizeTimersRef.current = [];
-    if (resizeFrameRef.current) {
-      window.cancelAnimationFrame(resizeFrameRef.current);
-      resizeFrameRef.current = 0;
-    }
-  }, []);
-
-  const readFitDimensions = useCallback((): TerminalDimensions | undefined => {
-    const fitAddon = fitAddonRef.current;
-    if (!fitAddon) {
-      return undefined;
-    }
-
-    try {
-      const dims = fitAddon.proposeDimensions();
-      if (dims && Number.isFinite(dims.cols) && Number.isFinite(dims.rows)) {
-        return dims;
-      }
-    } catch {
-      return undefined;
-    }
-
-    return undefined;
-  }, []);
-
-  const measureCellCapacity = useCallback((fallback?: TerminalDimensions) => {
-    const terminal = terminalRef.current;
-    const container = containerRef.current;
-    const screen = readScreenElement();
-    if (!terminal || !container || !screen) {
-      return fallback;
-    }
-
-    const baseCols = terminal.cols || fallback?.cols || lastSizeRef.current.cols;
-    const baseRows = terminal.rows || fallback?.rows || lastSizeRef.current.rows;
-    if (baseCols <= 0 || baseRows <= 0 || screen.offsetWidth <= 0 || screen.offsetHeight <= 0) {
-      return fallback;
-    }
-
-    const cellWidth = screen.offsetWidth / baseCols;
-    const cellHeight = screen.offsetHeight / baseRows;
-    if (!Number.isFinite(cellWidth) || !Number.isFinite(cellHeight) || cellWidth <= 0 || cellHeight <= 0) {
-      return fallback;
-    }
-
-    const style = window.getComputedStyle(container);
-    // Reserve the scrollbar's gutter (as xterm's FitAddon does) so the rightmost
-    // column is never clipped beneath the scrollback scrollbar once it appears.
-    const scrollbarGutter = terminal.options.scrollback ? TERMINAL_SCROLLBAR_GUTTER : 0;
-    const availWidth = container.clientWidth
-      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
-      - scrollbarGutter - FIT_EDGE_GUARD_PX;
-    const availHeight = container.clientHeight
-      - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)
-      - FIT_EDGE_GUARD_PX;
-
-    return {
-      cols: Math.max(MIN_TERMINAL_COLS, Math.floor(availWidth / cellWidth)),
-      rows: Math.max(MIN_TERMINAL_ROWS, Math.floor(availHeight / cellHeight)),
-    };
-  }, [readScreenElement]);
-
-  const proposeFrameDimensions = useCallback(() => (
-    measureCellCapacity(readFitDimensions())
-  ), [measureCellCapacity, readFitDimensions]);
-
-  // Fit to the largest whole-cell grid the current frame can contain. Any
-  // leftover pixels stay blank instead of clipping the right edge/bottom row.
-  const fitAndResize = useCallback(() => {
-    const terminal = terminalRef.current;
-    const socket = inputSocketRef.current;
-    const dims = proposeFrameDimensions();
-    if (!terminal || !dims) {
-      return;
-    }
-
-    const last = lastSizeRef.current;
-    if (dims.cols === last.cols && dims.rows === last.rows) {
-      return;
-    }
-    lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
-
-    if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
-      terminal.resize(dims.cols, dims.rows);
-    }
-
-    if (terminalReadyRef.current && socket?.readyState === WebSocket.OPEN) {
-      socket.send(encodeTerminalClientMessage({
-        type: 'resize',
-        cols: dims.cols,
-        rows: dims.rows,
-      }));
-    }
-  }, [proposeFrameDimensions]);
-
-  const sendInput = useCallback((data: string) => {
-    if (!data) {
-      return;
-    }
-
-    const inputState = inputStateRef.current;
-    const socket = inputSocketRef.current;
-    let canSend = terminalReadyRef.current && socket?.readyState === WebSocket.OPEN;
-
-    for (const frame of splitTerminalInput(data)) {
-      const inputSeq = inputState.nextSeq;
-      inputState.nextSeq += 1;
-      inputState.pending.set(inputSeq, frame);
-
-      if (!canSend || !socket) {
-        continue;
-      }
-
-      try {
-        socket.send(encodeTerminalClientMessage({ type: 'input', data: frame, inputSeq }));
-      } catch {
-        terminalReadyRef.current = false;
-        canSend = false;
-        socket.close();
-      }
-    }
-  }, []);
-
-  const clearScreenTransform = useCallback(() => {
-    const screen = readScreenElement();
-    if (!screen) {
-      return;
-    }
-
-    screen.style.transform = '';
-    screen.style.transformOrigin = '';
-    screen.style.willChange = '';
-  }, [readScreenElement]);
-
-  const updateScrollbackAffordance = useCallback(() => {
-    const terminal = terminalRef.current;
-    const viewport = readViewportElement();
-    if (!terminal || !viewport) {
-      return;
-    }
-
-    // Runs on every parsed write, so skip the class mutation unless the state flipped.
-    const hasScrollback = terminal.buffer.active.baseY > 0;
-    if (hasScrollback === hasScrollbackRef.current) {
-      return;
-    }
-    hasScrollbackRef.current = hasScrollback;
-    viewport.classList.toggle('has-scrollback', hasScrollback);
-  }, [readViewportElement]);
-
-  // A scroll or an in-place TUI repaint changes what each viewport row should
-  // show. Full-screen TUIs hit paths where xterm may not issue a full viewport
-  // refresh on its own: alt-screen mouse scrolling, in-place updates, and streaming
-  // while the buffer moves under a fixed viewport. Force a full-range
-  // refresh synchronously so it unions into xterm's current render frame.
-  const forceFullRefresh = useCallback(() => {
-    const terminal = terminalRef.current;
-    if (!terminal) {
-      return;
-    }
-
-    terminal.refresh(0, Math.max(0, terminal.rows - 1));
-  }, []);
-
-  // Resize only on whole-cell boundaries. Any sub-cell remainder stays blank.
-  const resizeAfterLayoutSettles = useCallback(() => {
-    fitAndResize();
-    clearScreenTransform();
-
-    // Coalesce a burst of ResizeObserver ticks into at most one fit per frame
-    // so a live drag stays responsive without thrashing layout.
-    if (resizeFrameRef.current) {
-      window.cancelAnimationFrame(resizeFrameRef.current);
-    }
-    resizeFrameRef.current = window.requestAnimationFrame(() => {
-      resizeFrameRef.current = 0;
-      fitAndResize();
-      clearScreenTransform();
-    });
-
-    // One trailing pass after the layout settles (drag end, tab switch,
-    // settings panel toggle) to lock onto the final whole-cell grid.
-    resizeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-    resizeTimersRef.current = [window.setTimeout(() => {
-      fitAndResize();
-      clearScreenTransform();
-    }, 120)];
-  }, [clearScreenTransform, fitAndResize]);
-
-  // During a window drag, keep fitting to whole cells. Any sub-cell remainder
-  // stays as blank space instead of scaling or clipping the character grid.
-  const resizeDuringDrag = useCallback(() => {
-    fitAndResize();
-    clearScreenTransform();
-
-    if (resizeFrameRef.current) {
-      window.cancelAnimationFrame(resizeFrameRef.current);
-    }
-    resizeFrameRef.current = window.requestAnimationFrame(() => {
-      resizeFrameRef.current = 0;
-      fitAndResize();
-      clearScreenTransform();
-    });
-
-    resizeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-    resizeTimersRef.current = [
-      window.setTimeout(() => {
-        fitAndResize();
-        clearScreenTransform();
-      }, 180),
-      window.setTimeout(clearScreenTransform, 320),
-    ];
-  }, [clearScreenTransform, fitAndResize]);
-
+  const sendResize = useCallback((cols: number, rows: number) => connectionRef.current?.resize(cols, rows), []);
+  const { clearResizeTimers, clearScreenTransform, fitAndResize, proposeFrameDimensions,
+    resizeAfterLayoutSettles, resizeDuringDrag, forceFullRefresh, updateScrollbackAffordance, reset: resetLayout }
+    = useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onResize: sendResize });
   useEffect(() => {
     const container = containerRef.current;
     if (!container || terminalRef.current) {
@@ -426,65 +98,8 @@ export default function TerminalPane({
     }));
 
     terminal.open(container);
-    if (document.fonts) {
-      void Promise.all([
-        document.fonts.load('14px "Maple Mono NF CN"'),
-        document.fonts.load('bold 14px "Maple Mono NF CN"'),
-      ]).then(() => {
-        if (disposed || terminalRef.current !== terminal) return;
-        // xterm measured the fallback before the web font arrived. Changing the
-        // option invalidates both the measured cell size and the glyph atlas.
-        terminal.options.fontFamily = 'Consolas, monospace';
-        terminal.options.fontFamily = TERMINAL_FONT_FAMILY;
-        resizeAfterLayoutSettles();
-        forceFullRefresh();
-      }).catch(() => {
-        // The remaining font stack is monospaced if a font download fails.
-      });
-    }
-    // DOM text runs accumulate fractional glyph widths, making Pi's character
-    // scrollbar stagger across rows. WebGL places every glyph on the cell grid.
-    let webglAddon: WebglAddon | undefined;
-    let webglContextLoss: { dispose(): void } | undefined;
-    try {
-      const addon = new WebglAddon();
-      webglAddon = addon;
-      webglContextLoss = addon.onContextLoss(() => {
-        webglContextLoss?.dispose();
-        webglContextLoss = undefined;
-        addon.dispose();
-        webglAddon = undefined;
-        resizeAfterLayoutSettles();
-        forceFullRefresh();
-      });
-      terminal.loadAddon(addon);
-    } catch {
-      // Keep the DOM renderer usable when hardware rendering is unavailable.
-      webglContextLoss?.dispose();
-      webglContextLoss = undefined;
-      webglAddon?.dispose();
-      webglAddon = undefined;
-    }
-    // xterm 6.0.0's bundled DECRPM handler throws while Vim probes terminal
-    // modes. Handle the probes first so xterm's write queue stays alive.
-    const registerModeReportGuard = (ansi: boolean) => terminal.parser.registerCsiHandler({
-      prefix: ansi ? undefined : '?',
-      intermediates: '$',
-      final: 'p',
-    }, (params) => {
-      const value = params[0];
-      const mode = typeof value === 'number' ? value : (value?.[0] ?? 0);
-      // OMP trusts this probe: reporting 0 disables its atomic repaint wrappers.
-      // Keep the Vim workaround while advertising xterm's real DEC 2026 state.
-      const status = !ansi && mode === 2026
-        ? (terminal.modes.synchronizedOutputMode ? 1 : 2)
-        : 0;
-      terminal.input(`\x1b[${ansi ? '' : '?'}${mode};${status}$y`, false);
-      return true;
-    });
-    const ansiModeReportGuard = registerModeReportGuard(true);
-    const privateModeReportGuard = registerModeReportGuard(false);
-
+    const renderer = configureTerminalRenderer(terminal, resizeAfterLayoutSettles, forceFullRefresh);
+    const modeReports = registerTerminalModeReports(terminal);
     // Input handling mirrors cloudcli-plugin-terminal's TerminalSession.
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
@@ -522,450 +137,14 @@ export default function TerminalPane({
     terminal.writeln('\x1b[36mCloud Terminal\x1b[0m');
     terminal.writeln('\x1b[90mConnecting...\x1b[0m');
 
-    let lastAppliedTerminalSeq = 0;
-    const pendingTerminalMessages = new Map<number, TerminalServerMessage>();
-    let terminalResyncTimer = 0;
-
-    const writeTerminalData = (data: string) => {
-      terminal.write(data);
-    };
-
-    function clearTerminalResyncTimer() {
-      if (terminalResyncTimer) {
-        window.clearTimeout(terminalResyncTimer);
-        terminalResyncTimer = 0;
-      }
-    }
-
-    function scheduleTerminalResync(socket: WebSocket) {
-      if (terminalResyncTimer) {
-        return;
-      }
-
-      terminalResyncTimer = window.setTimeout(() => {
-        terminalResyncTimer = 0;
-        if (socketRef.current === socket) {
-          pendingTerminalMessages.clear();
-          lastAppliedTerminalSeq = 0;
-          socket.close(1011, 'Terminal sequence gap');
-        }
-      }, 250);
-    }
-
-    const applyTerminalServerMessage = async (socket: WebSocket, message: TerminalServerMessage) => {
-      if (message.type === 'ready') {
-        const inputState = inputStateRef.current;
-        const sessionGeneration = typeof message.sessionGeneration === 'string'
-          ? message.sessionGeneration
-          : '';
-        if (sessionGeneration) {
-          if (inputState.generation && inputState.generation !== sessionGeneration) {
-            const discardedPendingInput = inputState.pending.size > 0;
-            inputState.pending.clear();
-            inputState.nextSeq = 1;
-            if (discardedPendingInput) {
-              setSessionRebuiltNoticeVisible(true);
-            }
-          }
-          inputState.generation = sessionGeneration;
-        }
-        if (message.reset) {
-          pendingTerminalMessages.clear();
-          lastAppliedTerminalSeq = typeof message.lastSeq === 'number' ? message.lastSeq : 0;
-          // The serialized server snapshot that follows is the source of truth.
-          // Do not prepend internal session ids or cwd lines: they clutter new
-          // terminals and can corrupt the cursor position of a restored TUI.
-          writeTerminalData('\x1bc');
-        }
-        connectInputSocket(socket);
-        updateScrollbackAffordance();
-        resizeAfterLayoutSettles();
-        forceFullRefresh();
-        return;
-      }
-
-      if (message.type === 'output' && typeof message.data === 'string') {
-        writeTerminalData(message.data);
-        return;
-      }
-
-      if (message.type === 'error' && typeof message.message === 'string') {
-        terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
-        onStatusChange(tab.id, 'error');
-        return;
-      }
-
-      if (message.type === 'exit') {
-        closeInputSocket();
-        onStatusChange(tab.id, 'exited');
-        return;
-      }
-
-      if (message.type === 'pong') {
-        clearPongTimer();
-        return;
-      }
-
-      if (message.type === 'input-ack' && typeof message.inputSeq === 'number') {
-        for (const inputSeq of inputStateRef.current.pending.keys()) {
-          if (inputSeq > message.inputSeq) break;
-          inputStateRef.current.pending.delete(inputSeq);
-        }
-        return;
-      }
-    };
-
-    const applyOrderedTerminalServerMessage = async (socket: WebSocket, message: TerminalServerMessage) => {
-      if (typeof message.seq !== 'number' || message.seq <= 0 || message.type === 'ready') {
-        await applyTerminalServerMessage(socket, message);
-        return;
-      }
-
-      if (message.seq <= lastAppliedTerminalSeq) {
-        return;
-      }
-
-      if (message.seq > lastAppliedTerminalSeq + 1) {
-        pendingTerminalMessages.set(message.seq, message);
-        scheduleTerminalResync(socket);
-        return;
-      }
-
-      await applyTerminalServerMessage(socket, message);
-      lastAppliedTerminalSeq = message.seq;
-
-      while (pendingTerminalMessages.has(lastAppliedTerminalSeq + 1)) {
-        const nextSeq = lastAppliedTerminalSeq + 1;
-        const nextMessage = pendingTerminalMessages.get(nextSeq)!;
-        pendingTerminalMessages.delete(nextSeq);
-        await applyTerminalServerMessage(socket, nextMessage);
-        lastAppliedTerminalSeq = nextSeq;
-      }
-
-      if (pendingTerminalMessages.size === 0) {
-        clearTerminalResyncTimer();
-      }
-    };
-
-    const handleTerminalServerMessage = async (socket: WebSocket, raw: MessageEvent['data']) => {
-      const message = await decodeTerminalServerMessage(raw);
-      if (!message || socketRef.current !== socket) {
-        return;
-      }
-
-      await applyOrderedTerminalServerMessage(socket, message);
-    };
-
-    let reconnectTimer = 0;
-    let reconnectAttempts = 0;
-    let heartbeatTimer = 0;
-    let connectionTimer = 0;
-    let pongTimer = 0;
-    let inputConnectionTimer = 0;
-    let inputPongTimer = 0;
-    let terminalMessageQueue = Promise.resolve();
-
-    function closeInputSocket() {
-      terminalReadyRef.current = false;
-      window.clearTimeout(inputConnectionTimer);
-      window.clearTimeout(inputPongTimer);
-      inputConnectionTimer = 0;
-      inputPongTimer = 0;
-      const inputSocket = inputSocketRef.current;
-      inputSocketRef.current = null;
-      inputSocket?.close();
-    }
-
-    function connectInputSocket(outputSocket: WebSocket) {
-      if (disposed || socketRef.current !== outputSocket) return;
-      closeInputSocket();
-      const inputSocket = openAuthenticatedSocket('/terminal/input', authToken);
-      inputSocket.binaryType = 'arraybuffer';
-      inputSocketRef.current = inputSocket;
-      // A separate queue keeps input acknowledgements and pongs independent of
-      // output decoding, replay and rendering work on the downlink.
-      let inputMessageQueue = Promise.resolve();
-      const failInputConnection = () => {
-        if (inputSocketRef.current !== inputSocket) return;
-        closeInputSocket();
-        outputSocket.close();
-      };
-      inputConnectionTimer = window.setTimeout(failInputConnection, TERMINAL_CONNECT_TIMEOUT_MS);
-      inputSocket.addEventListener('open', () => {
-        if (inputSocketRef.current !== inputSocket) return;
-        try {
-          inputSocket.send(encodeTerminalClientMessage({
-            type: 'init', sessionId: tab.id,
-            cols: terminal.cols, rows: terminal.rows,
-            inputStreamId: inputStateRef.current.streamId,
-            sessionGeneration: inputStateRef.current.generation,
-          }));
-        } catch {
-          failInputConnection();
-        }
-      });
-      inputSocket.addEventListener('message', (event) => {
-        inputMessageQueue = inputMessageQueue.then(async () => {
-          const message = await decodeTerminalServerMessage(event.data);
-          if (disposed || inputSocketRef.current !== inputSocket
-            || socketRef.current !== outputSocket || !message) return;
-          if (message.type === 'ready') {
-            if (message.sessionGeneration !== inputStateRef.current.generation) {
-              failInputConnection();
-              return;
-            }
-            window.clearTimeout(inputConnectionTimer);
-            inputConnectionTimer = 0;
-            terminalReadyRef.current = true;
-            for (const [inputSeq, data] of inputStateRef.current.pending) {
-              inputSocket.send(encodeTerminalClientMessage({ type: 'input', data, inputSeq }));
-            }
-            inputSocket.send(encodeTerminalClientMessage({
-              type: 'resize', cols: terminal.cols, rows: terminal.rows,
-            }));
-            reconnectAttempts = 0;
-            onStatusChange(tab.id, 'connected');
-          } else if (message.type === 'pong') {
-            window.clearTimeout(inputPongTimer);
-            inputPongTimer = 0;
-          } else if (message.type === 'input-ack') {
-            await applyTerminalServerMessage(inputSocket, message);
-          } else if (message.type === 'error') {
-            await applyTerminalServerMessage(inputSocket, message);
-            failInputConnection();
-          }
-        }).catch(failInputConnection);
-      });
-      inputSocket.addEventListener('close', failInputConnection);
-      inputSocket.addEventListener('error', failInputConnection);
-    }
-
-    function clearReconnectTimer() {
-      if (reconnectTimer) {
-        window.clearTimeout(reconnectTimer);
-        reconnectTimer = 0;
-      }
-    }
-
-    function clearConnectionTimer() {
-      if (connectionTimer) {
-        window.clearTimeout(connectionTimer);
-        connectionTimer = 0;
-      }
-    }
-
-    function clearPongTimer() {
-      if (pongTimer) {
-        window.clearTimeout(pongTimer);
-        pongTimer = 0;
-      }
-    }
-
-    function scheduleReconnect() {
-      if (disposed || reconnectTimer) {
-        return;
-      }
-      onStatusChange(tab.id, 'disconnected');
-      const backoff = Math.min(
-        TERMINAL_RECONNECT_MAX_DELAY_MS,
-        TERMINAL_RECONNECT_DELAY_MS * 2 ** reconnectAttempts,
-      );
-      reconnectAttempts += 1;
-      // Equal jitter (half fixed, half random) keeps a floor delay while spreading
-      // retries so many panes dropping together don't reconnect in lockstep.
-      const delay = backoff / 2 + Math.random() * (backoff / 2);
-      reconnectTimer = window.setTimeout(connect, delay);
-    }
-
-    function connect() {
-      if (disposed) {
-        return;
-      }
-
-      const currentSocket = socketRef.current;
-      if (
-        currentSocket
-        && (currentSocket.readyState === WebSocket.OPEN || currentSocket.readyState === WebSocket.CONNECTING)
-      ) {
-        return;
-      }
-
-      clearReconnectTimer();
-      clearConnectionTimer();
-      clearPongTimer();
-      closeInputSocket();
-      terminalMessageQueue = Promise.resolve();
-
-      const socket = createTerminalSocket(authToken);
-      socket.binaryType = 'arraybuffer';
-      socketRef.current = socket;
-      onStatusChange(tab.id, 'connecting');
-      connectionTimer = window.setTimeout(() => {
-        if (disposed || socketRef.current !== socket) {
-          return;
-        }
-
-        connectionTimer = 0;
-        socketRef.current = null;
-        terminalReadyRef.current = false;
-        closeInputSocket();
-        clearTerminalResyncTimer();
-        socket.close();
-        scheduleReconnect();
-      }, TERMINAL_CONNECT_TIMEOUT_MS);
-
-      socket.addEventListener('open', () => {
-        if (disposed || socketRef.current !== socket) {
-          return;
-        }
-
-        clearConnectionTimer();
-        // Transport is healthy again — restart backoff from the base delay.
-        reconnectAttempts = 0;
-
-        // Size the grid to the frame first, then announce it via init. Sending a
-        // resize before init would be rejected by the server ("not initialized")
-        // and flash an error line.
-        const dims = proposeFrameDimensions();
-        if (dims) {
-          terminal.resize(dims.cols, dims.rows);
-          lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
-        }
-        socket.send(encodeTerminalClientMessage({
-          type: 'init',
-          sessionId: tab.id,
-          cols: terminal.cols,
-          rows: terminal.rows,
-          lastSeq: lastAppliedTerminalSeq,
-          inputStreamId: inputStateRef.current.streamId,
-          sessionGeneration: inputStateRef.current.generation,
-        }));
-        resizeAfterLayoutSettles();
-      });
-
-      socket.addEventListener('message', (event) => {
-        if (socketRef.current !== socket) {
-          return;
-        }
-
-        terminalMessageQueue = terminalMessageQueue
-          .then(() => handleTerminalServerMessage(socket, event.data))
-          .catch(() => undefined);
-      });
-
-      socket.addEventListener('close', () => {
-        if (socketRef.current === socket) {
-          socketRef.current = null;
-          terminalReadyRef.current = false;
-          closeInputSocket();
-          clearConnectionTimer();
-          clearPongTimer();
-          clearTerminalResyncTimer();
-          scheduleReconnect();
-        }
-      });
-
-      socket.addEventListener('error', () => {
-        if (socketRef.current === socket) {
-          terminalReadyRef.current = false;
-          closeInputSocket();
-          clearConnectionTimer();
-          onStatusChange(tab.id, 'error');
-          socket.close();
-          scheduleReconnect();
-        }
-      });
-    }
-
-    // Ping the socket and reconnect if no pong lands within pongTimeoutMs. A dead or
-    // closed socket reconnects immediately; a live one just confirms liveness.
-    const probeConnection = (pongTimeoutMs: number) => {
-      if (document.visibilityState === 'hidden') {
-        return;
-      }
-
-      const socket = socketRef.current;
-      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
-        scheduleReconnect();
-        return;
-      }
-
-      if (socket.readyState !== WebSocket.OPEN) {
-        return;
-      }
-
-      if (pongTimer) {
-        return;
-      }
-
-      try {
-        socket.send(encodeTerminalClientMessage({ type: 'ping' }));
-      } catch {
-        socketRef.current = null;
-        closeInputSocket();
-        socket.close();
-        scheduleReconnect();
-        return;
-      }
-
-      pongTimer = window.setTimeout(() => {
-        if (socketRef.current !== socket) {
-          return;
-        }
-
-        pongTimer = 0;
-        socketRef.current = null;
-        closeInputSocket();
-        socket.close();
-        scheduleReconnect();
-      }, pongTimeoutMs);
-
-      const inputSocket = inputSocketRef.current;
-      if (terminalReadyRef.current && inputSocket?.readyState === WebSocket.OPEN && !inputPongTimer) {
-        try {
-          inputSocket.send(encodeTerminalClientMessage({ type: 'ping' }));
-          inputPongTimer = window.setTimeout(() => {
-            inputPongTimer = 0;
-            if (inputSocketRef.current === inputSocket) {
-              closeInputSocket();
-              socket.close();
-            }
-          }, pongTimeoutMs);
-        } catch {
-          closeInputSocket();
-          socket.close();
-        }
-      }
-    };
-
-    // The user just came back to the tab: reconnect promptly (skip the backoff ramp)
-    // and use the tight pong window since a slept socket is usually already dead.
-    const probeConnectionAfterResume = () => {
-      if (document.visibilityState === 'hidden') {
-        return;
-      }
-      const socket = socketRef.current;
-      reconnectAttempts = 0;
-
-      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
-        clearReconnectTimer();
-        connect();
-        return;
-      }
-
-      probeConnection(TERMINAL_RESUME_PONG_TIMEOUT_MS);
-    };
-
-    document.addEventListener('visibilitychange', probeConnectionAfterResume);
-    window.addEventListener('focus', probeConnectionAfterResume);
-    window.addEventListener('online', probeConnectionAfterResume);
-    // Passive heartbeat: catches a silently dropped socket while the tab stays open.
-    heartbeatTimer = window.setInterval(
-      () => probeConnection(TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS),
-      TERMINAL_HEARTBEAT_INTERVAL_MS,
-    );
-    connect();
-
+    const connection = connectTerminal({
+      terminal, tabId: tab.id, authToken, onStatusChange,
+      beforeInit: fitAndResize, afterInit: resizeAfterLayoutSettles,
+      onReady() { updateScrollbackAffordance(); resizeAfterLayoutSettles(); forceFullRefresh(); },
+      onSessionRebuilt: setSessionRebuiltNoticeVisible,
+    });
+    connectionRef.current = connection;
+    const sendInput = connection.sendInput;
     const dataSubscription = terminal.onData(sendInput);
     const titleSubscription = terminal.onTitleChange((title) => {
       onTitleChange(tab.id, title);
@@ -998,40 +177,22 @@ export default function TerminalPane({
 
     return () => {
       disposed = true;
-      terminalReadyRef.current = false;
-      closeInputSocket();
+      connection.dispose();
       clearResizeTimers();
-      clearReconnectTimer();
-      clearPongTimer();
-      if (heartbeatTimer) {
-        window.clearInterval(heartbeatTimer);
-        heartbeatTimer = 0;
-      }
-      clearTerminalResyncTimer();
       clearScreenTransform();
       dataSubscription.dispose();
       titleSubscription.dispose();
       scrollSubscription.dispose();
       writeParsedSubscription.dispose();
       resizeSubscription.dispose();
-      ansiModeReportGuard.dispose();
-      privateModeReportGuard.dispose();
-      document.removeEventListener('visibilitychange', probeConnectionAfterResume);
-      window.removeEventListener('focus', probeConnectionAfterResume);
-      window.removeEventListener('online', probeConnectionAfterResume);
-      clearConnectionTimer();
+      modeReports.dispose();
       resizeObserver.disconnect();
-      socketRef.current?.close();
-      webglContextLoss?.dispose();
+      renderer.dispose();
       terminal.dispose();
-      socketRef.current = null;
+      connectionRef.current = null;
       fitAddonRef.current = null;
       terminalRef.current = null;
-      // The cached nodes belong to the disposed terminal, and the affordance state
-      // must not leak into the next one or its first toggle would be skipped.
-      screenElementRef.current = null;
-      viewportElementRef.current = null;
-      hasScrollbackRef.current = false;
+      resetLayout();
     };
   }, [
     clearResizeTimers,
@@ -1043,7 +204,7 @@ export default function TerminalPane({
     resizeAfterLayoutSettles,
     resizeDuringDrag,
     forceFullRefresh,
-    sendInput,
+    resetLayout,
     updateScrollbackAffordance,
     authToken,
     tab.id,

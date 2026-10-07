@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { readTerminalSource } from './test-support/read-source.js';
 import fs from 'node:fs';
 import { test } from 'node:test';
 
-const source = fs.readFileSync(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+const source = readTerminalSource();
 const styles = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 const themeSource = fs.readFileSync(new URL('./themes.ts', import.meta.url), 'utf8');
 
@@ -143,7 +144,7 @@ test('terminal output and scroll events refresh without blocking later frames', 
   assert.equal(source.includes('scheduleRenderRefresh'), false);
   // Forced on reconnect replay, on every output write, and on terminal change events
   // (onScroll/onWriteParsed/onResize) — the paths where xterm issues no full refresh.
-  assert.match(source, /resizeAfterLayoutSettles\(\);\s+forceFullRefresh\(\);\s+return;/);
+  assert.match(source, /onReady\(\) \{ updateScrollbackAffordance\(\); resizeAfterLayoutSettles\(\); forceFullRefresh\(\); \}/);
   assert.match(source, /const writeTerminalData = \(data: string\) => \{/);
   assert.match(source, /terminal\.write\(data\)/);
   assert.doesNotMatch(source, /new Promise<void>/);
