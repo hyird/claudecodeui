@@ -194,10 +194,13 @@ class FakeTerminal {
   rows = 24;
   readonly options: Record<string, unknown>;
   readonly buffer = { active: { baseY: 0, viewportY: 0, type: 'normal' } };
+  readonly modes = { mouseTrackingMode: 'none' };
   readonly parser = { registerCsiHandler: () => ({ dispose() {} }) };
   readonly element = makeElement().element;
   readonly writes: string[] = [];
   private dataListener: ((data: string) => void) | undefined;
+  private parsedListener: (() => void) | undefined;
+  wheelHandler?: (event: { preventDefault(): void; stopPropagation(): void }) => boolean;
   disposed = false;
   refreshCalls = 0;
 
@@ -208,7 +211,7 @@ class FakeTerminal {
   loadAddon(addon: { activate?: (terminal: FakeTerminal) => void }) { addon.activate?.(this); }
   open() {}
   attachCustomKeyEventHandler() {}
-  attachCustomWheelEventHandler() {}
+  attachCustomWheelEventHandler(handler: typeof this.wheelHandler) { this.wheelHandler = handler; }
   onData(listener: (data: string) => void) {
     this.dataListener = listener;
     return {
@@ -222,7 +225,8 @@ class FakeTerminal {
   emitData(data: string) { this.dataListener?.(data); }
   onTitleChange() { return { dispose() {} }; }
   onScroll() { return { dispose() {} }; }
-  onWriteParsed() { return { dispose() {} }; }
+  onWriteParsed(listener: () => void) { this.parsedListener = listener; return { dispose: () => { this.parsedListener = undefined; } }; }
+  emitParsed() { this.parsedListener?.(); }
   onResize() { return { dispose() {} }; }
   writeln() {}
   write(data: string) { this.writes.push(data); }
@@ -641,6 +645,36 @@ describe('runtime socket recovery', () => {
 });
 
 describe('terminal renderer recovery', () => {
+  test('alternate-screen animation parses only dirty rows instead of forcing a full refresh', () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const terminal = harness.terminalInstances[0];
+    terminal.buffer.active.type = 'alternate';
+    const before = terminal.refreshCalls;
+    for (let frame = 0; frame < 20; frame++) terminal.emitParsed();
+    expect(terminal.refreshCalls).toBe(before);
+    terminal.buffer.active.baseY = 20;
+    terminal.buffer.active.viewportY = 10;
+    terminal.emitParsed();
+    expect(terminal.refreshCalls).toBeGreaterThan(before);
+    cleanup();
+  });
+
+  test('mouse capture passes wheel events to the application even with zero local scrollback', () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const terminal = harness.terminalInstances[0];
+    let blocked = false;
+    const event = { preventDefault() { blocked = true; }, stopPropagation() {} };
+    expect(terminal.wheelHandler?.(event)).toBe(false);
+    expect(blocked).toBe(true);
+    terminal.modes.mouseTrackingMode = 'any';
+    blocked = false;
+    expect(terminal.wheelHandler?.(event)).toBe(true);
+    expect(blocked).toBe(false);
+    cleanup();
+  });
+
   test('downloaded terminal fonts redraw the existing renderer without reconnecting', async () => {
     const harness = createHarness();
     let releaseFonts!: () => void;

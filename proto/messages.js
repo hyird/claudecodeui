@@ -1073,6 +1073,253 @@ export const cloudcli = $root.cloudcli = (() => {
         return TerminalClose;
     })();
 
+    cloudcli.TerminalViewportRequest = (function() {
+
+        /**
+         * Properties of a TerminalViewportRequest.
+         * @typedef {Object} cloudcli.TerminalViewportRequest.$Properties
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+
+        /**
+         * Properties of a TerminalViewportRequest.
+         * @memberof cloudcli
+         * @interface ITerminalViewportRequest
+         * @augments cloudcli.TerminalViewportRequest.$Properties
+         * @deprecated Use cloudcli.TerminalViewportRequest.$Properties instead.
+         */
+
+        /**
+         * Shape of a TerminalViewportRequest.
+         * @typedef {cloudcli.TerminalViewportRequest.$Properties} cloudcli.TerminalViewportRequest.$Shape
+         */
+
+        /**
+         * Constructs a new TerminalViewportRequest.
+         * @memberof cloudcli
+         * @classdesc Represents a TerminalViewportRequest.
+         * @constructor
+         * @param {cloudcli.TerminalViewportRequest.$Properties=} [properties] Properties to set
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+        const TerminalViewportRequest = function (properties) {
+            if (properties)
+                for (let keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                    if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                        this[keys[i]] = properties[keys[i]];
+        };
+
+        /**
+         * Encodes the specified TerminalViewportRequest message. Does not implicitly {@link cloudcli.TerminalViewportRequest.verify|verify} messages.
+         * @function encode
+         * @memberof cloudcli.TerminalViewportRequest
+         * @static
+         * @param {cloudcli.TerminalViewportRequest.$Properties} message TerminalViewportRequest message or plain object to encode
+         * @param {$protobuf.Writer} [writer] Writer to encode to
+         * @returns {$protobuf.Writer} Writer
+         */
+        TerminalViewportRequest.encode = function (message, writer, _depth) {
+            if (!writer)
+                writer = $Writer.create();
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $util.recursionLimit)
+                throw $Error("max depth exceeded");
+            if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                for (let i = 0; i < message.$unknowns.length; ++i)
+                    writer.raw(message.$unknowns[i]);
+            return writer;
+        };
+
+        /**
+         * Decodes a TerminalViewportRequest message from the specified reader or buffer.
+         * @function decode
+         * @memberof cloudcli.TerminalViewportRequest
+         * @static
+         * @param {$protobuf.Reader|Uint8Array} reader Reader or buffer to decode from
+         * @param {number} [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalViewportRequest & cloudcli.TerminalViewportRequest.$Shape} TerminalViewportRequest
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        TerminalViewportRequest.decode = function (reader, length, _end, _depth, _target) {
+            if (!(reader instanceof $Reader))
+                reader = $Reader.create(reader);
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $Reader.recursionLimit)
+                throw $Error("max depth exceeded");
+            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.TerminalViewportRequest();
+            while (reader.pos < end) {
+                let start = reader.pos;
+                let tag = reader.tag();
+                if (tag === _end) {
+                    _end = $undefined;
+                    break;
+                }
+                reader.skipType(tag & 7, _depth, tag);
+                if (!reader.discardUnknown) {
+                    $util.makeProp(message, "$unknowns", false);
+                    (message.$unknowns || (message.$unknowns = [])).push(reader.raw(start, reader.pos));
+                }
+            }
+            if (_end !== $undefined)
+                throw $Error("missing end group");
+            return message;
+        };
+
+        /**
+         * Gets the type url for TerminalViewportRequest
+         * @function getTypeUrl
+         * @memberof cloudcli.TerminalViewportRequest
+         * @static
+         * @param {string} [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns {string} The type url
+         */
+        TerminalViewportRequest.getTypeUrl = function(prefix) {
+            if (prefix === $undefined)
+                prefix = "type.googleapis.com";
+            return prefix + "/cloudcli.TerminalViewportRequest";
+        };
+
+        return TerminalViewportRequest;
+    })();
+
+    cloudcli.TerminalScroll = (function() {
+
+        /**
+         * Properties of a TerminalScroll.
+         * @typedef {Object} cloudcli.TerminalScroll.$Properties
+         * @property {number|null} [offset] TerminalScroll offset
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+
+        /**
+         * Properties of a TerminalScroll.
+         * @memberof cloudcli
+         * @interface ITerminalScroll
+         * @augments cloudcli.TerminalScroll.$Properties
+         * @deprecated Use cloudcli.TerminalScroll.$Properties instead.
+         */
+
+        /**
+         * Shape of a TerminalScroll.
+         * @typedef {cloudcli.TerminalScroll.$Properties} cloudcli.TerminalScroll.$Shape
+         */
+
+        /**
+         * Constructs a new TerminalScroll.
+         * @memberof cloudcli
+         * @classdesc Represents a TerminalScroll.
+         * @constructor
+         * @param {cloudcli.TerminalScroll.$Properties=} [properties] Properties to set
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+        const TerminalScroll = function (properties) {
+            if (properties)
+                for (let keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                    if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                        this[keys[i]] = properties[keys[i]];
+        };
+
+        /**
+         * TerminalScroll offset.
+         * @member {number} offset
+         * @memberof cloudcli.TerminalScroll
+         * @instance
+         */
+        TerminalScroll.prototype.offset = 0;
+
+        /**
+         * Encodes the specified TerminalScroll message. Does not implicitly {@link cloudcli.TerminalScroll.verify|verify} messages.
+         * @function encode
+         * @memberof cloudcli.TerminalScroll
+         * @static
+         * @param {cloudcli.TerminalScroll.$Properties} message TerminalScroll message or plain object to encode
+         * @param {$protobuf.Writer} [writer] Writer to encode to
+         * @returns {$protobuf.Writer} Writer
+         */
+        TerminalScroll.encode = function (message, writer, _depth) {
+            if (!writer)
+                writer = $Writer.create();
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $util.recursionLimit)
+                throw $Error("max depth exceeded");
+            if (message.offset != null && $Object.hasOwnProperty.call(message, "offset") && message.offset !== 0)
+                writer.uint32(/* id 1, wireType 0 =*/8).uint32(message.offset);
+            if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                for (let i = 0; i < message.$unknowns.length; ++i)
+                    writer.raw(message.$unknowns[i]);
+            return writer;
+        };
+
+        /**
+         * Decodes a TerminalScroll message from the specified reader or buffer.
+         * @function decode
+         * @memberof cloudcli.TerminalScroll
+         * @static
+         * @param {$protobuf.Reader|Uint8Array} reader Reader or buffer to decode from
+         * @param {number} [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalScroll & cloudcli.TerminalScroll.$Shape} TerminalScroll
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        TerminalScroll.decode = function (reader, length, _end, _depth, _target) {
+            if (!(reader instanceof $Reader))
+                reader = $Reader.create(reader);
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $Reader.recursionLimit)
+                throw $Error("max depth exceeded");
+            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.TerminalScroll(), value;
+            while (reader.pos < end) {
+                let start = reader.pos;
+                let tag = reader.tag();
+                if (tag === _end) {
+                    _end = $undefined;
+                    break;
+                }
+                let wireType = tag & 7;
+                switch (tag >>>= 3) {
+                case 1: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.offset = value;
+                        else
+                            delete message.offset;
+                        continue;
+                    }
+                }
+                reader.skipType(wireType, _depth, tag);
+                if (!reader.discardUnknown) {
+                    $util.makeProp(message, "$unknowns", false);
+                    (message.$unknowns || (message.$unknowns = [])).push(reader.raw(start, reader.pos));
+                }
+            }
+            if (_end !== $undefined)
+                throw $Error("missing end group");
+            return message;
+        };
+
+        /**
+         * Gets the type url for TerminalScroll
+         * @function getTypeUrl
+         * @memberof cloudcli.TerminalScroll
+         * @static
+         * @param {string} [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns {string} The type url
+         */
+        TerminalScroll.getTypeUrl = function(prefix) {
+            if (prefix === $undefined)
+                prefix = "type.googleapis.com";
+            return prefix + "/cloudcli.TerminalScroll";
+        };
+
+        return TerminalScroll;
+    })();
+
     cloudcli.TerminalClientMessage = (function() {
 
         /**
@@ -1083,7 +1330,9 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {cloudcli.TerminalResize.$Properties|null} [resize] TerminalClientMessage resize
          * @property {cloudcli.TerminalClose.$Properties|null} [close] TerminalClientMessage close
          * @property {cloudcli.Ping.$Properties|null} [ping] TerminalClientMessage ping
-         * @property {"init"|"input"|"resize"|"close"|"ping"} [body] TerminalClientMessage body
+         * @property {cloudcli.TerminalViewportRequest.$Properties|null} [viewport] TerminalClientMessage viewport
+         * @property {cloudcli.TerminalScroll.$Properties|null} [scroll] TerminalClientMessage scroll
+         * @property {"init"|"input"|"resize"|"close"|"ping"|"viewport"|"scroll"} [body] TerminalClientMessage body
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -1103,9 +1352,11 @@ export const cloudcli = $root.cloudcli = (() => {
          *   resize?: cloudcli.TerminalResize.$Shape|null;
          *   close?: cloudcli.TerminalClose.$Shape|null;
          *   ping?: cloudcli.Ping.$Shape|null;
+         *   viewport?: cloudcli.TerminalViewportRequest.$Shape|null;
+         *   scroll?: cloudcli.TerminalScroll.$Shape|null;
          *   $unknowns?: Array.<Uint8Array>;
          * } & (
-         *   ({ body?: undefined; init?: null; input?: null; resize?: null; close?: null; ping?: null }|{ body?: "init"; init: cloudcli.TerminalInit.$Shape; input?: null; resize?: null; close?: null; ping?: null }|{ body?: "input"; init?: null; input: cloudcli.TerminalInput.$Shape; resize?: null; close?: null; ping?: null }|{ body?: "resize"; init?: null; input?: null; resize: cloudcli.TerminalResize.$Shape; close?: null; ping?: null }|{ body?: "close"; init?: null; input?: null; resize?: null; close: cloudcli.TerminalClose.$Shape; ping?: null }|{ body?: "ping"; init?: null; input?: null; resize?: null; close?: null; ping: cloudcli.Ping.$Shape })
+         *   ({ body?: undefined; init?: null; input?: null; resize?: null; close?: null; ping?: null; viewport?: null; scroll?: null }|{ body?: "init"; init: cloudcli.TerminalInit.$Shape; input?: null; resize?: null; close?: null; ping?: null; viewport?: null; scroll?: null }|{ body?: "input"; init?: null; input: cloudcli.TerminalInput.$Shape; resize?: null; close?: null; ping?: null; viewport?: null; scroll?: null }|{ body?: "resize"; init?: null; input?: null; resize: cloudcli.TerminalResize.$Shape; close?: null; ping?: null; viewport?: null; scroll?: null }|{ body?: "close"; init?: null; input?: null; resize?: null; close: cloudcli.TerminalClose.$Shape; ping?: null; viewport?: null; scroll?: null }|{ body?: "ping"; init?: null; input?: null; resize?: null; close?: null; ping: cloudcli.Ping.$Shape; viewport?: null; scroll?: null }|{ body?: "viewport"; init?: null; input?: null; resize?: null; close?: null; ping?: null; viewport: cloudcli.TerminalViewportRequest.$Shape; scroll?: null }|{ body?: "scroll"; init?: null; input?: null; resize?: null; close?: null; ping?: null; viewport?: null; scroll: cloudcli.TerminalScroll.$Shape })
          * )} cloudcli.TerminalClientMessage.$Shape
          */
 
@@ -1164,17 +1415,33 @@ export const cloudcli = $root.cloudcli = (() => {
          */
         TerminalClientMessage.prototype.ping = null;
 
+        /**
+         * TerminalClientMessage viewport.
+         * @member {cloudcli.TerminalViewportRequest.$Properties|null|undefined} viewport
+         * @memberof cloudcli.TerminalClientMessage
+         * @instance
+         */
+        TerminalClientMessage.prototype.viewport = null;
+
+        /**
+         * TerminalClientMessage scroll.
+         * @member {cloudcli.TerminalScroll.$Properties|null|undefined} scroll
+         * @memberof cloudcli.TerminalClientMessage
+         * @instance
+         */
+        TerminalClientMessage.prototype.scroll = null;
+
         // OneOf field names bound to virtual getters and setters
         let $oneOfFields;
 
         /**
          * TerminalClientMessage body.
-         * @member {"init"|"input"|"resize"|"close"|"ping"|undefined} body
+         * @member {"init"|"input"|"resize"|"close"|"ping"|"viewport"|"scroll"|undefined} body
          * @memberof cloudcli.TerminalClientMessage
          * @instance
          */
         $Object.defineProperty(TerminalClientMessage.prototype, "body", {
-            get: $util.oneOfGetter($oneOfFields = ["init", "input", "resize", "close", "ping"]),
+            get: $util.oneOfGetter($oneOfFields = ["init", "input", "resize", "close", "ping", "viewport", "scroll"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -1204,6 +1471,10 @@ export const cloudcli = $root.cloudcli = (() => {
                 $root.cloudcli.TerminalClose.encode(message.close, writer.uint32(/* id 4, wireType 2 =*/34).fork(), _depth + 1).ldelim();
             if (message.ping != null && $Object.hasOwnProperty.call(message, "ping"))
                 $root.cloudcli.Ping.encode(message.ping, writer.uint32(/* id 5, wireType 2 =*/42).fork(), _depth + 1).ldelim();
+            if (message.viewport != null && $Object.hasOwnProperty.call(message, "viewport"))
+                $root.cloudcli.TerminalViewportRequest.encode(message.viewport, writer.uint32(/* id 6, wireType 2 =*/50).fork(), _depth + 1).ldelim();
+            if (message.scroll != null && $Object.hasOwnProperty.call(message, "scroll"))
+                $root.cloudcli.TerminalScroll.encode(message.scroll, writer.uint32(/* id 7, wireType 2 =*/58).fork(), _depth + 1).ldelim();
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -1271,6 +1542,20 @@ export const cloudcli = $root.cloudcli = (() => {
                             break;
                         message.ping = $root.cloudcli.Ping.decode(reader, reader.uint32(), $undefined, _depth + 1, message.ping);
                         message.body = "ping";
+                        continue;
+                    }
+                case 6: {
+                        if (wireType !== 2)
+                            break;
+                        message.viewport = $root.cloudcli.TerminalViewportRequest.decode(reader, reader.uint32(), $undefined, _depth + 1, message.viewport);
+                        message.body = "viewport";
+                        continue;
+                    }
+                case 7: {
+                        if (wireType !== 2)
+                            break;
+                        message.scroll = $root.cloudcli.TerminalScroll.decode(reader, reader.uint32(), $undefined, _depth + 1, message.scroll);
+                        message.body = "scroll";
                         continue;
                     }
                 }
@@ -1982,6 +2267,201 @@ export const cloudcli = $root.cloudcli = (() => {
         return TerminalInputAck;
     })();
 
+    cloudcli.TerminalViewport = (function() {
+
+        /**
+         * Properties of a TerminalViewport.
+         * @typedef {Object} cloudcli.TerminalViewport.$Properties
+         * @property {number|null} [historyLines] TerminalViewport historyLines
+         * @property {number|null} [offset] TerminalViewport offset
+         * @property {number|null} [rows] TerminalViewport rows
+         * @property {boolean|null} [persistent] TerminalViewport persistent
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+
+        /**
+         * Properties of a TerminalViewport.
+         * @memberof cloudcli
+         * @interface ITerminalViewport
+         * @augments cloudcli.TerminalViewport.$Properties
+         * @deprecated Use cloudcli.TerminalViewport.$Properties instead.
+         */
+
+        /**
+         * Shape of a TerminalViewport.
+         * @typedef {cloudcli.TerminalViewport.$Properties} cloudcli.TerminalViewport.$Shape
+         */
+
+        /**
+         * Constructs a new TerminalViewport.
+         * @memberof cloudcli
+         * @classdesc Represents a TerminalViewport.
+         * @constructor
+         * @param {cloudcli.TerminalViewport.$Properties=} [properties] Properties to set
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+        const TerminalViewport = function (properties) {
+            if (properties)
+                for (let keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                    if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                        this[keys[i]] = properties[keys[i]];
+        };
+
+        /**
+         * TerminalViewport historyLines.
+         * @member {number} historyLines
+         * @memberof cloudcli.TerminalViewport
+         * @instance
+         */
+        TerminalViewport.prototype.historyLines = 0;
+
+        /**
+         * TerminalViewport offset.
+         * @member {number} offset
+         * @memberof cloudcli.TerminalViewport
+         * @instance
+         */
+        TerminalViewport.prototype.offset = 0;
+
+        /**
+         * TerminalViewport rows.
+         * @member {number} rows
+         * @memberof cloudcli.TerminalViewport
+         * @instance
+         */
+        TerminalViewport.prototype.rows = 0;
+
+        /**
+         * TerminalViewport persistent.
+         * @member {boolean} persistent
+         * @memberof cloudcli.TerminalViewport
+         * @instance
+         */
+        TerminalViewport.prototype.persistent = false;
+
+        /**
+         * Encodes the specified TerminalViewport message. Does not implicitly {@link cloudcli.TerminalViewport.verify|verify} messages.
+         * @function encode
+         * @memberof cloudcli.TerminalViewport
+         * @static
+         * @param {cloudcli.TerminalViewport.$Properties} message TerminalViewport message or plain object to encode
+         * @param {$protobuf.Writer} [writer] Writer to encode to
+         * @returns {$protobuf.Writer} Writer
+         */
+        TerminalViewport.encode = function (message, writer, _depth) {
+            if (!writer)
+                writer = $Writer.create();
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $util.recursionLimit)
+                throw $Error("max depth exceeded");
+            if (message.historyLines != null && $Object.hasOwnProperty.call(message, "historyLines") && message.historyLines !== 0)
+                writer.uint32(/* id 1, wireType 0 =*/8).uint32(message.historyLines);
+            if (message.offset != null && $Object.hasOwnProperty.call(message, "offset") && message.offset !== 0)
+                writer.uint32(/* id 2, wireType 0 =*/16).uint32(message.offset);
+            if (message.rows != null && $Object.hasOwnProperty.call(message, "rows") && message.rows !== 0)
+                writer.uint32(/* id 3, wireType 0 =*/24).uint32(message.rows);
+            if (message.persistent != null && $Object.hasOwnProperty.call(message, "persistent") && message.persistent !== false)
+                writer.uint32(/* id 4, wireType 0 =*/32).bool(message.persistent);
+            if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                for (let i = 0; i < message.$unknowns.length; ++i)
+                    writer.raw(message.$unknowns[i]);
+            return writer;
+        };
+
+        /**
+         * Decodes a TerminalViewport message from the specified reader or buffer.
+         * @function decode
+         * @memberof cloudcli.TerminalViewport
+         * @static
+         * @param {$protobuf.Reader|Uint8Array} reader Reader or buffer to decode from
+         * @param {number} [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalViewport & cloudcli.TerminalViewport.$Shape} TerminalViewport
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        TerminalViewport.decode = function (reader, length, _end, _depth, _target) {
+            if (!(reader instanceof $Reader))
+                reader = $Reader.create(reader);
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $Reader.recursionLimit)
+                throw $Error("max depth exceeded");
+            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.TerminalViewport(), value;
+            while (reader.pos < end) {
+                let start = reader.pos;
+                let tag = reader.tag();
+                if (tag === _end) {
+                    _end = $undefined;
+                    break;
+                }
+                let wireType = tag & 7;
+                switch (tag >>>= 3) {
+                case 1: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.historyLines = value;
+                        else
+                            delete message.historyLines;
+                        continue;
+                    }
+                case 2: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.offset = value;
+                        else
+                            delete message.offset;
+                        continue;
+                    }
+                case 3: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.rows = value;
+                        else
+                            delete message.rows;
+                        continue;
+                    }
+                case 4: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.bool())
+                            message.persistent = value;
+                        else
+                            delete message.persistent;
+                        continue;
+                    }
+                }
+                reader.skipType(wireType, _depth, tag);
+                if (!reader.discardUnknown) {
+                    $util.makeProp(message, "$unknowns", false);
+                    (message.$unknowns || (message.$unknowns = [])).push(reader.raw(start, reader.pos));
+                }
+            }
+            if (_end !== $undefined)
+                throw $Error("missing end group");
+            return message;
+        };
+
+        /**
+         * Gets the type url for TerminalViewport
+         * @function getTypeUrl
+         * @memberof cloudcli.TerminalViewport
+         * @static
+         * @param {string} [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns {string} The type url
+         */
+        TerminalViewport.getTypeUrl = function(prefix) {
+            if (prefix === $undefined)
+                prefix = "type.googleapis.com";
+            return prefix + "/cloudcli.TerminalViewport";
+        };
+
+        return TerminalViewport;
+    })();
+
     cloudcli.TerminalServerMessage = (function() {
 
         /**
@@ -1993,8 +2473,9 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {cloudcli.ErrorMessage.$Properties|null} [error] TerminalServerMessage error
          * @property {cloudcli.Pong.$Properties|null} [pong] TerminalServerMessage pong
          * @property {cloudcli.TerminalInputAck.$Properties|null} [inputAck] TerminalServerMessage inputAck
+         * @property {cloudcli.TerminalViewport.$Properties|null} [viewport] TerminalServerMessage viewport
          * @property {number|null} [seq] TerminalServerMessage seq
-         * @property {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"} [body] TerminalServerMessage body
+         * @property {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"|"viewport"} [body] TerminalServerMessage body
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -2015,10 +2496,11 @@ export const cloudcli = $root.cloudcli = (() => {
          *   error?: cloudcli.ErrorMessage.$Shape|null;
          *   pong?: cloudcli.Pong.$Shape|null;
          *   inputAck?: cloudcli.TerminalInputAck.$Shape|null;
+         *   viewport?: cloudcli.TerminalViewport.$Shape|null;
          *   seq?: number|null;
          *   $unknowns?: Array.<Uint8Array>;
          * } & (
-         *   ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape })
+         *   ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; viewport?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; viewport?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null; viewport?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null; viewport?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null; viewport?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null; viewport?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape; viewport?: null }|{ body?: "viewport"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; viewport: cloudcli.TerminalViewport.$Shape })
          * )} cloudcli.TerminalServerMessage.$Shape
          */
 
@@ -2086,6 +2568,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalServerMessage.prototype.inputAck = null;
 
         /**
+         * TerminalServerMessage viewport.
+         * @member {cloudcli.TerminalViewport.$Properties|null|undefined} viewport
+         * @memberof cloudcli.TerminalServerMessage
+         * @instance
+         */
+        TerminalServerMessage.prototype.viewport = null;
+
+        /**
          * TerminalServerMessage seq.
          * @member {number} seq
          * @memberof cloudcli.TerminalServerMessage
@@ -2098,12 +2588,12 @@ export const cloudcli = $root.cloudcli = (() => {
 
         /**
          * TerminalServerMessage body.
-         * @member {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"|undefined} body
+         * @member {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"|"viewport"|undefined} body
          * @memberof cloudcli.TerminalServerMessage
          * @instance
          */
         $Object.defineProperty(TerminalServerMessage.prototype, "body", {
-            get: $util.oneOfGetter($oneOfFields = ["ready", "output", "exit", "error", "pong", "inputAck"]),
+            get: $util.oneOfGetter($oneOfFields = ["ready", "output", "exit", "error", "pong", "inputAck", "viewport"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -2135,6 +2625,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 $root.cloudcli.Pong.encode(message.pong, writer.uint32(/* id 5, wireType 2 =*/42).fork(), _depth + 1).ldelim();
             if (message.inputAck != null && $Object.hasOwnProperty.call(message, "inputAck"))
                 $root.cloudcli.TerminalInputAck.encode(message.inputAck, writer.uint32(/* id 6, wireType 2 =*/50).fork(), _depth + 1).ldelim();
+            if (message.viewport != null && $Object.hasOwnProperty.call(message, "viewport"))
+                $root.cloudcli.TerminalViewport.encode(message.viewport, writer.uint32(/* id 7, wireType 2 =*/58).fork(), _depth + 1).ldelim();
             if (message.seq != null && $Object.hasOwnProperty.call(message, "seq") && message.seq !== 0)
                 writer.uint32(/* id 100, wireType 0 =*/800).uint32(message.seq);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
@@ -2211,6 +2703,13 @@ export const cloudcli = $root.cloudcli = (() => {
                             break;
                         message.inputAck = $root.cloudcli.TerminalInputAck.decode(reader, reader.uint32(), $undefined, _depth + 1, message.inputAck);
                         message.body = "inputAck";
+                        continue;
+                    }
+                case 7: {
+                        if (wireType !== 2)
+                            break;
+                        message.viewport = $root.cloudcli.TerminalViewport.decode(reader, reader.uint32(), $undefined, _depth + 1, message.viewport);
+                        message.body = "viewport";
                         continue;
                     }
                 case 100: {

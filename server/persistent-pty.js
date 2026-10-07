@@ -56,6 +56,29 @@ export function createPersistentPtyBackend({
     close(sessionId) {
       if (enabled) execute(['-N', 'kill-session', '-t', `=${nameFor(sessionId)}`]);
     },
+    viewport(sessionId) {
+      if (!enabled) return null;
+      const value = checked(['display-message', '-p', '-t', `=${nameFor(sessionId)}:`,
+        '#{history_size}:#{scroll_position}:#{pane_height}:#{alternate_on}:#{pane_in_mode}']);
+      const [historyLines, offset, rows, alternate, inMode] = value.split(':').map((part) => Number(part) || 0);
+      return { historyLines: alternate ? 0 : historyLines, offset, rows, inMode: inMode !== 0 };
+    },
+    scroll(sessionId, requestedOffset) {
+      const viewport = this.viewport(sessionId);
+      if (!viewport) return;
+      const offset = Math.min(viewport.historyLines, Math.max(0, Math.floor(requestedOffset)));
+      const target = `=${nameFor(sessionId)}:`;
+      if (offset === 0) {
+        if (viewport.inMode) checked(['send-keys', '-X', '-t', target, 'cancel']);
+        return;
+      }
+      const down = viewport.historyLines - offset;
+      checked([
+        'copy-mode', '-e', '-t', target,
+        ';', 'send-keys', '-X', '-t', target, 'history-top',
+        ...(down > 0 ? [';', 'send-keys', '-N', String(down), '-X', '-t', target, 'scroll-down'] : []),
+      ]);
+    },
     count() {
       return listSessionIds().length;
     },

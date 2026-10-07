@@ -489,6 +489,128 @@ export namespace cloudcli {
     }
 
     /**
+     * Properties of a TerminalViewportRequest.
+     * @deprecated Use cloudcli.TerminalViewportRequest.$Properties instead.
+     */
+    interface ITerminalViewportRequest extends cloudcli.TerminalViewportRequest.$Properties {
+    }
+
+    /** Represents a TerminalViewportRequest. */
+    class TerminalViewportRequest {
+
+        /**
+         * Constructs a new TerminalViewportRequest.
+         * @param [properties] Properties to set
+         */
+        constructor(properties?: cloudcli.TerminalViewportRequest.$Properties);
+
+        /** Unknown fields preserved while decoding when enabled */
+        $unknowns?: Uint8Array[];
+
+        /**
+         * Encodes the specified TerminalViewportRequest message. Does not implicitly {@link cloudcli.TerminalViewportRequest.verify|verify} messages.
+         * @param message TerminalViewportRequest message or plain object to encode
+         * @param [writer] Writer to encode to
+         * @returns Writer
+         */
+        static encode(message: cloudcli.TerminalViewportRequest.$Properties, writer?: $protobuf.Writer): $protobuf.Writer;
+
+        /**
+         * Decodes a TerminalViewportRequest message from the specified reader or buffer.
+         * @param reader Reader or buffer to decode from
+         * @param [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalViewportRequest & cloudcli.TerminalViewportRequest.$Shape} TerminalViewportRequest
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        static decode(reader: ($protobuf.Reader|Uint8Array), length?: number): cloudcli.TerminalViewportRequest & cloudcli.TerminalViewportRequest.$Shape;
+
+        /**
+         * Gets the type url for TerminalViewportRequest
+         * @param [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns The type url
+         */
+        static getTypeUrl(prefix?: string): string;
+    }
+
+    namespace TerminalViewportRequest {
+
+        /** Properties of a TerminalViewportRequest. */
+        interface $Properties {
+
+            /** Unknown fields preserved while decoding when enabled */
+            $unknowns?: Uint8Array[];
+        }
+
+        /** Shape of a TerminalViewportRequest. */
+        type $Shape = cloudcli.TerminalViewportRequest.$Properties;
+    }
+
+    /**
+     * Properties of a TerminalScroll.
+     * @deprecated Use cloudcli.TerminalScroll.$Properties instead.
+     */
+    interface ITerminalScroll extends cloudcli.TerminalScroll.$Properties {
+    }
+
+    /** Represents a TerminalScroll. */
+    class TerminalScroll {
+
+        /**
+         * Constructs a new TerminalScroll.
+         * @param [properties] Properties to set
+         */
+        constructor(properties?: cloudcli.TerminalScroll.$Properties);
+
+        /** Unknown fields preserved while decoding when enabled */
+        $unknowns?: Uint8Array[];
+
+        /** TerminalScroll offset. */
+        offset: number;
+
+        /**
+         * Encodes the specified TerminalScroll message. Does not implicitly {@link cloudcli.TerminalScroll.verify|verify} messages.
+         * @param message TerminalScroll message or plain object to encode
+         * @param [writer] Writer to encode to
+         * @returns Writer
+         */
+        static encode(message: cloudcli.TerminalScroll.$Properties, writer?: $protobuf.Writer): $protobuf.Writer;
+
+        /**
+         * Decodes a TerminalScroll message from the specified reader or buffer.
+         * @param reader Reader or buffer to decode from
+         * @param [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalScroll & cloudcli.TerminalScroll.$Shape} TerminalScroll
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        static decode(reader: ($protobuf.Reader|Uint8Array), length?: number): cloudcli.TerminalScroll & cloudcli.TerminalScroll.$Shape;
+
+        /**
+         * Gets the type url for TerminalScroll
+         * @param [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns The type url
+         */
+        static getTypeUrl(prefix?: string): string;
+    }
+
+    namespace TerminalScroll {
+
+        /** Properties of a TerminalScroll. */
+        interface $Properties {
+
+            /** TerminalScroll offset */
+            offset?: (number|null);
+
+            /** Unknown fields preserved while decoding when enabled */
+            $unknowns?: Uint8Array[];
+        }
+
+        /** Shape of a TerminalScroll. */
+        type $Shape = cloudcli.TerminalScroll.$Properties;
+    }
+
+    /**
      * Properties of a TerminalClientMessage.
      * @deprecated Use cloudcli.TerminalClientMessage.$Properties instead.
      */
@@ -522,8 +644,14 @@ export namespace cloudcli {
         /** TerminalClientMessage ping. */
         ping?: (cloudcli.Ping.$Properties|null);
 
+        /** TerminalClientMessage viewport. */
+        viewport?: (cloudcli.TerminalViewportRequest.$Properties|null);
+
+        /** TerminalClientMessage scroll. */
+        scroll?: (cloudcli.TerminalScroll.$Properties|null);
+
         /** TerminalClientMessage body. */
-        body?: ("init"|"input"|"resize"|"close"|"ping");
+        body?: ("init"|"input"|"resize"|"close"|"ping"|"viewport"|"scroll");
 
         /**
          * Encodes the specified TerminalClientMessage message. Does not implicitly {@link cloudcli.TerminalClientMessage.verify|verify} messages.
@@ -571,8 +699,14 @@ export namespace cloudcli {
             /** TerminalClientMessage ping */
             ping?: (cloudcli.Ping.$Properties|null);
 
+            /** TerminalClientMessage viewport */
+            viewport?: (cloudcli.TerminalViewportRequest.$Properties|null);
+
+            /** TerminalClientMessage scroll */
+            scroll?: (cloudcli.TerminalScroll.$Properties|null);
+
             /** TerminalClientMessage body */
-            body?: ("init"|"input"|"resize"|"close"|"ping");
+            body?: ("init"|"input"|"resize"|"close"|"ping"|"viewport"|"scroll");
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -585,9 +719,11 @@ export namespace cloudcli {
           resize?: cloudcli.TerminalResize.$Shape|null;
           close?: cloudcli.TerminalClose.$Shape|null;
           ping?: cloudcli.Ping.$Shape|null;
+          viewport?: cloudcli.TerminalViewportRequest.$Shape|null;
+          scroll?: cloudcli.TerminalScroll.$Shape|null;
           $unknowns?: Uint8Array[];
         } & (
-          ({ body?: undefined; init?: null; input?: null; resize?: null; close?: null; ping?: null }|{ body?: "init"; init: cloudcli.TerminalInit.$Shape; input?: null; resize?: null; close?: null; ping?: null }|{ body?: "input"; init?: null; input: cloudcli.TerminalInput.$Shape; resize?: null; close?: null; ping?: null }|{ body?: "resize"; init?: null; input?: null; resize: cloudcli.TerminalResize.$Shape; close?: null; ping?: null }|{ body?: "close"; init?: null; input?: null; resize?: null; close: cloudcli.TerminalClose.$Shape; ping?: null }|{ body?: "ping"; init?: null; input?: null; resize?: null; close?: null; ping: cloudcli.Ping.$Shape })
+          ({ body?: undefined; init?: null; input?: null; resize?: null; close?: null; ping?: null; viewport?: null; scroll?: null }|{ body?: "init"; init: cloudcli.TerminalInit.$Shape; input?: null; resize?: null; close?: null; ping?: null; viewport?: null; scroll?: null }|{ body?: "input"; init?: null; input: cloudcli.TerminalInput.$Shape; resize?: null; close?: null; ping?: null; viewport?: null; scroll?: null }|{ body?: "resize"; init?: null; input?: null; resize: cloudcli.TerminalResize.$Shape; close?: null; ping?: null; viewport?: null; scroll?: null }|{ body?: "close"; init?: null; input?: null; resize?: null; close: cloudcli.TerminalClose.$Shape; ping?: null; viewport?: null; scroll?: null }|{ body?: "ping"; init?: null; input?: null; resize?: null; close?: null; ping: cloudcli.Ping.$Shape; viewport?: null; scroll?: null }|{ body?: "viewport"; init?: null; input?: null; resize?: null; close?: null; ping?: null; viewport: cloudcli.TerminalViewportRequest.$Shape; scroll?: null }|{ body?: "scroll"; init?: null; input?: null; resize?: null; close?: null; ping?: null; viewport?: null; scroll: cloudcli.TerminalScroll.$Shape })
         );
     }
 
@@ -890,6 +1026,88 @@ export namespace cloudcli {
     }
 
     /**
+     * Properties of a TerminalViewport.
+     * @deprecated Use cloudcli.TerminalViewport.$Properties instead.
+     */
+    interface ITerminalViewport extends cloudcli.TerminalViewport.$Properties {
+    }
+
+    /** Represents a TerminalViewport. */
+    class TerminalViewport {
+
+        /**
+         * Constructs a new TerminalViewport.
+         * @param [properties] Properties to set
+         */
+        constructor(properties?: cloudcli.TerminalViewport.$Properties);
+
+        /** Unknown fields preserved while decoding when enabled */
+        $unknowns?: Uint8Array[];
+
+        /** TerminalViewport historyLines. */
+        historyLines: number;
+
+        /** TerminalViewport offset. */
+        offset: number;
+
+        /** TerminalViewport rows. */
+        rows: number;
+
+        /** TerminalViewport persistent. */
+        persistent: boolean;
+
+        /**
+         * Encodes the specified TerminalViewport message. Does not implicitly {@link cloudcli.TerminalViewport.verify|verify} messages.
+         * @param message TerminalViewport message or plain object to encode
+         * @param [writer] Writer to encode to
+         * @returns Writer
+         */
+        static encode(message: cloudcli.TerminalViewport.$Properties, writer?: $protobuf.Writer): $protobuf.Writer;
+
+        /**
+         * Decodes a TerminalViewport message from the specified reader or buffer.
+         * @param reader Reader or buffer to decode from
+         * @param [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalViewport & cloudcli.TerminalViewport.$Shape} TerminalViewport
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        static decode(reader: ($protobuf.Reader|Uint8Array), length?: number): cloudcli.TerminalViewport & cloudcli.TerminalViewport.$Shape;
+
+        /**
+         * Gets the type url for TerminalViewport
+         * @param [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns The type url
+         */
+        static getTypeUrl(prefix?: string): string;
+    }
+
+    namespace TerminalViewport {
+
+        /** Properties of a TerminalViewport. */
+        interface $Properties {
+
+            /** TerminalViewport historyLines */
+            historyLines?: (number|null);
+
+            /** TerminalViewport offset */
+            offset?: (number|null);
+
+            /** TerminalViewport rows */
+            rows?: (number|null);
+
+            /** TerminalViewport persistent */
+            persistent?: (boolean|null);
+
+            /** Unknown fields preserved while decoding when enabled */
+            $unknowns?: Uint8Array[];
+        }
+
+        /** Shape of a TerminalViewport. */
+        type $Shape = cloudcli.TerminalViewport.$Properties;
+    }
+
+    /**
      * Properties of a TerminalServerMessage.
      * @deprecated Use cloudcli.TerminalServerMessage.$Properties instead.
      */
@@ -926,11 +1144,14 @@ export namespace cloudcli {
         /** TerminalServerMessage inputAck. */
         inputAck?: (cloudcli.TerminalInputAck.$Properties|null);
 
+        /** TerminalServerMessage viewport. */
+        viewport?: (cloudcli.TerminalViewport.$Properties|null);
+
         /** TerminalServerMessage seq. */
         seq: number;
 
         /** TerminalServerMessage body. */
-        body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck");
+        body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck"|"viewport");
 
         /**
          * Encodes the specified TerminalServerMessage message. Does not implicitly {@link cloudcli.TerminalServerMessage.verify|verify} messages.
@@ -981,11 +1202,14 @@ export namespace cloudcli {
             /** TerminalServerMessage inputAck */
             inputAck?: (cloudcli.TerminalInputAck.$Properties|null);
 
+            /** TerminalServerMessage viewport */
+            viewport?: (cloudcli.TerminalViewport.$Properties|null);
+
             /** TerminalServerMessage seq */
             seq?: (number|null);
 
             /** TerminalServerMessage body */
-            body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck");
+            body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck"|"viewport");
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -999,10 +1223,11 @@ export namespace cloudcli {
           error?: cloudcli.ErrorMessage.$Shape|null;
           pong?: cloudcli.Pong.$Shape|null;
           inputAck?: cloudcli.TerminalInputAck.$Shape|null;
+          viewport?: cloudcli.TerminalViewport.$Shape|null;
           seq?: number|null;
           $unknowns?: Uint8Array[];
         } & (
-          ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape })
+          ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; viewport?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; viewport?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null; viewport?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null; viewport?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null; viewport?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null; viewport?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape; viewport?: null }|{ body?: "viewport"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; viewport: cloudcli.TerminalViewport.$Shape })
         );
     }
 

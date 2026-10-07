@@ -4,7 +4,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { Terminal } from '@xterm/xterm';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { terminalTheme } from './themes';
 import { copyToClipboard, readClipboardText } from './clipboard';
@@ -35,6 +35,7 @@ type TerminalDimensions = {
 
 const MIN_TERMINAL_COLS = 2;
 const MIN_TERMINAL_ROWS = 1;
+const EMPTY_REMOTE_VIEWPORT = { historyLines: 0, offset: 0, rows: 1, persistent: false };
 const TERMINAL_FONT_FAMILY = '"Maple Mono NF CN", "CaskaydiaMono Nerd Font", "JetBrainsMono Nerd Font", "Symbols Nerd Font Mono", Consolas, monospace';
 // Width of the scrollback scrollbar to reserve so the rightmost column is never
 // rendered beneath it. Match the xterm overlay's `overviewRuler.width` below.
@@ -126,6 +127,12 @@ export default function TerminalPane({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const inputSocketRef = useRef<WebSocket | null>(null);
+  const historyScrollbarRef = useRef<HTMLDivElement | null>(null);
+  const remoteViewportRef = useRef(EMPTY_REMOTE_VIEWPORT);
+  const programmedHistoryTopRef = useRef(0);
+  const scrollRequestTimerRef = useRef(0);
+  const pendingScrollOffsetRef = useRef(0);
+  const [remoteViewport, setRemoteViewport] = useState(EMPTY_REMOTE_VIEWPORT);
   const terminalReadyRef = useRef(false);
   const inputStateRef = useRef(getTerminalInputState(tab.id));
   const [sessionRebuiltNoticeVisible, setSessionRebuiltNoticeVisible] = useState(false);
@@ -139,6 +146,52 @@ export default function TerminalPane({
   const screenElementRef = useRef<HTMLElement | null>(null);
   const viewportElementRef = useRef<HTMLElement | null>(null);
   const hasScrollbackRef = useRef(false);
+
+  useLayoutEffect(() => {
+    const scrollbar = historyScrollbarRef.current;
+    if (!scrollbar) return;
+    const top = (remoteViewport.historyLines - remoteViewport.offset) * scrollbar.clientHeight / remoteViewport.rows;
+    programmedHistoryTopRef.current = top;
+    scrollbar.scrollTop = top;
+  }, [remoteViewport]);
+
+  const remoteHistoryVisible = remoteViewport.persistent && remoteViewport.historyLines > 0;
+  useLayoutEffect(() => {
+    const scrollbar = historyScrollbarRef.current;
+    if (!scrollbar) return;
+    const observer = new ResizeObserver(() => {
+      // A resized native scroll container can clamp scrollTop before the tmux
+      // geometry update arrives. Preserve the history offset instead of treating
+      // that clamp as a user drag back to the live screen.
+      window.clearTimeout(scrollRequestTimerRef.current);
+      scrollRequestTimerRef.current = 0;
+      const viewport = remoteViewportRef.current;
+      const top = (viewport.historyLines - viewport.offset) * scrollbar.clientHeight / viewport.rows;
+      programmedHistoryTopRef.current = top;
+      scrollbar.scrollTop = top;
+    });
+    observer.observe(scrollbar);
+    return () => observer.disconnect();
+  }, [remoteHistoryVisible]);
+
+  const scrollRemoteHistory = useCallback(() => {
+    const scrollbar = historyScrollbarRef.current;
+    const viewport = remoteViewportRef.current;
+    if (!scrollbar || !viewport.persistent
+      || Math.abs(scrollbar.scrollTop - programmedHistoryTopRef.current) < 1) return;
+    pendingScrollOffsetRef.current = Math.max(0, Math.min(viewport.historyLines,
+      Math.round(viewport.historyLines - scrollbar.scrollTop * viewport.rows / Math.max(1, scrollbar.clientHeight))));
+    if (scrollRequestTimerRef.current) return;
+    scrollRequestTimerRef.current = window.setTimeout(() => {
+      scrollRequestTimerRef.current = 0;
+      const socket = inputSocketRef.current;
+      if (terminalReadyRef.current && socket?.readyState === WebSocket.OPEN) {
+        try {
+          socket.send(encodeTerminalClientMessage({ type: 'scroll', offset: pendingScrollOffsetRef.current }));
+        } catch { socket.close(); }
+      }
+    }, 40);
+  }, []);
 
   // xterm builds .xterm-screen and .xterm-viewport once in terminal.open() and keeps
   // them for the terminal's lifetime, but the scrollback affordance runs off every
@@ -499,7 +552,7 @@ export default function TerminalPane({
       return true;
     });
     terminal.attachCustomWheelEventHandler((event) => {
-      const mouseTrackingEnabled = terminal.element?.classList.contains('enable-mouse-events') === true;
+      const mouseTrackingEnabled = terminal.modes.mouseTrackingMode !== 'none';
       if (mouseTrackingEnabled) {
         return true;
       }
@@ -658,10 +711,17 @@ export default function TerminalPane({
     let pongTimer = 0;
     let inputConnectionTimer = 0;
     let inputPongTimer = 0;
+    let viewportPollTimer = 0;
     let terminalMessageQueue = Promise.resolve();
 
     function closeInputSocket() {
       terminalReadyRef.current = false;
+      window.clearInterval(viewportPollTimer);
+      viewportPollTimer = 0;
+      window.clearTimeout(scrollRequestTimerRef.current);
+      scrollRequestTimerRef.current = 0;
+      remoteViewportRef.current = EMPTY_REMOTE_VIEWPORT;
+      if (!disposed) setRemoteViewport(EMPTY_REMOTE_VIEWPORT);
       window.clearTimeout(inputConnectionTimer);
       window.clearTimeout(inputPongTimer);
       inputConnectionTimer = 0;
@@ -718,8 +778,32 @@ export default function TerminalPane({
             inputSocket.send(encodeTerminalClientMessage({
               type: 'resize', cols: terminal.cols, rows: terminal.rows,
             }));
+            inputSocket.send(encodeTerminalClientMessage({ type: 'viewport' }));
             reconnectAttempts = 0;
             onStatusChange(tab.id, 'connected');
+          } else if (message.type === 'viewport') {
+            const historyLines = Math.max(0, Number(message.historyLines) || 0);
+            const viewport = {
+              persistent: message.persistent === true, historyLines,
+              offset: Math.min(historyLines, Math.max(0, Number(message.offset) || 0)),
+              rows: Math.max(1, Number(message.rows) || terminal.rows),
+            };
+            remoteViewportRef.current = viewport;
+            setRemoteViewport((previous) => (
+              previous.historyLines === viewport.historyLines && previous.offset === viewport.offset
+              && previous.rows === viewport.rows && previous.persistent === viewport.persistent
+                ? previous : viewport
+            ));
+            if (viewport.persistent && !viewportPollTimer) {
+              viewportPollTimer = window.setInterval(() => {
+                if (inputSocketRef.current !== inputSocket || document.visibilityState === 'hidden') return;
+                try { inputSocket.send(encodeTerminalClientMessage({ type: 'viewport' })); }
+                catch { failInputConnection(); }
+              }, 500);
+            } else if (!viewport.persistent) {
+              window.clearInterval(viewportPollTimer);
+              viewportPollTimer = 0;
+            }
           } else if (message.type === 'pong') {
             window.clearTimeout(inputPongTimer);
             inputPongTimer = 0;
@@ -977,7 +1061,7 @@ export default function TerminalPane({
       // viewport refresh here would repaint every row for every output batch.
       updateScrollbackAffordance();
       const buffer = terminal.buffer.active;
-      if (buffer.type === 'alternate' || buffer.viewportY !== buffer.baseY) {
+      if (buffer.viewportY !== buffer.baseY) {
         forceFullRefresh();
       }
     });
@@ -1072,7 +1156,24 @@ export default function TerminalPane({
 
   return (
     <div className="terminal-pane">
-      <div ref={containerRef} className="terminal-frame" />
+      <div id={`terminal-frame-${tab.id}`} ref={containerRef} className="terminal-frame" />
+      {remoteHistoryVisible && (
+        <div
+          ref={historyScrollbarRef}
+          className="terminal-history-scrollbar"
+          role="scrollbar"
+          tabIndex={0}
+          aria-label="终端历史滚动条"
+          aria-controls={`terminal-frame-${tab.id}`}
+          aria-orientation="vertical"
+          aria-valuemin={0}
+          aria-valuemax={remoteViewport.historyLines}
+          aria-valuenow={remoteViewport.historyLines - remoteViewport.offset}
+          onScroll={scrollRemoteHistory}
+        >
+          <div style={{ height: `${100 * (1 + remoteViewport.historyLines / remoteViewport.rows)}%`, width: 1 }} />
+        </div>
+      )}
       <div className="terminal-notices">
         {sessionRebuiltNoticeVisible && (
           <div className="terminal-session-notice" role="status" aria-live="polite" aria-atomic="true">

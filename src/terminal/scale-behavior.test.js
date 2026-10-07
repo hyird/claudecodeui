@@ -121,10 +121,10 @@ test('terminal wheel events are not converted to arrow keys without scrollback',
 });
 
 test('terminal wheel events pass through when mouse tracking is enabled', () => {
-  assert.match(source, /terminal\.element\?\.classList\.contains\('enable-mouse-events'\) === true/);
+  assert.match(source, /terminal\.modes\.mouseTrackingMode !== 'none'/);
   assert.match(source, /if \(mouseTrackingEnabled\) \{\s+return true;\s+\}/);
   assert.ok(
-    source.indexOf("classList.contains('enable-mouse-events')")
+    source.indexOf("terminal.modes.mouseTrackingMode !== 'none'")
       < source.indexOf('terminal.buffer.active.baseY <= 0'),
     'mouse tracking should be checked before the no-scrollback wheel fallback',
   );

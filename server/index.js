@@ -983,6 +983,22 @@ function handleTerminalMessage(ws, raw) {
     return;
   }
 
+  if (message.type === 'viewport' || message.type === 'scroll') {
+    try {
+      if (message.type === 'scroll') persistentPty.scroll(activeSession.id, readNumber(message.offset, 0));
+      const viewport = persistentPty.viewport(activeSession.id);
+      ws.send(encodeTerminalServerMessage({
+        type: 'viewport', persistent: !!viewport,
+        historyLines: viewport?.historyLines ?? 0,
+        offset: viewport?.offset ?? 0,
+        rows: viewport?.rows ?? activeSession.terminal.rows,
+      }));
+    } catch {
+      ws.send(encodeTerminalServerMessage({ type: 'viewport', persistent: false }));
+    }
+    return;
+  }
+
   if (message.type === 'close') {
     closeSession(activeSession.id);
     ws.data.activeSession = null;

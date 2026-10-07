@@ -90,6 +90,7 @@ for attempt in {1..40}; do
   sleep 0.1
 done
 sudo -n -u user tmux -L cloud-terminal -N show-options -s -v exit-empty >/dev/null
+sudo -n -u user tmux -L cloud-terminal -N source-file "${INSTALL_DIR}/current/tmux.conf"
 sudo -n systemctl enable "${SERVICE_NAME}" >/dev/null
 sudo -n systemctl restart "${SERVICE_NAME}"
 

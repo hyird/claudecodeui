@@ -1085,6 +1085,27 @@ button:focus-visible {
   background: transparent;
 }
 
+.terminal-history-scrollbar {
+  position: absolute;
+  top: 22px;
+  bottom: 24px;
+  right: 14px;
+  width: 10px;
+  z-index: 1;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(170, 184, 207, 0.55) transparent;
+}
+
+.terminal-history-scrollbar::-webkit-scrollbar { width: 8px; }
+.terminal-history-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.terminal-history-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(170, 184, 207, 0.55);
+  border-radius: 999px;
+}
+.terminal-history-scrollbar:focus-visible { outline: 1px solid var(--accent); }
+
 .terminal-notices {
   position: absolute;
   top: 18px;
@@ -1344,6 +1365,12 @@ button:focus-visible {
     /* Uniform ~10px inner margin on compact widths; right 6 + 4px scrollbar gutter = 10. */
     padding: 10px 6px 10px 10px;
     border-radius: var(--radius-md);
+  }
+  .terminal-history-scrollbar {
+    top: 16px;
+    bottom: 16px;
+    right: 8px;
+    width: 8px;
   }
 }
 

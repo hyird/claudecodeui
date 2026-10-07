@@ -131,6 +131,7 @@ for _ in $(seq 1 40); do
   sleep 0.1
 done
 runuser -u "${RUN_AS}" -- tmux -L cloud-terminal -N show-options -s -v exit-empty >/dev/null
+runuser -u "${RUN_AS}" -- tmux -L cloud-terminal -N source-file "${BASE}/current/tmux.conf"
 systemctl start "${SERVICE}"
 
 echo "--- waiting for health ---"

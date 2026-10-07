@@ -59,6 +59,10 @@ export function decodeTerminalClientMessage(raw) {
       return { type: 'close' };
     case 'ping':
       return { type: 'ping' };
+    case 'viewport':
+      return { type: 'viewport' };
+    case 'scroll':
+      return { type: 'scroll', offset: message.scroll.offset };
     default:
       return null;
   }
@@ -96,6 +100,14 @@ export function encodeTerminalServerMessage(message) {
       break;
     case 'input-ack':
       payload = { inputAck: { inputSeq: message.inputSeq ?? 0 } };
+      break;
+    case 'viewport':
+      payload = { viewport: {
+        historyLines: message.historyLines ?? 0,
+        offset: message.offset ?? 0,
+        rows: message.rows ?? 0,
+        persistent: message.persistent === true,
+      } };
       break;
     default:
       throw new Error(`Unknown terminal server message: ${message.type}`);
