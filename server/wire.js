@@ -60,9 +60,9 @@ export function decodeTerminalClientMessage(raw) {
     case 'ping':
       return { type: 'ping' };
     case 'viewport':
-      return { type: 'viewport' };
+      return { type: 'viewport', requestId: message.viewport.requestId };
     case 'scroll':
-      return { type: 'scroll', offset: message.scroll.offset };
+      return { type: 'scroll', offset: message.scroll.offset, requestId: message.scroll.requestId };
     default:
       return null;
   }
@@ -107,6 +107,7 @@ export function encodeTerminalServerMessage(message) {
         offset: message.offset ?? 0,
         rows: message.rows ?? 0,
         persistent: message.persistent === true,
+        requestId: message.requestId ?? 0,
       } };
       break;
     default:

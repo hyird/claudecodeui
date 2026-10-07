@@ -104,6 +104,25 @@ const available = process.platform !== 'win32' && spawnSync('tmux', ['-V']).stat
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 2, data: 'printf "CT_FINAL_%s\\n" "$CT_RESTART_COUNT"\r' } }).finish());
     await waitFor(() => tmux('capture-pane', '-p', '-t', sessionName).stdout.includes('CT_FINAL_1'));
     expect(tmux('display-message', '-p', '-t', sessionName, '#{pane_pid}').stdout.trim()).toBe(shellPid);
+
+    // Exercise the real split sockets after reconnect: scroll metadata must echo
+    // the newest request, output must continue, and returning to live exits copy mode.
+    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: {
+      inputSeq: 3, data: "printf 'scroll-row-%s\\n' {1..300}\r",
+    } }).finish());
+    await waitFor(() => Number(tmux('display-message', '-p', '-t', sessionName, '#{history_size}').stdout.trim()) >= 250);
+    const outputCount = restoredOutput.messages.length;
+    for (let requestId = 1; requestId <= 30; requestId++) {
+      restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ scroll: { offset: requestId * 3, requestId } }).finish());
+    }
+    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ ping: {} }).finish());
+    await waitFor(() => restoredInput.messages.some((message) => message.viewport?.requestId === 30));
+    expect(restoredInput.messages.find((message) => message.viewport?.requestId === 30).viewport.offset).toBe(90);
+    expect(restoredInput.messages.some((message) => message.body === 'pong')).toBe(true);
+    await waitFor(() => restoredOutput.messages.length > outputCount);
+    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ scroll: { offset: 0, requestId: 31 } }).finish());
+    await waitFor(() => restoredInput.messages.some((message) => message.viewport?.requestId === 31));
+    expect(tmux('display-message', '-p', '-t', sessionName, '#{pane_in_mode}').stdout.trim()).toBe('0');
   } finally {
     for (const ws of sockets) ws.close();
     await stopApplication();

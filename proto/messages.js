@@ -1078,6 +1078,7 @@ export const cloudcli = $root.cloudcli = (() => {
         /**
          * Properties of a TerminalViewportRequest.
          * @typedef {Object} cloudcli.TerminalViewportRequest.$Properties
+         * @property {number|null} [requestId] TerminalViewportRequest requestId
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -1110,6 +1111,14 @@ export const cloudcli = $root.cloudcli = (() => {
         };
 
         /**
+         * TerminalViewportRequest requestId.
+         * @member {number} requestId
+         * @memberof cloudcli.TerminalViewportRequest
+         * @instance
+         */
+        TerminalViewportRequest.prototype.requestId = 0;
+
+        /**
          * Encodes the specified TerminalViewportRequest message. Does not implicitly {@link cloudcli.TerminalViewportRequest.verify|verify} messages.
          * @function encode
          * @memberof cloudcli.TerminalViewportRequest
@@ -1125,6 +1134,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 _depth = 0;
             if (_depth > $util.recursionLimit)
                 throw $Error("max depth exceeded");
+            if (message.requestId != null && $Object.hasOwnProperty.call(message, "requestId") && message.requestId !== 0)
+                writer.uint32(/* id 1, wireType 0 =*/8).uint32(message.requestId);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -1149,7 +1160,7 @@ export const cloudcli = $root.cloudcli = (() => {
                 _depth = 0;
             if (_depth > $Reader.recursionLimit)
                 throw $Error("max depth exceeded");
-            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.TerminalViewportRequest();
+            let end = length === $undefined ? reader.len : reader.pos + length, message = _target || new $root.cloudcli.TerminalViewportRequest(), value;
             while (reader.pos < end) {
                 let start = reader.pos;
                 let tag = reader.tag();
@@ -1157,7 +1168,19 @@ export const cloudcli = $root.cloudcli = (() => {
                     _end = $undefined;
                     break;
                 }
-                reader.skipType(tag & 7, _depth, tag);
+                let wireType = tag & 7;
+                switch (tag >>>= 3) {
+                case 1: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.requestId = value;
+                        else
+                            delete message.requestId;
+                        continue;
+                    }
+                }
+                reader.skipType(wireType, _depth, tag);
                 if (!reader.discardUnknown) {
                     $util.makeProp(message, "$unknowns", false);
                     (message.$unknowns || (message.$unknowns = [])).push(reader.raw(start, reader.pos));
@@ -1191,6 +1214,7 @@ export const cloudcli = $root.cloudcli = (() => {
          * Properties of a TerminalScroll.
          * @typedef {Object} cloudcli.TerminalScroll.$Properties
          * @property {number|null} [offset] TerminalScroll offset
+         * @property {number|null} [requestId] TerminalScroll requestId
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -1231,6 +1255,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalScroll.prototype.offset = 0;
 
         /**
+         * TerminalScroll requestId.
+         * @member {number} requestId
+         * @memberof cloudcli.TerminalScroll
+         * @instance
+         */
+        TerminalScroll.prototype.requestId = 0;
+
+        /**
          * Encodes the specified TerminalScroll message. Does not implicitly {@link cloudcli.TerminalScroll.verify|verify} messages.
          * @function encode
          * @memberof cloudcli.TerminalScroll
@@ -1248,6 +1280,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 throw $Error("max depth exceeded");
             if (message.offset != null && $Object.hasOwnProperty.call(message, "offset") && message.offset !== 0)
                 writer.uint32(/* id 1, wireType 0 =*/8).uint32(message.offset);
+            if (message.requestId != null && $Object.hasOwnProperty.call(message, "requestId") && message.requestId !== 0)
+                writer.uint32(/* id 2, wireType 0 =*/16).uint32(message.requestId);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -1289,6 +1323,15 @@ export const cloudcli = $root.cloudcli = (() => {
                             message.offset = value;
                         else
                             delete message.offset;
+                        continue;
+                    }
+                case 2: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.requestId = value;
+                        else
+                            delete message.requestId;
                         continue;
                     }
                 }
@@ -2276,6 +2319,7 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {number|null} [offset] TerminalViewport offset
          * @property {number|null} [rows] TerminalViewport rows
          * @property {boolean|null} [persistent] TerminalViewport persistent
+         * @property {number|null} [requestId] TerminalViewport requestId
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -2340,6 +2384,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalViewport.prototype.persistent = false;
 
         /**
+         * TerminalViewport requestId.
+         * @member {number} requestId
+         * @memberof cloudcli.TerminalViewport
+         * @instance
+         */
+        TerminalViewport.prototype.requestId = 0;
+
+        /**
          * Encodes the specified TerminalViewport message. Does not implicitly {@link cloudcli.TerminalViewport.verify|verify} messages.
          * @function encode
          * @memberof cloudcli.TerminalViewport
@@ -2363,6 +2415,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 writer.uint32(/* id 3, wireType 0 =*/24).uint32(message.rows);
             if (message.persistent != null && $Object.hasOwnProperty.call(message, "persistent") && message.persistent !== false)
                 writer.uint32(/* id 4, wireType 0 =*/32).bool(message.persistent);
+            if (message.requestId != null && $Object.hasOwnProperty.call(message, "requestId") && message.requestId !== 0)
+                writer.uint32(/* id 5, wireType 0 =*/40).uint32(message.requestId);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -2431,6 +2485,15 @@ export const cloudcli = $root.cloudcli = (() => {
                             message.persistent = value;
                         else
                             delete message.persistent;
+                        continue;
+                    }
+                case 5: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.requestId = value;
+                        else
+                            delete message.requestId;
                         continue;
                     }
                 }

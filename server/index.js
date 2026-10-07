@@ -42,6 +42,7 @@ import {
   recordTerminalEvent,
 } from './terminal-stream.js';
 import { createPersistentPtyBackend } from './persistent-pty.js';
+import { createTerminalViewportController } from './terminal-viewport.js';
 import { UnicodeGraphemesAddon } from './unicode.js';
 import {
   readTerminalWorkspace, saveTerminalWorkspace, deleteTerminalWorkspace,
@@ -984,18 +985,14 @@ function handleTerminalMessage(ws, raw) {
   }
 
   if (message.type === 'viewport' || message.type === 'scroll') {
-    try {
-      if (message.type === 'scroll') persistentPty.scroll(activeSession.id, readNumber(message.offset, 0));
-      const viewport = persistentPty.viewport(activeSession.id);
-      ws.send(encodeTerminalServerMessage({
-        type: 'viewport', persistent: !!viewport,
-        historyLines: viewport?.historyLines ?? 0,
-        offset: viewport?.offset ?? 0,
-        rows: viewport?.rows ?? activeSession.terminal.rows,
-      }));
-    } catch {
-      ws.send(encodeTerminalServerMessage({ type: 'viewport', persistent: false }));
-    }
+    ws.data.viewportController ??= createTerminalViewportController({
+      backend: persistentPty, sessionId: activeSession.id,
+      isAttached: () => !activeSession.disposed && !activeSession.closed
+        && sessions.get(activeSession.id) === activeSession
+        && (ws.data.kind === 'terminal-input' ? activeSession.inputSocket : activeSession.socket) === ws,
+      send: (viewport) => ws.send(encodeTerminalServerMessage(viewport)),
+    });
+    ws.data.viewportController(message);
     return;
   }
 

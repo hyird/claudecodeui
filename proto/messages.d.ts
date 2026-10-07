@@ -507,6 +507,9 @@ export namespace cloudcli {
         /** Unknown fields preserved while decoding when enabled */
         $unknowns?: Uint8Array[];
 
+        /** TerminalViewportRequest requestId. */
+        requestId: number;
+
         /**
          * Encodes the specified TerminalViewportRequest message. Does not implicitly {@link cloudcli.TerminalViewportRequest.verify|verify} messages.
          * @param message TerminalViewportRequest message or plain object to encode
@@ -538,6 +541,9 @@ export namespace cloudcli {
         /** Properties of a TerminalViewportRequest. */
         interface $Properties {
 
+            /** TerminalViewportRequest requestId */
+            requestId?: (number|null);
+
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
         }
@@ -567,6 +573,9 @@ export namespace cloudcli {
 
         /** TerminalScroll offset. */
         offset: number;
+
+        /** TerminalScroll requestId. */
+        requestId: number;
 
         /**
          * Encodes the specified TerminalScroll message. Does not implicitly {@link cloudcli.TerminalScroll.verify|verify} messages.
@@ -601,6 +610,9 @@ export namespace cloudcli {
 
             /** TerminalScroll offset */
             offset?: (number|null);
+
+            /** TerminalScroll requestId */
+            requestId?: (number|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -1056,6 +1068,9 @@ export namespace cloudcli {
         /** TerminalViewport persistent. */
         persistent: boolean;
 
+        /** TerminalViewport requestId. */
+        requestId: number;
+
         /**
          * Encodes the specified TerminalViewport message. Does not implicitly {@link cloudcli.TerminalViewport.verify|verify} messages.
          * @param message TerminalViewport message or plain object to encode
@@ -1098,6 +1113,9 @@ export namespace cloudcli {
 
             /** TerminalViewport persistent */
             persistent?: (boolean|null);
+
+            /** TerminalViewport requestId */
+            requestId?: (number|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];

@@ -132,6 +132,10 @@ export default function TerminalPane({
   const programmedHistoryTopRef = useRef(0);
   const scrollRequestTimerRef = useRef(0);
   const pendingScrollOffsetRef = useRef(0);
+  const viewportRequestIdRef = useRef(0);
+  const latestScrollRequestIdRef = useRef(0);
+  const appliedViewportRequestIdRef = useRef(0);
+  const awaitingScrollRef = useRef(false);
   const [remoteViewport, setRemoteViewport] = useState(EMPTY_REMOTE_VIEWPORT);
   const terminalReadyRef = useRef(false);
   const inputStateRef = useRef(getTerminalInputState(tab.id));
@@ -149,8 +153,14 @@ export default function TerminalPane({
 
   useLayoutEffect(() => {
     const scrollbar = historyScrollbarRef.current;
-    if (!scrollbar) return;
+    if (!scrollbar || awaitingScrollRef.current || scrollRequestTimerRef.current) return;
     const top = (remoteViewport.historyLines - remoteViewport.offset) * scrollbar.clientHeight / remoteViewport.rows;
+    // A drag already at the acknowledged row owns its exact pixel position.
+    // Rounding it to a cell boundary on every reply makes the native thumb jump.
+    if (Math.abs(top - scrollbar.scrollTop) <= scrollbar.clientHeight / remoteViewport.rows / 2 + 1) {
+      programmedHistoryTopRef.current = scrollbar.scrollTop;
+      return;
+    }
     programmedHistoryTopRef.current = top;
     scrollbar.scrollTop = top;
   }, [remoteViewport]);
@@ -163,10 +173,9 @@ export default function TerminalPane({
       // A resized native scroll container can clamp scrollTop before the tmux
       // geometry update arrives. Preserve the history offset instead of treating
       // that clamp as a user drag back to the live screen.
-      window.clearTimeout(scrollRequestTimerRef.current);
-      scrollRequestTimerRef.current = 0;
       const viewport = remoteViewportRef.current;
-      const top = (viewport.historyLines - viewport.offset) * scrollbar.clientHeight / viewport.rows;
+      const offset = awaitingScrollRef.current ? pendingScrollOffsetRef.current : viewport.offset;
+      const top = (viewport.historyLines - offset) * scrollbar.clientHeight / viewport.rows;
       programmedHistoryTopRef.current = top;
       scrollbar.scrollTop = top;
     });
@@ -181,16 +190,20 @@ export default function TerminalPane({
       || Math.abs(scrollbar.scrollTop - programmedHistoryTopRef.current) < 1) return;
     pendingScrollOffsetRef.current = Math.max(0, Math.min(viewport.historyLines,
       Math.round(viewport.historyLines - scrollbar.scrollTop * viewport.rows / Math.max(1, scrollbar.clientHeight))));
+    programmedHistoryTopRef.current = scrollbar.scrollTop;
+    latestScrollRequestIdRef.current = ++viewportRequestIdRef.current;
+    awaitingScrollRef.current = true;
     if (scrollRequestTimerRef.current) return;
-    scrollRequestTimerRef.current = window.setTimeout(() => {
+    scrollRequestTimerRef.current = window.requestAnimationFrame(() => {
       scrollRequestTimerRef.current = 0;
       const socket = inputSocketRef.current;
       if (terminalReadyRef.current && socket?.readyState === WebSocket.OPEN) {
         try {
-          socket.send(encodeTerminalClientMessage({ type: 'scroll', offset: pendingScrollOffsetRef.current }));
+          socket.send(encodeTerminalClientMessage({ type: 'scroll', offset: pendingScrollOffsetRef.current,
+            requestId: latestScrollRequestIdRef.current }));
         } catch { socket.close(); }
       }
-    }, 40);
+    });
   }, []);
 
   // xterm builds .xterm-screen and .xterm-viewport once in terminal.open() and keeps
@@ -718,8 +731,12 @@ export default function TerminalPane({
       terminalReadyRef.current = false;
       window.clearInterval(viewportPollTimer);
       viewportPollTimer = 0;
-      window.clearTimeout(scrollRequestTimerRef.current);
+      window.cancelAnimationFrame(scrollRequestTimerRef.current);
       scrollRequestTimerRef.current = 0;
+      viewportRequestIdRef.current = 0;
+      latestScrollRequestIdRef.current = 0;
+      appliedViewportRequestIdRef.current = 0;
+      awaitingScrollRef.current = false;
       remoteViewportRef.current = EMPTY_REMOTE_VIEWPORT;
       if (!disposed) setRemoteViewport(EMPTY_REMOTE_VIEWPORT);
       window.clearTimeout(inputConnectionTimer);
@@ -778,10 +795,17 @@ export default function TerminalPane({
             inputSocket.send(encodeTerminalClientMessage({
               type: 'resize', cols: terminal.cols, rows: terminal.rows,
             }));
-            inputSocket.send(encodeTerminalClientMessage({ type: 'viewport' }));
+            inputSocket.send(encodeTerminalClientMessage({ type: 'viewport', requestId: ++viewportRequestIdRef.current }));
             reconnectAttempts = 0;
             onStatusChange(tab.id, 'connected');
           } else if (message.type === 'viewport') {
+            const requestId = Number(message.requestId) || 0;
+            if (requestId > 0 && requestId < Math.max(latestScrollRequestIdRef.current, appliedViewportRequestIdRef.current)) return;
+            // Also tolerate an older server during a rolling upgrade.
+            if (!requestId && awaitingScrollRef.current && Number(message.offset) !== pendingScrollOffsetRef.current) return;
+            if (scrollRequestTimerRef.current) return;
+            appliedViewportRequestIdRef.current = requestId;
+            awaitingScrollRef.current = false;
             const historyLines = Math.max(0, Number(message.historyLines) || 0);
             const viewport = {
               persistent: message.persistent === true, historyLines,
@@ -796,8 +820,8 @@ export default function TerminalPane({
             ));
             if (viewport.persistent && !viewportPollTimer) {
               viewportPollTimer = window.setInterval(() => {
-                if (inputSocketRef.current !== inputSocket || document.visibilityState === 'hidden') return;
-                try { inputSocket.send(encodeTerminalClientMessage({ type: 'viewport' })); }
+                if (inputSocketRef.current !== inputSocket || document.visibilityState === 'hidden' || awaitingScrollRef.current) return;
+                try { inputSocket.send(encodeTerminalClientMessage({ type: 'viewport', requestId: ++viewportRequestIdRef.current })); }
                 catch { failInputConnection(); }
               }, 500);
             } else if (!viewport.persistent) {

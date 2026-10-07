@@ -18,15 +18,16 @@ const SECOND_TERMINAL_ID = '22222222-2222-4222-8222-222222222222';
 const INPUT_STREAM_ID = '33333333-3333-4333-8333-333333333333';
 
 test('terminal history commands and viewport metadata round-trip without output sequencing', () => {
-  assert.deepEqual(decodeTerminalClientMessage(TerminalClientMessage.encode({ viewport: {} }).finish()), { type: 'viewport' });
-  assert.deepEqual(decodeTerminalClientMessage(TerminalClientMessage.encode({ scroll: { offset: 40 } }).finish()), { type: 'scroll', offset: 40 });
+  assert.deepEqual(decodeTerminalClientMessage(TerminalClientMessage.encode({ viewport: { requestId: 9 } }).finish()), { type: 'viewport', requestId: 9 });
+  assert.deepEqual(decodeTerminalClientMessage(TerminalClientMessage.encode({ scroll: { offset: 40, requestId: 10 } }).finish()), { type: 'scroll', offset: 40, requestId: 10 });
   const message = TerminalServerMessage.decode(encodeTerminalServerMessage({
-    type: 'viewport', persistent: true, historyLines: 476, offset: 40, rows: 41,
+    type: 'viewport', persistent: true, historyLines: 476, offset: 40, rows: 41, requestId: 10,
   }));
   assert.equal(message.body, 'viewport');
   assert.equal(message.viewport.historyLines, 476);
   assert.equal(message.viewport.offset, 40);
   assert.equal(message.viewport.persistent, true);
+  assert.equal(message.viewport.requestId, 10);
   assert.equal(message.seq, 0);
 });
 

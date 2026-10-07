@@ -32,7 +32,7 @@ export type TerminalServerMessage =
   | ({ type: 'error'; message: string } & TerminalServerMessageMeta)
   | ({ type: 'pong' } & TerminalServerMessageMeta)
   | ({ type: 'input-ack'; inputSeq: number } & TerminalServerMessageMeta)
-  | ({ type: 'viewport'; historyLines: number; offset: number; rows: number; persistent: boolean } & TerminalServerMessageMeta)
+  | ({ type: 'viewport'; historyLines: number; offset: number; rows: number; persistent: boolean; requestId: number } & TerminalServerMessageMeta)
   | { type: string; [key: string]: unknown };
 
 export type TerminalTabsServerMessage =

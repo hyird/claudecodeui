@@ -32,8 +32,8 @@ export type TerminalClientMessage =
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'close' }
   | { type: 'ping' }
-  | { type: 'viewport' }
-  | { type: 'scroll'; offset: number };
+  | { type: 'viewport'; requestId?: number }
+  | { type: 'scroll'; offset: number; requestId?: number };
 
 export type TabsClientMessage =
   | { type: 'move-tab'; tabId: string; targetId: string; after: boolean }
@@ -103,9 +103,9 @@ export function encodeTerminalClientMessage(message: TerminalClientMessage): Uin
     case 'ping':
       return TerminalClientMessage.encode({ ping: {} }).finish();
     case 'viewport':
-      return TerminalClientMessage.encode({ viewport: {} }).finish();
+      return TerminalClientMessage.encode({ viewport: { requestId: message.requestId ?? 0 } }).finish();
     case 'scroll':
-      return TerminalClientMessage.encode({ scroll: { offset: message.offset } }).finish();
+      return TerminalClientMessage.encode({ scroll: { offset: message.offset, requestId: message.requestId ?? 0 } }).finish();
   }
 }
 
@@ -159,6 +159,7 @@ export async function decodeTerminalServerMessage(
         type: 'viewport', historyLines: message.viewport!.historyLines,
         offset: message.viewport!.offset, rows: message.viewport!.rows,
         persistent: message.viewport!.persistent,
+        requestId: message.viewport!.requestId,
       };
     default:
       return null;
