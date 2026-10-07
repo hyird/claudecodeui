@@ -1,0 +1,8 @@
+{
+  "name": "@cloud-terminal/maple-mono-nf-cn",
+  "version": "7.9.0",
+  "private": true,
+  "license": "OFL-1.1",
+  "description": "Verified Maple Mono NF CN webfonts, packaged locally for Bun installations",
+  "files": ["*.woff2", "LICENSE.txt", "source.json"]
+}

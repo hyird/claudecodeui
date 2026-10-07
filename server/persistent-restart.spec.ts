@@ -1,133 +1,119 @@
 import { expect, test } from 'bun:test';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
+import headlessXterm from '@xterm/headless';
 import { cloudcli } from '../proto/messages.js';
+import { requestPtyBroker } from './pty-channel.js';
 
 const projectDir = fileURLToPath(new URL('..', import.meta.url));
-const available = process.platform !== 'win32' && spawnSync('tmux', ['-V']).status === 0;
-
-(available ? test : test.skip)('web-service restart preserves the real tmux shell, tabs and input deduplication', async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-restart-'));
-  const socketName = `cloud-terminal-test-${randomUUID()}`;
-  const tmux = (...args: string[]) => spawnSync('tmux', ['-L', socketName, '-N', ...args], { encoding: 'utf8' });
+(process.platform === 'win32' ? test.skip : test)('bun-pty service preserves shell, history and input deduplication across web restarts', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-broker-'));
+  const socketPath = path.join(directory, 'pty.sock');
   const host = net.createServer();
   await new Promise<void>((resolve) => host.listen(0, '127.0.0.1', resolve));
   const port = (host.address() as net.AddressInfo).port;
   await new Promise<void>((resolve) => host.close(() => resolve()));
   const baseUrl = `http://127.0.0.1:${port}`;
-  const daemon = spawn('tmux', ['-D', '-L', socketName, '-f', path.join(projectDir, 'deploy/tmux.conf')], { stdio: 'ignore' });
+  const env = { ...process.env, CLOUDCLI_PTY_SOCKET: socketPath };
+  const broker = spawn(process.execPath, ['server/pty-broker.js'], { cwd: projectDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let application: ReturnType<typeof spawn> | undefined;
-  let serverLog = '';
-  let diagnostic = () => '';
+  let logs = '';
+  let tabId = '';
   const sockets: WebSocket[] = [];
+  const terminals: headlessXterm.Terminal[] = [];
+  broker.stderr?.on('data', (data) => { logs += data; });
   const waitFor = async (predicate: () => boolean | Promise<boolean>) => {
-    for (let attempt = 0; attempt < 100; attempt++) {
+    for (let i = 0; i < 150; i++) {
       if (await predicate()) return;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    throw new Error(`Timed out waiting for persistent restart test: ${serverLog.slice(-1500)}\n${diagnostic()}`);
+    throw new Error(`Persistent service timeout: ${logs.slice(-2000)}`);
   };
-  const startApplication = async () => {
-    application = spawn(process.execPath, ['server/index.js'], {
-      cwd: projectDir,
-      env: { ...process.env, PORT: String(port), CLOUDCLI_DB_PATH: path.join(directory, 'auth.sqlite'), CLOUDCLI_PERSIST_TERMINALS: '1', CLOUDCLI_TMUX_SOCKET: socketName },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    application.stdout?.on('data', (chunk) => { serverLog += chunk; });
-    application.stderr?.on('data', (chunk) => { serverLog += chunk; });
-    await waitFor(async () => {
-      try { return (await fetch(`${baseUrl}/api/health`)).ok; } catch { return false; }
-    });
+  const inspect = () => requestPtyBroker(socketPath, { type: 'prepare', sessionId: tabId }) as Promise<any>;
+  const start = async () => {
+    application = spawn(process.execPath, ['server/index.js'], { cwd: projectDir,
+      env: { ...env, PORT: String(port), CLOUDCLI_DB_PATH: path.join(directory, 'auth.sqlite'), CLOUDCLI_PERSIST_TERMINALS: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'] });
+    application.stderr?.on('data', (data) => { logs += data; });
+    await waitFor(async () => { try { return (await fetch(`${baseUrl}/api/health`)).ok; } catch { return false; } });
   };
-  const stopApplication = async () => {
+  const stop = async () => {
     if (!application || application.exitCode !== null || application.signalCode !== null) return;
-    const stopped = new Promise((resolve) => application!.once('exit', resolve));
+    const exited = new Promise((resolve) => application!.once('exit', resolve));
     application.kill('SIGTERM');
-    await stopped;
+    await exited;
     application = undefined;
   };
   const connect = async (pathname: string, token: string, init?: object) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}${pathname}`, ['cloudcli.v1', `auth.${token}`]);
     sockets.push(ws);
     const messages: any[] = [];
+    const terminal = new headlessXterm.Terminal({ allowProposedApi: true, cols: 200, rows: 24, scrollback: 10000 });
+    terminals.push(terminal);
+    ws.binaryType = 'arraybuffer';
     ws.addEventListener('message', (event) => {
       const bytes = new Uint8Array(event.data as ArrayBuffer);
-      messages.push(pathname.endsWith('/tabs') ? cloudcli.TabsServerMessage.decode(bytes) : cloudcli.TerminalServerMessage.decode(bytes));
+      const message = pathname.endsWith('/tabs') ? cloudcli.TabsServerMessage.decode(bytes) : cloudcli.TerminalServerMessage.decode(bytes);
+      messages.push(message);
+      if ('output' in message && message.output) terminal.write(message.output.data);
+      if ('ready' in message && message.ready?.reset) terminal.reset();
     });
-    ws.binaryType = 'arraybuffer';
-    await new Promise<void>((resolve, reject) => {
-      ws.addEventListener('open', () => resolve(), { once: true });
-      ws.addEventListener('error', reject, { once: true });
-    });
+    await new Promise<void>((resolve, reject) => { ws.addEventListener('open', () => resolve(), { once: true }); ws.addEventListener('error', reject, { once: true }); });
     if (init) ws.send(cloudcli.TerminalClientMessage.encode({ init }).finish());
-    await waitFor(() => messages.some((message) => message.body === (pathname.endsWith('/tabs') ? 'tabs' : 'ready')));
-    return { ws, messages };
+    await waitFor(() => messages.some((m) => m.body === (pathname.endsWith('/tabs') ? 'tabs' : 'ready')));
+    return { ws, messages, terminal };
   };
   try {
-    await waitFor(() => tmux('show-options', '-s', '-v', 'exit-empty').status === 0);
-    await startApplication();
-    const registration = await fetch(`${baseUrl}/api/auth/register`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'restart-test', password: 'restart-test-password' }),
-    }).then((response) => response.json()) as { token: string };
+    await waitFor(async () => { try { return (await requestPtyBroker(socketPath, { type: 'ping' }) as any).ok; } catch { return false; } });
+    await start();
+    const registration = await fetch(`${baseUrl}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'broker-test', password: 'broker-test-password' }) }).then((r) => r.json()) as { token: string };
     const tabs = await connect('/terminal/tabs', registration.token);
-    const tabId = tabs.messages[0].tabs.activeId;
+    tabId = tabs.messages[0].tabs.activeId;
     const streamId = randomUUID();
-    const output = await connect('/terminal/output', registration.token, { sessionId: tabId, inputStreamId: streamId, cols: 80, rows: 24 });
-    const generation = output.messages.find((message) => message.body === 'ready').ready.sessionGeneration;
+    const output = await connect('/terminal/output', registration.token, { sessionId: tabId, inputStreamId: streamId, cols: 200, rows: 24 });
+    const generation = output.messages.find((m) => m.ready).ready.sessionGeneration;
     const input = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
-    const sessionName = `=cloud-terminal-${tabId}:`;
-    diagnostic = () => {
-      const pane = tmux('capture-pane', '-p', '-t', sessionName);
-      return `test pane (status=${pane.status}):\n${pane.stdout}\n${pane.stderr}`;
-    };
-    const shellPid = tmux('display-message', '-p', '-t', sessionName, '#{pane_pid}').stdout.trim();
-    expect(Number(shellPid)).toBeGreaterThan(0);
-    const command = 'export CT_RESTART_COUNT=$(( ${CT_RESTART_COUNT:-0} + 1 )); printf "CT_READY_%s\\n" "$CT_RESTART_COUNT"\r';
+    const original = await inspect();
+    expect(original.pid).toBeGreaterThan(0);
+    // Exercise a nearly full scrollback snapshot larger than the live socket limit.
+    const command = 'export CT_COUNT=$(( ${CT_COUNT:-0} + 1 )); printf "history-%0180d\\n" {1..10000}; printf "CT_READY_%s\\n" "$CT_COUNT"\r';
     input.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 1, data: command } }).finish());
-    await waitFor(() => input.messages.some((message) => message.body === 'inputAck' && message.inputAck.inputSeq === 1));
-    await waitFor(() => tmux('capture-pane', '-p', '-t', sessionName).stdout.includes('CT_READY_1'));
-    await stopApplication();
-    expect(tmux('display-message', '-p', '-t', sessionName, '#{pane_pid}').stdout.trim()).toBe(shellPid);
-    await startApplication();
+    await waitFor(() => input.messages.some((m) => m.inputAck?.inputSeq === 1));
+    await waitFor(() => output.terminal.buffer.active.baseY > 9900);
+    expect(output.terminal.buffer.active.type).toBe('normal');
+    await stop();
+    expect((await inspect()).pid).toBe(original.pid);
+    await start();
     const restoredTabs = await connect('/terminal/tabs', registration.token);
     expect(restoredTabs.messages[0].tabs.activeId).toBe(tabId);
-    const restoredOutput = await connect('/terminal/output', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation, lastSeq: 1, cols: 80, rows: 24 });
-    expect(restoredOutput.messages.find((message) => message.body === 'ready').ready.sessionGeneration).toBe(generation);
+    const restored = await connect('/terminal/output', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation, lastSeq: 1, cols: 200, rows: 24 });
+    expect(restored.messages.find((m) => m.ready).ready.sessionGeneration).toBe(generation);
+    await waitFor(() => restored.terminal.buffer.active.baseY > 9900);
+    expect(restored.terminal.buffer.active.type).toBe('normal');
     const restoredInput = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 1, data: command } }).finish());
-    await waitFor(() => restoredInput.messages.some((message) => message.body === 'inputAck' && message.inputAck.inputSeq === 1));
-    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 2, data: 'printf "CT_FINAL_%s\\n" "$CT_RESTART_COUNT"\r' } }).finish());
-    await waitFor(() => tmux('capture-pane', '-p', '-t', sessionName).stdout.includes('CT_FINAL_1'));
-    expect(tmux('display-message', '-p', '-t', sessionName, '#{pane_pid}').stdout.trim()).toBe(shellPid);
-
-    // Exercise the real split sockets after reconnect: scroll metadata must echo
-    // the newest request, output must continue, and returning to live exits copy mode.
-    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: {
-      inputSeq: 3, data: "printf 'scroll-row-%s\\n' {1..300}\r",
-    } }).finish());
-    await waitFor(() => Number(tmux('display-message', '-p', '-t', sessionName, '#{history_size}').stdout.trim()) >= 250);
-    const outputCount = restoredOutput.messages.length;
-    for (let requestId = 1; requestId <= 30; requestId++) {
-      restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ scroll: { offset: requestId * 3, requestId } }).finish());
-    }
-    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ ping: {} }).finish());
-    await waitFor(() => restoredInput.messages.some((message) => message.viewport?.requestId === 30));
-    expect(restoredInput.messages.find((message) => message.viewport?.requestId === 30).viewport.offset).toBe(90);
-    expect(restoredInput.messages.some((message) => message.body === 'pong')).toBe(true);
-    await waitFor(() => restoredOutput.messages.length > outputCount);
-    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ scroll: { offset: 0, requestId: 31 } }).finish());
-    await waitFor(() => restoredInput.messages.some((message) => message.viewport?.requestId === 31));
-    expect(tmux('display-message', '-p', '-t', sessionName, '#{pane_in_mode}').stdout.trim()).toBe('0');
+    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 2, data: 'printf "CT_FINAL_%s\\n" "$CT_COUNT"\r' } }).finish());
+    await waitFor(async () => (await inspect()).data.includes('CT_FINAL_1'));
+    expect((await inspect()).pid).toBe(original.pid);
+    // Disconnect the browser and produce output while the web process is down.
+    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 3, data: '(sleep 0.3; printf "\\nBROKER_BACKGROUND_OK\\n") &\r' } }).finish());
+    await waitFor(() => restoredInput.messages.some((m) => m.inputAck?.inputSeq === 3));
+    await stop();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect((await inspect()).data).toMatch(/\r?\nBROKER_BACKGROUND_OK\r?\n/);
+    expect(fs.statSync(socketPath).mode & 0o777).toBe(0o600);
   } finally {
-    for (const ws of sockets) ws.close();
-    await stopApplication();
-    tmux('kill-server');
-    daemon.kill();
+    for (const socket of sockets) socket.close();
+    await stop();
+    if (tabId) await requestPtyBroker(socketPath, { type: 'close', sessionId: tabId }).catch(() => {});
+    broker.kill();
+    for (const terminal of terminals) terminal.dispose();
     fs.rmSync(directory, { recursive: true, force: true });
   }
 }, 20000);

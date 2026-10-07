@@ -36,8 +36,8 @@ test('persistent sessions are allowed through the deployment guard without a for
   const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-safe-deploy-'));
   try {
     for (const [name, body] of Object.entries({
-      curl: 'printf \'%s\\n\' \'{"ok":true,"sessions":2,"persistentSessions":true}\'',
-      sudo: 'exit 0', tmux: 'exit 0', bun: 'echo "BUILD_WITH_PERSISTENT_SESSIONS"; exit 23',
+      curl: 'printf \'%s\\n\' \'{"ok":true,"sessions":2,"persistentSessions":true,"persistentBackend":"bun-pty"}\'',
+      sudo: 'exit 0', bun: 'echo "BUILD_WITH_PERSISTENT_SESSIONS"; exit 23',
     })) {
       const file = path.join(fakeBin, name);
       fs.writeFileSync(file, `#!/usr/bin/env bash\n${body}\n`);
@@ -61,7 +61,7 @@ test('local deployment rechecks sessions before installing and supports an expli
   assert.ok(lastCheck < firstInstall, 'session checks must finish before deployment mutates /opt');
   assert.match(source, /--force\) FORCE_RESTART=1/);
   assert.match(source, /active_sessions > 0 && FORCE_RESTART == 0/);
-  assert.match(source, /persistentSessions/);
-  assert.match(source, /systemctl enable --now "\$\{TMUX_SERVICE\}"/);
-  assert.doesNotMatch(source, /systemctl (?:restart|stop) "\$\{TMUX_SERVICE\}"/);
+  assert.match(source, /persistentBackend/);
+  assert.match(source, /systemctl enable --now "\$\{PTY_SERVICE\}"/);
+  assert.doesNotMatch(source, /systemctl (?:restart|stop) "\$\{PTY_SERVICE\}"/);
 });

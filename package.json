@@ -3,18 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "workspaces": ["packages/*"],
   "scripts": {
-    "dev": "concurrently -k \"bun server/index.js\" \"vite --host 0.0.0.0\"",
+    "postinstall": "bun scripts/prepare-fonts.js",
+    "dev": "bun scripts/prepare-fonts.js && concurrently -k \"bun server/index.js\" \"vite --host 0.0.0.0\"",
     "server": "bun server/index.js",
     "build": "bun run build:web && bun run build:server",
-    "build:web": "tsc --noEmit && vite build",
-    "build:server": "bun build server/index.js --target=bun --outfile dist-server/server.js",
+    "build:web": "bun scripts/prepare-fonts.js && tsc --noEmit && vite build",
+    "build:server": "bun build server/index.js --target=bun --outfile dist-server/server.js && bun build server/pty-broker.js --target=bun --outfile dist-server/pty-broker.js",
     "preview": "vite preview --host 0.0.0.0",
     "start": "bun server/index.js",
     "test": "node --test \"server/*.test.js\" \"src/**/*.test.js\" && bun test spec",
     "proto": "pbjs -t static-module -w es6 --no-create --no-verify --no-convert --no-delimited -o proto/messages.js proto/messages.proto && pbts -o proto/messages.d.ts proto/messages.js"
   },
   "dependencies": {
+    "@cloud-terminal/maple-mono-nf-cn": "workspace:*",
     "@xterm/addon-clipboard": "0.2.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-serialize": "0.14.0",
@@ -23,23 +26,26 @@
     "@xterm/addon-webgl": "0.19.0",
     "@xterm/headless": "6.0.0",
     "@xterm/xterm": "6.0.0",
-    "bun-pty": "^0.4.10",
-    "hono": "^4.12.27",
+    "bun-pty": "^0.4.11",
+    "hono": "^4.13.13",
     "lucide-react": "^0.468.0",
-    "protobufjs": "^8.6.5",
+    "protobufjs": "^8.8.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@types/node": "^22.10.5",
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "@vitejs/plugin-react": "^4.3.4",
-    "concurrently": "^9.1.2",
-    "protobufjs-cli": "^2.5.6",
-    "typescript": "^5.7.2",
-    "vite": "^6.0.7",
-    "vite-plugin-singlefile": "^2.1.0",
-    "ws": "^8.18.0"
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.4",
+    "protobufjs-cli": "^2.7.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4",
+    "vite-plugin-singlefile": "^2.3.3",
+    "ws": "^8.22.0"
+  },
+  "patchedDependencies": {
+    "bun-pty@0.4.11": "patches/bun-pty@0.4.11.patch"
   }
 }

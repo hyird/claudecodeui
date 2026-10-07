@@ -44,7 +44,7 @@ test('terminal fit reserves the scrollbar gutter so the last column is not clipp
   // beneath the scrollback scrollbar and is clipped once scrollback appears.
   assert.match(measure, /terminal\.options\.scrollback \? TERMINAL_SCROLLBAR_GUTTER : 0/);
   assert.match(measure, /- scrollbarGutter/);
-  assert.match(source, /const TERMINAL_SCROLLBAR_GUTTER = 4;/);
+  assert.match(source, /const TERMINAL_SCROLLBAR_GUTTER = 8;/);
   assert.match(source, /overviewRuler:\s*\{ width: TERMINAL_SCROLLBAR_GUTTER \}/);
 
   // A sub-pixel guard on both axes prevents integer/HiDPI cell-size rounding from

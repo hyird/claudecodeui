@@ -38,12 +38,11 @@ fi
 ssh -o BatchMode=yes "${HOST}" REF="${REF}" BASE="${BASE}" REPO="${REPO}" \
   SERVICE="${SERVICE}" BUN="${BUN}" RUN_AS="${RUN_AS}" PORT="${PORT}" FORCE_RESTART="${FORCE_RESTART}" 'bash -euo pipefail -s' <<'REMOTE'
 BUILD="${BASE}/build-$$"
-TMUX_SERVICE="${SERVICE%.service}-tmux.service"
+PTY_SERVICE="${SERVICE%.service}-pty.service"
 cleanup() { rm -rf "${BUILD}"; }
 trap cleanup EXIT
 
 export PATH="$(dirname "${BUN}"):${PATH}"
-command -v tmux >/dev/null || { echo 'error: install tmux before deploying persistent terminals' >&2; exit 1; }
 
 check_active_sessions() {
   local payload
@@ -53,7 +52,7 @@ check_active_sessions() {
       return 1
     fi
     if (( BASH_REMATCH[1] > 0 && FORCE_RESTART == 0 )) \
-      && [[ ! "${payload}" =~ \"persistentSessions\":[[:space:]]*true ]]; then
+      && [[ ! "${payload}" =~ \"persistentBackend\":[[:space:]]*\"bun-pty\" ]]; then
       echo 'error: legacy PTYs are still active. Close them once before migrating to persistent terminals.' >&2
       return 1
     fi
@@ -73,7 +72,7 @@ echo "commit ${COMMIT}"
 
 echo "--- building ---"
 cd "${BUILD}"
-bun install --silent
+bun install --frozen-lockfile --silent
 bun run build
 bun run test
 
@@ -81,6 +80,7 @@ bun run test
 # up with no dist/ and silently serve nothing.
 test -s "${BUILD}/dist/index.html"
 test -s "${BUILD}/dist-server/server.js"
+test -s "${BUILD}/dist-server/pty-broker.js"
 PTY_LIB="$(find "${BUILD}/node_modules/bun-pty" -name librust_pty.so | head -1)"
 test -n "${PTY_LIB}"
 
@@ -88,27 +88,33 @@ echo "--- swapping in (service down) ---"
 check_active_sessions
 systemctl stop "${SERVICE}"
 install -D -m 644 "${BUILD}/dist-server/server.js" "${BASE}/current/server.js"
-install -D -m 755 "${PTY_LIB}"                     "${BASE}/current/librust_pty.so"
+install -D -m 644 "${BUILD}/dist-server/pty-broker.js" "${BASE}/current/pty-broker.js"
+# Leave the running broker's mapped library inode intact during web updates.
+install -D -m 755 "${PTY_LIB}" "${BASE}/current/librust_pty.so.next"
+mv -f "${BASE}/current/librust_pty.so.next" "${BASE}/current/librust_pty.so"
 rm -rf "${BASE}/current/dist"
 mkdir -p "${BASE}/current/dist"
 cp -r "${BUILD}/dist/." "${BASE}/current/dist/"
-install -m 644 "${BUILD}/deploy/tmux.conf" "${BASE}/current/tmux.conf"
 echo "${COMMIT}" > "${BASE}/current/RELEASE.txt"
 chown -R "${RUN_AS}:${RUN_AS}" "${BASE}/current"
 
 RUN_HOME="$(getent passwd "${RUN_AS}" | cut -d: -f6)"
 test -n "${RUN_HOME}"
-cat > "/etc/systemd/system/${TMUX_SERVICE}" <<UNIT
+cat > "/etc/systemd/system/${PTY_SERVICE}" <<UNIT
 [Unit]
-Description=Cloud Terminal persistent terminal sessions
+Description=Cloud Terminal persistent bun-pty service
 After=network.target
 [Service]
 Type=simple
 User=${RUN_AS}
+RuntimeDirectory=cloud-terminal
+RuntimeDirectoryMode=0700
 Environment=HOME=${RUN_HOME}
 Environment=SHELL=/bin/bash
 Environment=PATH=$(dirname "${BUN}"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=$(command -v tmux) -D -L cloud-terminal -f ${BASE}/current/tmux.conf
+Environment=BUN_PTY_LIB=${BASE}/current/librust_pty.so
+Environment=CLOUDCLI_PTY_SOCKET=/run/cloud-terminal/pty.sock
+ExecStart=${BUN} ${BASE}/current/pty-broker.js
 Restart=on-failure
 RestartSec=2s
 KillMode=control-group
@@ -118,20 +124,19 @@ UNIT
 mkdir -p "/etc/systemd/system/${SERVICE}.d"
 cat > "/etc/systemd/system/${SERVICE}.d/20-persistent-terminals.conf" <<UNIT
 [Unit]
-After=${TMUX_SERVICE}
-Wants=${TMUX_SERVICE}
+After=${PTY_SERVICE}
+Wants=${PTY_SERVICE}
 [Service]
 Environment=CLOUDCLI_PERSIST_TERMINALS=1
-Environment=CLOUDCLI_TMUX_SOCKET=cloud-terminal
+Environment=CLOUDCLI_PTY_SOCKET=/run/cloud-terminal/pty.sock
 UNIT
 systemctl daemon-reload
-systemctl enable --now "${TMUX_SERVICE}"
+systemctl enable --now "${PTY_SERVICE}"
 for _ in $(seq 1 40); do
-  if runuser -u "${RUN_AS}" -- tmux -L cloud-terminal -N show-options -s -v exit-empty >/dev/null 2>&1; then break; fi
+  if test -S /run/cloud-terminal/pty.sock; then break; fi
   sleep 0.1
 done
-runuser -u "${RUN_AS}" -- tmux -L cloud-terminal -N show-options -s -v exit-empty >/dev/null
-runuser -u "${RUN_AS}" -- tmux -L cloud-terminal -N source-file "${BASE}/current/tmux.conf"
+test -S /run/cloud-terminal/pty.sock
 systemctl start "${SERVICE}"
 
 echo "--- waiting for health ---"

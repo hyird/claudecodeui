@@ -24,8 +24,6 @@ message TerminalInput {
 }
 message TerminalResize { uint32 cols = 1; uint32 rows = 2; }
 message TerminalClose {}
-message TerminalViewportRequest { uint32 request_id = 1; }
-message TerminalScroll { uint32 offset = 1; uint32 request_id = 2; }
 
 message TerminalClientMessage {
   oneof body {
@@ -34,9 +32,8 @@ message TerminalClientMessage {
     TerminalResize resize = 3;
     TerminalClose close = 4;
     Ping ping = 5;
-    TerminalViewportRequest viewport = 6;
-    TerminalScroll scroll = 7;
   }
+  reserved 6, 7;
 }
 
 // /terminal (server -> client) --------------------------------------------
@@ -52,13 +49,6 @@ message TerminalReady {
 message TerminalOutput { bytes data = 1; bool compressed = 2; }
 message TerminalExit { int32 exit_code = 1; string signal = 2; }
 message TerminalInputAck { uint32 input_seq = 1; }
-message TerminalViewport {
-  uint32 history_lines = 1;
-  uint32 offset = 2;
-  uint32 rows = 3;
-  bool persistent = 4;
-  uint32 request_id = 5;
-}
 
 message TerminalServerMessage {
   oneof body {
@@ -68,8 +58,8 @@ message TerminalServerMessage {
     ErrorMessage error = 4;
     Pong pong = 5;
     TerminalInputAck input_ack = 6;
-    TerminalViewport viewport = 7;
   }
+  reserved 7;
   uint32 seq = 100;
 }
 

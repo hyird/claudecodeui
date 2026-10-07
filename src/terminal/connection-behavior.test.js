@@ -220,9 +220,9 @@ test('terminal keeps a visible-tab heartbeat to detect silently dropped sockets'
   assert.match(terminalPaneSource, /window\.clearInterval\(heartbeatTimer\)/);
 });
 
-test('terminal output uses bounded frames with an 8ms forced send', () => {
+test('terminal output uses bounded frames with a 2ms forced send', () => {
   assert.match(serverSource, /TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 \* 1024/);
-  assert.match(serverSource, /TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 8/);
+  assert.match(serverSource, /TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 2/);
   assert.match(
     serverSource,
     /setTimeout\(\s*\n\s*\(\) => flushTerminalOutput\(session\),\s*\n\s*TERMINAL_OUTPUT_FLUSH_INTERVAL_MS/,

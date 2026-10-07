@@ -31,9 +31,7 @@ export type TerminalClientMessage =
   | { type: 'input'; data: string; inputSeq: number }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'close' }
-  | { type: 'ping' }
-  | { type: 'viewport'; requestId?: number }
-  | { type: 'scroll'; offset: number; requestId?: number };
+  | { type: 'ping' };
 
 export type TabsClientMessage =
   | { type: 'move-tab'; tabId: string; targetId: string; after: boolean }
@@ -102,10 +100,6 @@ export function encodeTerminalClientMessage(message: TerminalClientMessage): Uin
       return TerminalClientMessage.encode({ close: {} }).finish();
     case 'ping':
       return TerminalClientMessage.encode({ ping: {} }).finish();
-    case 'viewport':
-      return TerminalClientMessage.encode({ viewport: { requestId: message.requestId ?? 0 } }).finish();
-    case 'scroll':
-      return TerminalClientMessage.encode({ scroll: { offset: message.offset, requestId: message.requestId ?? 0 } }).finish();
   }
 }
 
@@ -154,13 +148,6 @@ export async function decodeTerminalServerMessage(
       return { type: 'pong', seq: message.seq };
     case 'inputAck':
       return { type: 'input-ack', inputSeq: message.inputAck!.inputSeq };
-    case 'viewport':
-      return {
-        type: 'viewport', historyLines: message.viewport!.historyLines,
-        offset: message.viewport!.offset, rows: message.viewport!.rows,
-        persistent: message.viewport!.persistent,
-        requestId: message.viewport!.requestId,
-      };
     default:
       return null;
   }

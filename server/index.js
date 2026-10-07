@@ -42,7 +42,6 @@ import {
   recordTerminalEvent,
 } from './terminal-stream.js';
 import { createPersistentPtyBackend } from './persistent-pty.js';
-import { createTerminalViewportController } from './terminal-viewport.js';
 import { UnicodeGraphemesAddon } from './unicode.js';
 import {
   readTerminalWorkspace, saveTerminalWorkspace, deleteTerminalWorkspace,
@@ -58,7 +57,7 @@ const bundledDist = path.join(__dirname, 'dist');
 const distDir = fs.existsSync(bundledDist) ? bundledDist : path.join(rootDir, 'dist');
 
 const PORT = Number(process.env.PORT || 3001);
-const SERVER_SNAPSHOT_SCROLLBACK = 1000;
+const SERVER_SNAPSHOT_SCROLLBACK = 10000;
 const TERMINAL_SOCKET_BUFFER_LIMIT = 1024 * 1024;
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SPINNER_TITLE_PREFIX = /^[\u2800-\u28ff]+[\s:·.-]*/u;
@@ -275,7 +274,7 @@ function getTabStatus(workspace, tabId, persistentSessionIds = null) {
 
 function serializeTabsState(workspace) {
   const { tabsState } = workspace;
-  // Query tmux once per broadcast, rather than spawning one CLI per tab.
+  // Read persistent session IDs once per broadcast.
   const persistentSessionIds = persistentPty.enabled ? new Set(persistentPty.listSessionIds()) : null;
   if (tabsState.tabs.length === 0) {
     const firstTab = createTab(1);
@@ -522,9 +521,9 @@ function writeTerminalSnapshot(session, chunk, onParsed) {
 
 // Keep each decoded terminal frame small enough for xterm to parse without monopolizing
 // the browser thread. A busy PTY reaches the byte cap and sends immediately; light output
-// such as an echoed key is forced out within 8 ms.
+// such as an echoed key is forced out within 2 ms.
 const TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 * 1024;
-const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 8;
+const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 2;
 
 function forEachTerminalOutputFrame(chunk, callback) {
   const bytes = Buffer.from(chunk);
@@ -685,8 +684,8 @@ function createSession(sessionId, options, workspace) {
   };
   const persistent = persistentPty.prepare(sessionId, { cwd, cols: options.cols, rows: options.rows, shell, env });
   if (persistent) cwd = persistent.cwd;
-  const terminalSnapshot = createTerminalSnapshot(options.cols, options.rows);
-  const shellProcess = ptySpawn(persistent?.command ?? shell.command, persistent?.args ?? shell.args, {
+  const terminalSnapshot = createTerminalSnapshot(persistent?.cols ?? options.cols, persistent?.rows ?? options.rows);
+  const shellProcess = persistent?.pty ?? ptySpawn(shell.command, shell.args, {
     name: 'xterm-256color',
     cols: options.cols,
     rows: options.rows,
@@ -699,6 +698,7 @@ function createSession(sessionId, options, workspace) {
     id: sessionId,
     workspace,
     generation: persistent?.generation ?? randomUUID(),
+    forceSnapshot: !!persistent,
     cwd,
     pty: shellProcess,
     terminal: terminalSnapshot.terminal,
@@ -721,6 +721,16 @@ function createSession(sessionId, options, workspace) {
 
   shellProcess.onData((chunk) => {
     queueTerminalOutput(session, chunk);
+  });
+  if (persistent?.data) queueTerminalOutput(session, persistent.data);
+  shellProcess.onDisconnect?.(() => {
+    if (session.disposed) return;
+    session.disposed = true;
+    clearTerminalOutputFlushTimer(session);
+    session.socket?.close(1011, 'PTY service disconnected');
+    session.inputSocket?.close(1011, 'PTY service disconnected');
+    if (sessions.get(sessionId) === session) sessions.delete(sessionId);
+    session.terminal.dispose();
   });
 
   shellProcess.onExit(({ exitCode, signal }) => {
@@ -771,7 +781,10 @@ function attachSocket(ws, session, lastSeq = 0) {
   // Writes queued after this barrier cannot overtake the snapshot on the socket.
   session.terminal.write('', () => {
     if (session.disposed || session.socket !== ws || ws.readyState !== WS_OPEN) return;
-    const replayPlan = getTerminalReplayPlan(session.terminalEvents, lastSeq);
+    // A new web process has a new replay sequence, even when the PTY generation
+    // survives. Its first viewer must receive the broker's complete snapshot.
+    const replayPlan = getTerminalReplayPlan(session.terminalEvents, session.forceSnapshot ? 0 : lastSeq);
+    session.forceSnapshot = false;
     ws.send(encodeTerminalServerMessage({
       type: 'ready',
       cwd: session.cwd,
@@ -955,6 +968,17 @@ function handleTerminalMessage(ws, raw) {
   if (message.type === 'input') {
     const inputStreamId = readString(ws.data.inputStreamId);
     const inputSeq = readNumber(message.inputSeq, 0);
+    if (activeSession.pty.writeInput) {
+      // The persistent owner acknowledges and deduplicates input. A web restart
+      // between delivery and acknowledgement must never lose or repeat a command.
+      activeSession.pty.writeInput(readString(message.data), inputStreamId, inputSeq).then((ack) => {
+        if (activeSession.disposed) return;
+        activeSession.inputStreams.set(inputStreamId, ack);
+        saveTerminalInputStream(activeSession.id, activeSession.generation, inputStreamId, ack);
+        if (websocketWritable(ws)) ws.send(encodeTerminalServerMessage({ type: 'input-ack', inputSeq: ack }));
+      }).catch(() => ws.close(1011, 'PTY input disconnected'));
+      return;
+    }
     const lastInputSeq = activeSession.inputStreams.get(inputStreamId);
     if (!inputStreamId || lastInputSeq === undefined || inputSeq <= 0) {
       ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid terminal input' }));
@@ -981,18 +1005,6 @@ function handleTerminalMessage(ws, raw) {
 
   if (message.type === 'resize') {
     resizeSession(activeSession, readNumber(message.cols, 100), readNumber(message.rows, 30));
-    return;
-  }
-
-  if (message.type === 'viewport' || message.type === 'scroll') {
-    ws.data.viewportController ??= createTerminalViewportController({
-      backend: persistentPty, sessionId: activeSession.id,
-      isAttached: () => !activeSession.disposed && !activeSession.closed
-        && sessions.get(activeSession.id) === activeSession
-        && (ws.data.kind === 'terminal-input' ? activeSession.inputSocket : activeSession.socket) === ws,
-      send: (viewport) => ws.send(encodeTerminalServerMessage(viewport)),
-    });
-    ws.data.viewportController(message);
     return;
   }
 
@@ -1062,6 +1074,7 @@ app.get('/api/health', (c) => c.json({
   ok: true,
   sessions: persistentPty.enabled ? persistentPty.count() : sessions.size,
   persistentSessions: persistentPty.enabled,
+  persistentBackend: persistentPty.enabled ? 'bun-pty' : null,
 }));
 
 app.get('/api/auth/status', async (c) => c.json({
