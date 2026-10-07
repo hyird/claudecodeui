@@ -106,15 +106,15 @@ export function encodeTerminalServerMessage(message) {
   return TerminalServerMessage.encode(payload).finish();
 }
 
-// Terminal output is the hot path, so it keeps the raw-DEFLATE compression the
-// old codec used — the bytes just travel inside the protobuf output field now.
-export function encodeTerminalOutput(text, seq = 0) {
+// The split downlink sends raw bytes to avoid compression/decompression latency
+// on fast networks. Legacy clients retain optional DEFLATE compatibility.
+export function encodeTerminalOutput(text, seq = 0, compress = true) {
   const raw = Buffer.from(String(text), 'utf8');
   let payload = raw;
   let useCompressed = false;
 
-  if (raw.length >= TERMINAL_OUTPUT_COMPRESSION_THRESHOLD) {
-    const compressed = deflateSync(raw);
+  if (compress && raw.length >= TERMINAL_OUTPUT_COMPRESSION_THRESHOLD) {
+    const compressed = deflateSync(raw, { level: 1 });
     if (compressed.length < raw.length) {
       payload = compressed;
       useCompressed = true;
@@ -130,12 +130,12 @@ export function encodeTerminalOutput(text, seq = 0) {
   return TerminalServerMessage.encode(message).finish();
 }
 
-export function sendTerminalOutput(ws, text, seq = 0) {
+export function sendTerminalOutput(ws, text, seq = 0, compress = true) {
   const value = String(text);
   if (!value) {
     return;
   }
-  return ws.send(encodeTerminalOutput(value, seq));
+  return ws.send(encodeTerminalOutput(value, seq, compress));
 }
 
 // ---- /terminal/tabs : client -> server ----------------------------------

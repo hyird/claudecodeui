@@ -22,6 +22,7 @@ BUN="${DEPLOY_BUN:-/home/cloudcli/.bun/bin/bun}"
 RUN_AS="${DEPLOY_USER:-cloudcli}"
 PORT="${DEPLOY_PORT:-3001}"
 REF="${1:-main}"
+FORCE_RESTART="${DEPLOY_FORCE_RESTART:-0}"
 
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$1"; }
 
@@ -35,12 +36,33 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 
 ssh -o BatchMode=yes "${HOST}" REF="${REF}" BASE="${BASE}" REPO="${REPO}" \
-  SERVICE="${SERVICE}" BUN="${BUN}" RUN_AS="${RUN_AS}" PORT="${PORT}" 'bash -euo pipefail -s' <<'REMOTE'
+  SERVICE="${SERVICE}" BUN="${BUN}" RUN_AS="${RUN_AS}" PORT="${PORT}" FORCE_RESTART="${FORCE_RESTART}" 'bash -euo pipefail -s' <<'REMOTE'
 BUILD="${BASE}/build-$$"
+TMUX_SERVICE="${SERVICE%.service}-tmux.service"
 cleanup() { rm -rf "${BUILD}"; }
 trap cleanup EXIT
 
 export PATH="$(dirname "${BUN}"):${PATH}"
+command -v tmux >/dev/null || { echo 'error: install tmux before deploying persistent terminals' >&2; exit 1; }
+
+check_active_sessions() {
+  local payload
+  if payload="$(curl -fsS -m 2 "http://127.0.0.1:${PORT}/api/health" 2>/dev/null)"; then
+    if [[ ! "${payload}" =~ \"sessions\":([0-9]+) ]]; then
+      echo 'error: cannot determine active terminal sessions' >&2
+      return 1
+    fi
+    if (( BASH_REMATCH[1] > 0 && FORCE_RESTART == 0 )) \
+      && [[ ! "${payload}" =~ \"persistentSessions\":[[:space:]]*true ]]; then
+      echo 'error: legacy PTYs are still active. Close them once before migrating to persistent terminals.' >&2
+      return 1
+    fi
+  elif systemctl is-active --quiet "${SERVICE}"; then
+    echo 'error: active service health is unavailable; refusing to stop it' >&2
+    return 1
+  fi
+}
+check_active_sessions
 
 echo "--- fetching ${REF} ---"
 rm -rf "${BUILD}"
@@ -53,6 +75,7 @@ echo "--- building ---"
 cd "${BUILD}"
 bun install --silent
 bun run build
+bun run test
 
 # The frontend must exist before the swap, otherwise the server would come back
 # up with no dist/ and silently serve nothing.
@@ -62,14 +85,52 @@ PTY_LIB="$(find "${BUILD}/node_modules/bun-pty" -name librust_pty.so | head -1)"
 test -n "${PTY_LIB}"
 
 echo "--- swapping in (service down) ---"
+check_active_sessions
 systemctl stop "${SERVICE}"
 install -D -m 644 "${BUILD}/dist-server/server.js" "${BASE}/current/server.js"
 install -D -m 755 "${PTY_LIB}"                     "${BASE}/current/librust_pty.so"
 rm -rf "${BASE}/current/dist"
 mkdir -p "${BASE}/current/dist"
 cp -r "${BUILD}/dist/." "${BASE}/current/dist/"
+install -m 644 "${BUILD}/deploy/tmux.conf" "${BASE}/current/tmux.conf"
 echo "${COMMIT}" > "${BASE}/current/RELEASE.txt"
 chown -R "${RUN_AS}:${RUN_AS}" "${BASE}/current"
+
+RUN_HOME="$(getent passwd "${RUN_AS}" | cut -d: -f6)"
+test -n "${RUN_HOME}"
+cat > "/etc/systemd/system/${TMUX_SERVICE}" <<UNIT
+[Unit]
+Description=Cloud Terminal persistent terminal sessions
+After=network.target
+[Service]
+Type=simple
+User=${RUN_AS}
+Environment=HOME=${RUN_HOME}
+Environment=SHELL=/bin/bash
+Environment=PATH=$(dirname "${BUN}"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=$(command -v tmux) -D -L cloud-terminal -f ${BASE}/current/tmux.conf
+Restart=on-failure
+RestartSec=2s
+KillMode=control-group
+[Install]
+WantedBy=multi-user.target
+UNIT
+mkdir -p "/etc/systemd/system/${SERVICE}.d"
+cat > "/etc/systemd/system/${SERVICE}.d/20-persistent-terminals.conf" <<UNIT
+[Unit]
+After=${TMUX_SERVICE}
+Wants=${TMUX_SERVICE}
+[Service]
+Environment=CLOUDCLI_PERSIST_TERMINALS=1
+Environment=CLOUDCLI_TMUX_SOCKET=cloud-terminal
+UNIT
+systemctl daemon-reload
+systemctl enable --now "${TMUX_SERVICE}"
+for _ in $(seq 1 40); do
+  if runuser -u "${RUN_AS}" -- tmux -L cloud-terminal -N show-options -s -v exit-empty >/dev/null 2>&1; then break; fi
+  sleep 0.1
+done
+runuser -u "${RUN_AS}" -- tmux -L cloud-terminal -N show-options -s -v exit-empty >/dev/null
 systemctl start "${SERVICE}"
 
 echo "--- waiting for health ---"

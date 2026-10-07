@@ -9,6 +9,7 @@ SERVICE_NAME="cloud-terminal.service"
 PTY_LIB="${PROJECT_DIR}/node_modules/bun-pty/rust-pty/target/release/librust_pty.so"
 HEALTH_URL="http://127.0.0.1:3001/api/health"
 FORCE_RESTART=0
+TMUX_SERVICE="cloud-terminal-tmux.service"
 
 case "${1:-}" in
   '') ;;
@@ -30,10 +31,11 @@ check_active_sessions() {
     fi
 
     active_sessions="${BASH_REMATCH[1]}"
-    if (( active_sessions > 0 && FORCE_RESTART == 0 )); then
+    if (( active_sessions > 0 && FORCE_RESTART == 0 )) \
+      && [[ ! "${health_payload}" =~ \"persistentSessions\":[[:space:]]*true ]]; then
       printf 'error: refusing to restart %s with %s active terminal session(s).\n' \
         "${SERVICE_NAME}" "${active_sessions}" >&2
-      printf 'Close the sessions first, or explicitly use --force.\n' >&2
+      printf 'These are legacy PTYs. Close them once to migrate, or explicitly use --force.\n' >&2
       return 1
     fi
     return 0
@@ -50,6 +52,7 @@ cd "${PROJECT_DIR}"
 
 check_active_sessions
 sudo -n true
+command -v tmux >/dev/null || { printf 'error: install tmux before deploying persistent terminals.\n' >&2; exit 1; }
 bun run build
 bun run test
 test -s dist/index.html
@@ -68,9 +71,25 @@ sudo -n install -o root -g root -m 0644 dist-server/server.js "${INSTALL_DIR}/cu
 sudo -n install -o root -g root -m 0644 "${PTY_LIB}" "${INSTALL_DIR}/current/librust_pty.so"
 sudo -n install -o root -g root -m 0644 dist/index.html "${INSTALL_DIR}/current/dist/index.html"
 sudo -n install -o root -g root -m 0644 dist/logo.svg "${INSTALL_DIR}/current/dist/logo.svg"
+sudo -n install -d -o root -g root -m 0755 "${INSTALL_DIR}/current/dist/fonts"
+for font_asset in dist/fonts/*; do
+  sudo -n install -o root -g root -m 0644 "${font_asset}" "${INSTALL_DIR}/current/dist/fonts/$(basename "${font_asset}")"
+done
 sudo -n install -o root -g root -m 0644 deploy/cloud-terminal.service /etc/systemd/system/cloud-terminal.service
+sudo -n install -o root -g root -m 0644 deploy/tmux.conf "${INSTALL_DIR}/current/tmux.conf"
+sudo -n install -o root -g root -m 0644 deploy/cloud-terminal-tmux.service "/etc/systemd/system/${TMUX_SERVICE}"
 
 sudo -n systemctl daemon-reload
+sudo -n systemctl enable --now "${TMUX_SERVICE}" >/dev/null
+# Starting an already active tmux unit preserves every shell. Never restart it
+# as part of a web application deployment.
+for attempt in {1..40}; do
+  if sudo -n -u user tmux -L cloud-terminal -N show-options -s -v exit-empty >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
+sudo -n -u user tmux -L cloud-terminal -N show-options -s -v exit-empty >/dev/null
 sudo -n systemctl enable "${SERVICE_NAME}" >/dev/null
 sudo -n systemctl restart "${SERVICE_NAME}"
 

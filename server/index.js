@@ -41,6 +41,12 @@ import {
   getTerminalReplayPlan,
   recordTerminalEvent,
 } from './terminal-stream.js';
+import { createPersistentPtyBackend } from './persistent-pty.js';
+import { UnicodeGraphemesAddon } from './unicode.js';
+import {
+  readTerminalWorkspace, saveTerminalWorkspace, deleteTerminalWorkspace,
+  readTerminalInputStream, saveTerminalInputStream, deleteTerminalInputStream,
+} from './terminal-state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -65,6 +71,8 @@ const WS_OPEN = 1;
 const WS_ROUTES = {
   '/auth/session': 'auth',
   '/terminal': 'terminal',
+  '/terminal/output': 'terminal-output',
+  '/terminal/input': 'terminal-input',
   '/terminal/tabs': 'tabs',
 };
 // Marker subprotocol echoed back on a successful upgrade.
@@ -75,6 +83,7 @@ const authSessionSubscribers = new Map();
 const workspaces = new Map();
 
 await initializeAuthStore();
+const persistentPty = createPersistentPtyBackend();
 
 function readString(value, fallback = '') {
   return typeof value === 'string' ? value : fallback;
@@ -210,24 +219,24 @@ function createInitialTabsState() {
 function workspaceFor(userId) {
   let workspace = workspaces.get(userId);
   if (!workspace) {
+    const saved = readTerminalWorkspace(userId);
     workspace = {
       userId,
-      tabsState: createInitialTabsState(),
-      exitedTabs: new Set(),
+      tabsState: saved?.tabsState ?? createInitialTabsState(),
+      exitedTabs: new Set(saved?.exitedTabs ?? []),
       tabSubscribers: new Set(),
     };
     workspaces.set(userId, workspace);
+    saveTerminalWorkspace(workspace);
   }
   return workspace;
 }
 
 function closeUserWorkspace(userId) {
-  const workspace = workspaces.get(userId);
-  if (!workspace) return;
+  const workspace = workspaces.get(userId) || workspaceFor(userId);
   for (const ws of workspace.tabSubscribers) ws.close(4001, 'User removed');
-  for (const [sessionId, session] of sessions) {
-    if (session.workspace === workspace) closeSession(sessionId, false);
-  }
+  for (const tab of workspace.tabsState.tabs) closeSession(tab.id, false);
+  deleteTerminalWorkspace(userId);
   workspaces.delete(userId);
 }
 
@@ -240,9 +249,12 @@ function cleanTerminalTitle(title) {
     .slice(0, 80);
 }
 
-function getTabStatus(workspace, tabId) {
+function getTabStatus(workspace, tabId, persistentSessionIds = null) {
   const session = sessions.get(tabId);
   if (!session || session.workspace !== workspace) {
+    if (persistentSessionIds?.has(tabId)) {
+      return tabId === workspace.tabsState.activeId ? 'disconnected' : 'background';
+    }
     return workspace.exitedTabs.has(tabId) ? 'exited' : 'disconnected';
   }
 
@@ -262,6 +274,8 @@ function getTabStatus(workspace, tabId) {
 
 function serializeTabsState(workspace) {
   const { tabsState } = workspace;
+  // Query tmux once per broadcast, rather than spawning one CLI per tab.
+  const persistentSessionIds = persistentPty.enabled ? new Set(persistentPty.listSessionIds()) : null;
   if (tabsState.tabs.length === 0) {
     const firstTab = createTab(1);
     tabsState.tabs.push(firstTab);
@@ -277,24 +291,28 @@ function serializeTabsState(workspace) {
     tabs: tabsState.tabs.map((tab) => ({
       ...tab,
       title: cleanTerminalTitle(tab.title) || tab.title,
-      status: getTabStatus(workspace, tab.id),
+      status: getTabStatus(workspace, tab.id, persistentSessionIds),
     })),
     activeId: tabsState.activeId,
   };
 }
 
 function sendTabsState(ws) {
-  if (ws.readyState === WS_OPEN) {
-    ws.send(encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState(ws.data.workspace) }));
+  if (websocketWritable(ws)) {
+    if (ws.send(encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState(ws.data.workspace) })) === 0) {
+      ws.close(1013, 'Tab state dropped');
+    }
   }
 }
 
 function broadcastTabsState(workspace) {
+  saveTerminalWorkspace(workspace);
   const payload = encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState(workspace) });
   for (const ws of workspace.tabSubscribers) {
-    if (ws.readyState === WS_OPEN) {
-      ws.send(payload);
-    } else {
+    if (websocketWritable(ws)) {
+      if (ws.send(payload) === 0) ws.close(1013, 'Tab state dropped');
+    }
+    if (ws.readyState !== WS_OPEN) {
       workspace.tabSubscribers.delete(ws);
     }
   }
@@ -361,13 +379,13 @@ function removeTab(workspace, tabId) {
   }
 
   workspace.exitedTabs.delete(tabId);
-  if (sessions.get(tabId)?.workspace === workspace) closeSession(tabId, false);
+  closeSession(tabId, false);
   broadcastTabsState(workspace);
   return true;
 }
 
 function sendTabsError(ws, message) {
-  if (ws.readyState === WS_OPEN) {
+  if (websocketWritable(ws)) {
     ws.send(encodeTabsServerMessage({ type: 'error', message }));
   }
 }
@@ -463,6 +481,7 @@ function createTerminalSnapshot(cols, rows) {
     scrollback: SERVER_SNAPSHOT_SCROLLBACK,
   });
   const serializer = new SerializeAddon();
+  terminal.loadAddon(new UnicodeGraphemesAddon());
   terminal.loadAddon(serializer);
 
   // SerializeAddon preserves mouse tracking (1000/1002/1003), but omits the
@@ -502,9 +521,9 @@ function writeTerminalSnapshot(session, chunk, onParsed) {
 
 // Keep each decoded terminal frame small enough for xterm to parse without monopolizing
 // the browser thread. A busy PTY reaches the byte cap and sends immediately; light output
-// such as an echoed key is forced out within 20 ms.
+// such as an echoed key is forced out within 8 ms.
 const TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 * 1024;
-const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 20;
+const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 8;
 
 function forEachTerminalOutputFrame(chunk, callback) {
   const bytes = Buffer.from(chunk);
@@ -540,10 +559,20 @@ function flushTerminalOutput(session) {
   session.pendingOutput.length = 0;
   session.pendingOutputBytes = 0;
 
-  // Commit the sequence only after parsing: the replay log and screen then
-  // describe the same output boundary. xterm batches these queued writes itself.
+  // Forward live output immediately, without waiting for the headless parser.
+  // Reserve its sequence, but commit replay only after parsing so reconnect
+  // snapshots still advertise exactly the bytes they contain.
+  const forwardedSocket = session.socketReady ? session.socket : null;
+  session.pendingOutputEvents += 1;
+  if (forwardedSocket) {
+    sendTerminalEvent(forwardedSocket, {
+      type: 'output', data: chunk,
+      seq: session.terminalEvents.lastSeq + session.pendingOutputEvents,
+    });
+  }
   writeTerminalSnapshot(session, chunk, () => {
-    recordAndSendTerminalEvent(session, { type: 'output', data: chunk });
+    session.pendingOutputEvents -= 1;
+    recordAndSendTerminalEvent(session, { type: 'output', data: chunk }, forwardedSocket);
   });
 }
 
@@ -580,13 +609,15 @@ function queueTerminalOutput(session, chunk) {
 
 function sendTerminalSnapshot(ws, snapshot) {
   forEachTerminalOutputFrame(snapshot, (frame) => {
-    if (terminalSocketWritable(ws)) {
-      if (sendTerminalOutput(ws, frame) === 0) ws.close(1013, 'Terminal output dropped');
+    if (websocketWritable(ws)) {
+      if (sendTerminalOutput(ws, frame, undefined, ws.data.kind !== 'terminal-output') === 0) {
+        ws.close(1013, 'Terminal output dropped');
+      }
     }
   });
 }
 
-function terminalSocketWritable(ws) {
+function websocketWritable(ws) {
   if (ws?.readyState !== WS_OPEN) return false;
   if (typeof ws.getBufferedAmount === 'function'
     && ws.getBufferedAmount() > TERMINAL_SOCKET_BUFFER_LIMIT) {
@@ -622,12 +653,12 @@ function resizeSession(session, cols, rows) {
 }
 
 function sendTerminalEvent(ws, event) {
-  if (!terminalSocketWritable(ws)) {
+  if (!websocketWritable(ws)) {
     return;
   }
 
   if (event.type === 'output') {
-    if (sendTerminalOutput(ws, event.data, event.seq) === 0) {
+    if (sendTerminalOutput(ws, event.data, event.seq, ws.data.kind !== 'terminal-output') === 0) {
       ws.close(1013, 'Terminal output dropped');
     }
     return;
@@ -636,37 +667,37 @@ function sendTerminalEvent(ws, event) {
   ws.send(encodeTerminalServerMessage(event));
 }
 
-function recordAndSendTerminalEvent(session, event) {
+function recordAndSendTerminalEvent(session, event, forwardedSocket = null) {
   const sequencedEvent = recordTerminalEvent(session.terminalEvents, event);
-  if (session.socketReady) sendTerminalEvent(session.socket, sequencedEvent);
+  if (session.socketReady && session.socket !== forwardedSocket) {
+    sendTerminalEvent(session.socket, sequencedEvent);
+  }
   return sequencedEvent;
 }
 
 function createSession(sessionId, options, workspace) {
-  const cwd = resolveCwd(options.cwd);
+  let cwd = resolveCwd(options.cwd);
   const shell = resolveShell();
+  const env = {
+    ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', FORCE_COLOR: '3',
+    SSH_CLIENT: process.env.SSH_CLIENT || '127.0.0.1 0 0',
+  };
+  const persistent = persistentPty.prepare(sessionId, { cwd, cols: options.cols, rows: options.rows, shell, env });
+  if (persistent) cwd = persistent.cwd;
   const terminalSnapshot = createTerminalSnapshot(options.cols, options.rows);
-  const shellProcess = ptySpawn(shell.command, shell.args, {
+  const shellProcess = ptySpawn(persistent?.command ?? shell.command, persistent?.args ?? shell.args, {
     name: 'xterm-256color',
     cols: options.cols,
     rows: options.rows,
     cwd,
-    env: {
-      ...process.env,
-      TERM: 'xterm-256color',
-      COLORTERM: 'truecolor',
-      FORCE_COLOR: '3',
-      // Web clients need OSC 52 copies even if a TUI can write the server's
-      // clipboard. Pi uses SSH_CLIENT to detect that its terminal is remote.
-      SSH_CLIENT: process.env.SSH_CLIENT || '127.0.0.1 0 0',
-    },
+    env,
   });
   workspace.exitedTabs.delete(sessionId);
 
   const session = {
     id: sessionId,
     workspace,
-    generation: randomUUID(),
+    generation: persistent?.generation ?? randomUUID(),
     cwd,
     pty: shellProcess,
     terminal: terminalSnapshot.terminal,
@@ -676,6 +707,8 @@ function createSession(sessionId, options, workspace) {
     snapshotDirty: false,
     socket: null,
     socketReady: false,
+    inputSocket: null,
+    pendingOutputEvents: 0,
     terminalEvents: createTerminalEventLog(),
     inputStreams: new Map(),
     closed: false,
@@ -713,6 +746,8 @@ function createSession(sessionId, options, workspace) {
     });
   });
 
+  const savedInput = readTerminalInputStream(sessionId, session.generation);
+  if (savedInput) session.inputStreams.set(savedInput.streamId, savedInput.lastSeq);
   sessions.set(sessionId, session);
   return session;
 }
@@ -722,6 +757,9 @@ function attachSocket(ws, session, lastSeq = 0) {
   // computed, so a reconnecting client is never handed a view that is missing it.
   flushTerminalOutput(session);
   const oldSocket = session.socket;
+  const oldInputSocket = session.inputSocket;
+  session.inputSocket = null;
+  oldInputSocket?.close(1000, 'Replaced by newer terminal view');
   session.socket = ws;
   session.socketReady = false;
   if (oldSocket && oldSocket !== ws && oldSocket.readyState === WS_OPEN) {
@@ -759,14 +797,22 @@ function attachSocket(ws, session, lastSeq = 0) {
 }
 
 function detachSocket(session, ws) {
+  if (session.inputSocket === ws) {
+    session.inputSocket = null;
+  }
   if (session.socket === ws) {
     session.socket = null;
     session.socketReady = false;
+    const inputSocket = session.inputSocket;
+    session.inputSocket = null;
+    inputSocket?.close(1000, 'Terminal output disconnected');
     broadcastTabsState(session.workspace);
   }
 }
 
 function closeSession(sessionId, broadcast = true) {
+  persistentPty.close(sessionId);
+  deleteTerminalInputStream(sessionId);
   const session = sessions.get(sessionId);
   if (!session) {
     return false;
@@ -783,6 +829,8 @@ function closeSession(sessionId, broadcast = true) {
   session.socket?.close(1000, 'Terminal closed');
   session.socket = null;
   session.socketReady = false;
+  session.inputSocket?.close(1000, 'Terminal closed');
+  session.inputSocket = null;
   session.pty.kill();
   sessions.delete(sessionId);
   if (broadcast) {
@@ -818,6 +866,28 @@ function handleInit(ws, message) {
     ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not available' }));
     return null;
   }
+  if (ws.data.kind === 'terminal-input') {
+    // The output connection owns session creation and replay. An input connection
+    // can only join its exact stream and generation; it never starts another PTY.
+    if (!existingSession || existingSession.closed || existingSession.disposed
+      || !existingSession.socketReady
+      || existingSession.socket?.data.kind !== 'terminal-output'
+      || existingSession.socket.data.inputStreamId !== inputStreamId
+      || existingSession.generation !== readString(message.sessionGeneration)) {
+      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal output connection is not ready' }));
+      ws.close(1008, 'Invalid terminal input attachment');
+      return null;
+    }
+    const oldInputSocket = existingSession.inputSocket;
+    existingSession.inputSocket = ws;
+    ws.data.inputStreamId = inputStreamId;
+    oldInputSocket?.close(1000, 'Replaced by newer terminal input');
+    ws.send(encodeTerminalServerMessage({
+      type: 'ready', sessionId, cwd: existingSession.cwd,
+      sessionGeneration: existingSession.generation,
+    }));
+    return existingSession;
+  }
   if (forceRestart || existingSession?.closed) {
     closeSession(sessionId, false);
   }
@@ -838,6 +908,7 @@ function handleInit(ws, message) {
     // sequence history only for the stream that can currently send input.
     session.inputStreams.clear();
     session.inputStreams.set(inputStreamId, 0);
+    saveTerminalInputStream(session.id, session.generation, inputStreamId, 0);
   }
   ws.data.inputStreamId = inputStreamId;
   const knownGeneration = readString(message.sessionGeneration);
@@ -853,6 +924,10 @@ function handleTerminalMessage(ws, raw) {
   }
 
   if (message.type === 'init') {
+    if (ws.data.activeSession) {
+      ws.close(1008, 'Terminal is already initialized');
+      return;
+    }
     ws.data.activeSession = handleInit(ws, message);
     return;
   }
@@ -863,8 +938,16 @@ function handleTerminalMessage(ws, raw) {
     return;
   }
 
-  if (activeSession.socket !== ws) {
+  const attachedSocket = ws.data.kind === 'terminal-input'
+    ? activeSession.inputSocket : activeSession.socket;
+  if (attachedSocket !== ws || activeSession.disposed || activeSession.closed
+    || sessions.get(activeSession.id) !== activeSession) {
     ws.close(1000, 'Terminal connection replaced');
+    return;
+  }
+
+  if (ws.data.kind === 'terminal-output' && message.type !== 'ping') {
+    ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Use the terminal input connection' }));
     return;
   }
 
@@ -890,6 +973,7 @@ function handleTerminalMessage(ws, raw) {
 
     activeSession.pty.write(readString(message.data));
     activeSession.inputStreams.set(inputStreamId, inputSeq);
+    saveTerminalInputStream(activeSession.id, activeSession.generation, inputStreamId, inputSeq);
     ws.send(encodeTerminalServerMessage({ type: 'input-ack', inputSeq }));
     return;
   }
@@ -911,7 +995,7 @@ function handleTerminalMessage(ws, raw) {
   }
 }
 
-// One Bun.serve websocket handler for all three endpoints. ws.data.kind (set at upgrade)
+// One Bun.serve websocket handler for all endpoints. ws.data.kind (set at upgrade)
 // selects the behaviour; per-connection state lives on ws.data instead of a closure.
 const websocketHandlers = {
   open(ws) {
@@ -927,8 +1011,9 @@ const websocketHandlers = {
     }
   },
   message(ws, raw) {
+    if (!websocketWritable(ws)) return;
     const { kind } = ws.data;
-    if (kind === 'terminal') {
+    if (kind === 'terminal' || kind === 'terminal-output' || kind === 'terminal-input') {
       handleTerminalMessage(ws, raw);
       return;
     }
@@ -946,7 +1031,7 @@ const websocketHandlers = {
   close(ws) {
     const { kind } = ws.data;
     removeAuthSessionSubscriber(ws.data.auth.tokenHash, ws);
-    if (kind === 'terminal') {
+    if (kind === 'terminal' || kind === 'terminal-output' || kind === 'terminal-input') {
       const activeSession = ws.data.activeSession;
       if (activeSession && sessions.get(activeSession.id) === activeSession) {
         detachSocket(activeSession, ws);
@@ -960,7 +1045,11 @@ const websocketHandlers = {
   },
 };
 
-app.get('/api/health', (c) => c.json({ ok: true, sessions: sessions.size }));
+app.get('/api/health', (c) => c.json({
+  ok: true,
+  sessions: persistentPty.enabled ? persistentPty.count() : sessions.size,
+  persistentSessions: persistentPty.enabled,
+}));
 
 app.get('/api/auth/status', async (c) => c.json({
   needsSetup: !(await hasUsers()),
@@ -1051,10 +1140,12 @@ function buildStaticAssets(directory) {
 
       const body = fs.readFileSync(fullPath);
       const urlPath = `/${path.relative(directory, fullPath).split(path.sep).join('/')}`;
+      const precompressed = fullPath.endsWith('.woff2');
       assets.set(urlPath, {
         body,
-        gzip: gzipSync(body, { level: 9 }),
-        brotli: brotliCompressSync(body, {
+        // WOFF2 already uses Brotli. Recompressing it wastes startup CPU and RAM.
+        gzip: precompressed ? null : gzipSync(body, { level: 9 }),
+        brotli: precompressed ? null : brotliCompressSync(body, {
           params: {
             [zlibConstants.BROTLI_PARAM_QUALITY]: 9,
             [zlibConstants.BROTLI_PARAM_SIZE_HINT]: body.length,
@@ -1062,6 +1153,7 @@ function buildStaticAssets(directory) {
         }),
         etag: `"${createHash('sha1').update(body).digest('base64url')}"`,
         type: Bun.file(fullPath).type,
+        cacheControl: precompressed ? 'public, max-age=31536000, immutable' : 'no-cache',
       });
     }
   };
@@ -1076,7 +1168,7 @@ function sendStaticAsset(c, asset) {
     etag: asset.etag,
     // The entry document changes on every deploy, so it must always revalidate. The
     // ETag turns that revalidation into a 304 instead of a full re-download.
-    'cache-control': 'no-cache',
+    'cache-control': asset.cacheControl,
     vary: 'Accept-Encoding',
   };
 
@@ -1085,10 +1177,10 @@ function sendStaticAsset(c, asset) {
   }
 
   const accepted = c.req.header('accept-encoding') ?? '';
-  if (accepted.includes('br')) {
+  if (asset.brotli && accepted.includes('br')) {
     return new Response(asset.brotli, { headers: { ...headers, 'content-encoding': 'br' } });
   }
-  if (accepted.includes('gzip')) {
+  if (asset.gzip && accepted.includes('gzip')) {
     return new Response(asset.gzip, { headers: { ...headers, 'content-encoding': 'gzip' } });
   }
   return new Response(asset.body, { headers });
@@ -1126,7 +1218,7 @@ const server = Bun.serve({
         kind,
         auth,
         workspace: workspaceFor(auth.user.id),
-        ...(kind === 'terminal' ? { activeSession: null } : {}),
+        ...(kind.startsWith('terminal') ? { activeSession: null } : {}),
       };
       // Only select a subprotocol the client actually offered — selecting one it did
       // not offer makes the browser fail the handshake.

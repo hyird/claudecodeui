@@ -2,6 +2,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { Terminal } from '@xterm/xterm';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -34,6 +35,7 @@ type TerminalDimensions = {
 
 const MIN_TERMINAL_COLS = 2;
 const MIN_TERMINAL_ROWS = 1;
+const TERMINAL_FONT_FAMILY = '"Maple Mono NF CN", "CaskaydiaMono Nerd Font", "JetBrainsMono Nerd Font", "Symbols Nerd Font Mono", Consolas, monospace';
 // Width of the scrollback scrollbar to reserve so the rightmost column is never
 // rendered beneath it. Match the xterm overlay's `overviewRuler.width` below.
 // xterm's own FitAddon reserves the same gutter (`- scrollBarWidth`).
@@ -107,7 +109,7 @@ function splitTerminalInput(data: string) {
 }
 
 function createTerminalSocket(authToken: string) {
-  return openAuthenticatedSocket('/terminal', authToken);
+  return openAuthenticatedSocket('/terminal/output', authToken);
 }
 
 export default function TerminalPane({
@@ -123,6 +125,7 @@ export default function TerminalPane({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const inputSocketRef = useRef<WebSocket | null>(null);
   const terminalReadyRef = useRef(false);
   const inputStateRef = useRef(getTerminalInputState(tab.id));
   const [sessionRebuiltNoticeVisible, setSessionRebuiltNoticeVisible] = useState(false);
@@ -234,7 +237,7 @@ export default function TerminalPane({
   // leftover pixels stay blank instead of clipping the right edge/bottom row.
   const fitAndResize = useCallback(() => {
     const terminal = terminalRef.current;
-    const socket = socketRef.current;
+    const socket = inputSocketRef.current;
     const dims = proposeFrameDimensions();
     if (!terminal || !dims) {
       return;
@@ -250,7 +253,7 @@ export default function TerminalPane({
       terminal.resize(dims.cols, dims.rows);
     }
 
-    if (socket?.readyState === WebSocket.OPEN) {
+    if (terminalReadyRef.current && socket?.readyState === WebSocket.OPEN) {
       socket.send(encodeTerminalClientMessage({
         type: 'resize',
         cols: dims.cols,
@@ -265,7 +268,7 @@ export default function TerminalPane({
     }
 
     const inputState = inputStateRef.current;
-    const socket = socketRef.current;
+    const socket = inputSocketRef.current;
     let canSend = terminalReadyRef.current && socket?.readyState === WebSocket.OPEN;
 
     for (const frame of splitTerminalInput(data)) {
@@ -389,7 +392,7 @@ export default function TerminalPane({
       cursorBlink: false,
       cursorInactiveStyle: 'none',
       cursorStyle: 'bar',
-      fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, monospace',
+      fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: preferences.fontSize,
       lineHeight: 1.12,
       overviewRuler: { width: TERMINAL_SCROLLBAR_GUTTER },
@@ -411,6 +414,7 @@ export default function TerminalPane({
         }
       });
     };
+    terminal.loadAddon(new UnicodeGraphemesAddon());
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
     terminal.loadAddon(new ClipboardAddon(undefined, {
@@ -422,6 +426,22 @@ export default function TerminalPane({
     }));
 
     terminal.open(container);
+    if (document.fonts) {
+      void Promise.all([
+        document.fonts.load('14px "Maple Mono NF CN"'),
+        document.fonts.load('bold 14px "Maple Mono NF CN"'),
+      ]).then(() => {
+        if (disposed || terminalRef.current !== terminal) return;
+        // xterm measured the fallback before the web font arrived. Changing the
+        // option invalidates both the measured cell size and the glyph atlas.
+        terminal.options.fontFamily = 'Consolas, monospace';
+        terminal.options.fontFamily = TERMINAL_FONT_FAMILY;
+        resizeAfterLayoutSettles();
+        forceFullRefresh();
+      }).catch(() => {
+        // The remaining font stack is monospaced if a font download fails.
+      });
+    }
     // DOM text runs accumulate fractional glyph widths, making Pi's character
     // scrollbar stagger across rows. WebGL places every glyph on the cell grid.
     let webglAddon: WebglAddon | undefined;
@@ -503,11 +523,6 @@ export default function TerminalPane({
 
     const writeTerminalData = (data: string) => {
       terminal.write(data);
-      try {
-        forceFullRefresh();
-      } catch {
-        // Rendering is best-effort and must never block later terminal frames.
-      }
     };
 
     function clearTerminalResyncTimer() {
@@ -557,21 +572,7 @@ export default function TerminalPane({
           // terminals and can corrupt the cursor position of a restored TUI.
           writeTerminalData('\x1bc');
         }
-        terminalReadyRef.current = true;
-        for (const [inputSeq, data] of inputStateRef.current.pending) {
-          if (socketRef.current !== socket || socket.readyState !== WebSocket.OPEN) {
-            terminalReadyRef.current = false;
-            break;
-          }
-          try {
-            socket.send(encodeTerminalClientMessage({ type: 'input', data, inputSeq }));
-          } catch {
-            terminalReadyRef.current = false;
-            socket.close();
-            break;
-          }
-        }
-        onStatusChange(tab.id, 'connected');
+        connectInputSocket(socket);
         updateScrollbackAffordance();
         resizeAfterLayoutSettles();
         forceFullRefresh();
@@ -590,6 +591,7 @@ export default function TerminalPane({
       }
 
       if (message.type === 'exit') {
+        closeInputSocket();
         onStatusChange(tab.id, 'exited');
         return;
       }
@@ -654,7 +656,84 @@ export default function TerminalPane({
     let heartbeatTimer = 0;
     let connectionTimer = 0;
     let pongTimer = 0;
+    let inputConnectionTimer = 0;
+    let inputPongTimer = 0;
     let terminalMessageQueue = Promise.resolve();
+
+    function closeInputSocket() {
+      terminalReadyRef.current = false;
+      window.clearTimeout(inputConnectionTimer);
+      window.clearTimeout(inputPongTimer);
+      inputConnectionTimer = 0;
+      inputPongTimer = 0;
+      const inputSocket = inputSocketRef.current;
+      inputSocketRef.current = null;
+      inputSocket?.close();
+    }
+
+    function connectInputSocket(outputSocket: WebSocket) {
+      if (disposed || socketRef.current !== outputSocket) return;
+      closeInputSocket();
+      const inputSocket = openAuthenticatedSocket('/terminal/input', authToken);
+      inputSocket.binaryType = 'arraybuffer';
+      inputSocketRef.current = inputSocket;
+      // A separate queue keeps input acknowledgements and pongs independent of
+      // output decoding, replay and rendering work on the downlink.
+      let inputMessageQueue = Promise.resolve();
+      const failInputConnection = () => {
+        if (inputSocketRef.current !== inputSocket) return;
+        closeInputSocket();
+        outputSocket.close();
+      };
+      inputConnectionTimer = window.setTimeout(failInputConnection, TERMINAL_CONNECT_TIMEOUT_MS);
+      inputSocket.addEventListener('open', () => {
+        if (inputSocketRef.current !== inputSocket) return;
+        try {
+          inputSocket.send(encodeTerminalClientMessage({
+            type: 'init', sessionId: tab.id,
+            cols: terminal.cols, rows: terminal.rows,
+            inputStreamId: inputStateRef.current.streamId,
+            sessionGeneration: inputStateRef.current.generation,
+          }));
+        } catch {
+          failInputConnection();
+        }
+      });
+      inputSocket.addEventListener('message', (event) => {
+        inputMessageQueue = inputMessageQueue.then(async () => {
+          const message = await decodeTerminalServerMessage(event.data);
+          if (disposed || inputSocketRef.current !== inputSocket
+            || socketRef.current !== outputSocket || !message) return;
+          if (message.type === 'ready') {
+            if (message.sessionGeneration !== inputStateRef.current.generation) {
+              failInputConnection();
+              return;
+            }
+            window.clearTimeout(inputConnectionTimer);
+            inputConnectionTimer = 0;
+            terminalReadyRef.current = true;
+            for (const [inputSeq, data] of inputStateRef.current.pending) {
+              inputSocket.send(encodeTerminalClientMessage({ type: 'input', data, inputSeq }));
+            }
+            inputSocket.send(encodeTerminalClientMessage({
+              type: 'resize', cols: terminal.cols, rows: terminal.rows,
+            }));
+            reconnectAttempts = 0;
+            onStatusChange(tab.id, 'connected');
+          } else if (message.type === 'pong') {
+            window.clearTimeout(inputPongTimer);
+            inputPongTimer = 0;
+          } else if (message.type === 'input-ack') {
+            await applyTerminalServerMessage(inputSocket, message);
+          } else if (message.type === 'error') {
+            await applyTerminalServerMessage(inputSocket, message);
+            failInputConnection();
+          }
+        }).catch(failInputConnection);
+      });
+      inputSocket.addEventListener('close', failInputConnection);
+      inputSocket.addEventListener('error', failInputConnection);
+    }
 
     function clearReconnectTimer() {
       if (reconnectTimer) {
@@ -709,7 +788,8 @@ export default function TerminalPane({
       clearReconnectTimer();
       clearConnectionTimer();
       clearPongTimer();
-      terminalReadyRef.current = false;
+      closeInputSocket();
+      terminalMessageQueue = Promise.resolve();
 
       const socket = createTerminalSocket(authToken);
       socket.binaryType = 'arraybuffer';
@@ -723,6 +803,7 @@ export default function TerminalPane({
         connectionTimer = 0;
         socketRef.current = null;
         terminalReadyRef.current = false;
+        closeInputSocket();
         clearTerminalResyncTimer();
         socket.close();
         scheduleReconnect();
@@ -771,6 +852,7 @@ export default function TerminalPane({
         if (socketRef.current === socket) {
           socketRef.current = null;
           terminalReadyRef.current = false;
+          closeInputSocket();
           clearConnectionTimer();
           clearPongTimer();
           clearTerminalResyncTimer();
@@ -781,6 +863,7 @@ export default function TerminalPane({
       socket.addEventListener('error', () => {
         if (socketRef.current === socket) {
           terminalReadyRef.current = false;
+          closeInputSocket();
           clearConnectionTimer();
           onStatusChange(tab.id, 'error');
           socket.close();
@@ -814,6 +897,7 @@ export default function TerminalPane({
         socket.send(encodeTerminalClientMessage({ type: 'ping' }));
       } catch {
         socketRef.current = null;
+        closeInputSocket();
         socket.close();
         scheduleReconnect();
         return;
@@ -826,9 +910,27 @@ export default function TerminalPane({
 
         pongTimer = 0;
         socketRef.current = null;
+        closeInputSocket();
         socket.close();
         scheduleReconnect();
       }, pongTimeoutMs);
+
+      const inputSocket = inputSocketRef.current;
+      if (terminalReadyRef.current && inputSocket?.readyState === WebSocket.OPEN && !inputPongTimer) {
+        try {
+          inputSocket.send(encodeTerminalClientMessage({ type: 'ping' }));
+          inputPongTimer = window.setTimeout(() => {
+            inputPongTimer = 0;
+            if (inputSocketRef.current === inputSocket) {
+              closeInputSocket();
+              socket.close();
+            }
+          }, pongTimeoutMs);
+        } catch {
+          closeInputSocket();
+          socket.close();
+        }
+      }
     };
 
     // The user just came back to the tab: reconnect promptly (skip the backoff ramp)
@@ -871,7 +973,13 @@ export default function TerminalPane({
       refreshAfterTerminalChange();
     });
     const writeParsedSubscription = terminal.onWriteParsed(() => {
-      refreshAfterTerminalChange();
+      // xterm tracks dirty rows and schedules rendering after parsing. A full
+      // viewport refresh here would repaint every row for every output batch.
+      updateScrollbackAffordance();
+      const buffer = terminal.buffer.active;
+      if (buffer.type === 'alternate' || buffer.viewportY !== buffer.baseY) {
+        forceFullRefresh();
+      }
     });
     const resizeSubscription = terminal.onResize(() => {
       refreshAfterTerminalChange();
@@ -886,6 +994,7 @@ export default function TerminalPane({
     return () => {
       disposed = true;
       terminalReadyRef.current = false;
+      closeInputSocket();
       clearResizeTimers();
       clearReconnectTimer();
       clearPongTimer();

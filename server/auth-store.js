@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Database } from 'bun:sqlite';
+import { initializeTerminalStateStore } from './terminal-state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -161,6 +162,9 @@ export async function initializeAuthStore() {
     db = new Database(DB_PATH, { create: true });
     db.exec('PRAGMA journal_mode = WAL;');
     ensureSchema(db);
+    const terminalDb = DB_PATH === ':memory:' ? db : new Database(DB_PATH, { create: true });
+    terminalDb.exec('PRAGMA synchronous = NORMAL;');
+    initializeTerminalStateStore(terminalDb);
   }
 }
 

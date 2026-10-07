@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
+import { UnicodeGraphemesAddon } from './unicode.js';
 import { createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent } from './terminal-stream.js';
 
 // Exercise the actual server functions with a real xterm parser and a fake PTY.
@@ -16,7 +17,7 @@ const functions = [
   'queueTerminalOutput', 'sendTerminalSnapshot', 'readTerminalSnapshot', 'resizeSession',
   'sendTerminalEvent', 'recordAndSendTerminalEvent', 'createSession', 'attachSocket',
   'detachSocket', 'closeSession', 'handleInit', 'handleTerminalMessage',
-  'terminalSocketWritable', 'closeUserWorkspace',
+  'websocketWritable', 'closeUserWorkspace',
 ].map((name) => {
   const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
   assert.ok(match, `missing server function ${name}`);
@@ -39,10 +40,10 @@ function setup(t, cols = 20, rows = 4) {
     HeadlessTerminal: class extends headlessXterm.Terminal {
       constructor(options) { super(options); terminals.push(this); }
     },
-    SerializeAddon, createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent,
+    SerializeAddon, UnicodeGraphemesAddon, createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent,
     SERVER_SNAPSHOT_SCROLLBACK: 1000,
     TERMINAL_OUTPUT_MAX_FRAME_BYTES: 16 * 1024,
-    TERMINAL_OUTPUT_FLUSH_INTERVAL_MS: 20,
+    TERMINAL_OUTPUT_FLUSH_INTERVAL_MS: 8,
     TERMINAL_SOCKET_BUFFER_LIMIT: 1024 * 1024,
     WS_OPEN: 1,
     UUID_V4_PATTERN: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
@@ -51,6 +52,10 @@ function setup(t, cols = 20, rows = 4) {
     readString: (value, fallback = '') => typeof value === 'string' ? value : fallback,
     readNumber: (value, fallback) => typeof value === 'number' ? value : fallback,
     broadcastTabsState() {},
+    saveTerminalWorkspace() {}, deleteTerminalWorkspace() {},
+    readTerminalInputStream: () => null,
+    saveTerminalInputStream() {}, deleteTerminalInputStream() {},
+    persistentPty: { enabled: false, prepare: () => null, close() {} },
     encodeTerminalServerMessage: (message) => message,
     decodeTerminalClientMessage: (message) => message,
     sendTerminalOutput: (ws, data, seq) => ws.send({ type: 'output', data, seq }),
@@ -372,6 +377,77 @@ test('a slow terminal viewer is disconnected while replay state remains availabl
   context.attachSocket(resumed, session);
   await drain(session.terminal);
   assert.ok(resumed.messages.some((message) => message.type === 'output' && message.data.includes('still running')));
+});
+
+test('live output reaches a ready downlink before the headless parser and is committed once', async (t) => {
+  const { context, session } = setup(t);
+  const output = socket(session.workspace);
+  context.attachSocket(output, session);
+  await drain(session.terminal);
+  context.queueTerminalOutput(session, 'one');
+  context.flushTerminalOutput(session);
+  context.queueTerminalOutput(session, 'two');
+  context.flushTerminalOutput(session);
+  assert.deepEqual(output.messages.filter((message) => message.type === 'output').map(({ seq, data }) => [seq, data]), [[1, 'one'], [2, 'two']]);
+  assert.equal(session.terminalEvents.lastSeq, 0, 'live output does not wait for snapshot parsing');
+  await drain(session.terminal);
+  assert.equal(session.terminalEvents.lastSeq, 2);
+  assert.equal(output.messages.filter((message) => message.type === 'output').length, 2);
+});
+
+test('input acknowledgements use a separate socket even while the output viewer is congested', async (t) => {
+  const { context, session } = setup(t);
+  const streamId = randomUUID();
+  const output = socket(session.workspace);
+  output.data.kind = 'terminal-output';
+  context.handleTerminalMessage(output, { type: 'init', sessionId: session.id, inputStreamId: streamId, cols: 20, rows: 4 });
+  await drain(session.terminal);
+  const input = socket(session.workspace);
+  input.data.kind = 'terminal-input';
+  context.handleTerminalMessage(input, { type: 'init', sessionId: session.id, inputStreamId: streamId, sessionGeneration: session.generation });
+  assert.equal(session.socket, output);
+  assert.equal(session.inputSocket, input);
+  output.getBufferedAmount = () => 2 * 1024 * 1024;
+  context.handleTerminalMessage(input, { type: 'input', data: 'echo test\r', inputSeq: 1 });
+  context.handleTerminalMessage(input, { type: 'input', data: 'echo test\r', inputSeq: 1 });
+  assert.deepEqual(session.pty.writes, ['echo test\r']);
+  assert.deepEqual(input.messages.map((message) => message.type), ['ready', 'input-ack', 'input-ack']);
+  assert.equal(output.messages.some((message) => message.type === 'input-ack'), false);
+  context.handleTerminalMessage(output, { type: 'input', data: 'forbidden', inputSeq: 2 });
+  assert.deepEqual(session.pty.writes, ['echo test\r']);
+});
+
+test('input attachment rejects mismatched streams and generations without creating a PTY', async (t) => {
+  const { context, session, ptys } = setup(t);
+  const streamId = randomUUID();
+  const output = socket(session.workspace);
+  output.data.kind = 'terminal-output';
+  context.handleTerminalMessage(output, { type: 'init', sessionId: session.id, inputStreamId: streamId, cols: 20, rows: 4 });
+  await drain(session.terminal);
+  for (const init of [
+    { inputStreamId: randomUUID(), sessionGeneration: session.generation },
+    { inputStreamId: streamId, sessionGeneration: randomUUID() },
+  ]) {
+    const input = socket(session.workspace);
+    input.data.kind = 'terminal-input';
+    context.handleTerminalMessage(input, { type: 'init', sessionId: session.id, ...init });
+    assert.equal(input.closedCode, 1008);
+  }
+  assert.equal(ptys.length, 1);
+  assert.equal(session.socket, output);
+});
+
+test('closing the output attachment also detaches its input socket without killing the shell', async (t) => {
+  const { context, session } = setup(t);
+  const output = socket(session.workspace);
+  context.attachSocket(output, session);
+  await drain(session.terminal);
+  const input = socket(session.workspace);
+  session.inputSocket = input;
+  context.detachSocket(session, output);
+  assert.equal(input.readyState, 3);
+  assert.equal(session.inputSocket, null);
+  assert.equal(session.pty.killed, undefined);
 });
 
 test('reattach during queued process exit creates a new generation immune to stale finalization', async (t) => {

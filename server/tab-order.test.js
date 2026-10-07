@@ -5,6 +5,11 @@ import { test } from 'node:test';
 
 const source = fs.readFileSync(new URL('./index.js', import.meta.url), 'utf8');
 const handler = source.match(/function handleTabsCommand\(ws, message\) \{[^]*?\n\}/)[0];
+const broadcastFunctions = ['websocketWritable', 'broadcastTabsState'].map((name) => {
+  const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
+  assert.ok(match, `missing ${name}`);
+  return match[0];
+}).join('\n');
 
 function setup() {
   const tabsState = { tabs: ['a', 'b', 'c', 'd'].map((id) => ({ id, title: id })), activeId: 'b' };
@@ -60,4 +65,29 @@ test('tab moves affect only the authenticated user workspace', () => {
   assert.deepEqual(state.tabsState.tabs.map((tab) => tab.id), ['a', 'b', 'c', 'd']);
   state.move('a', 'c', true);
   assert.deepEqual(other.tabsState.tabs.map((tab) => tab.id), ['y', 'z', 'x']);
+});
+
+test('tab broadcasts disconnect a slow subscriber without delaying healthy viewers', () => {
+  const messages = [];
+  const slow = {
+    readyState: 1,
+    getBufferedAmount: () => 1024 * 1024 + 1,
+    send() { throw new Error('slow socket must not receive more frames'); },
+    close(code) { this.readyState = 3; this.closedCode = code; },
+  };
+  const healthy = { readyState: 1, send(message) { messages.push(message); return 1; } };
+  const workspace = { tabSubscribers: new Set([slow, healthy]) };
+  const context = vm.createContext({
+    WS_OPEN: 1,
+    TERMINAL_SOCKET_BUFFER_LIMIT: 1024 * 1024,
+    serializeTabsState: () => ({ tabs: [] }),
+    saveTerminalWorkspace() {},
+    encodeTabsServerMessage: (message) => message,
+  });
+  vm.runInContext(broadcastFunctions, context);
+  context.broadcastTabsState(workspace);
+  assert.equal(slow.closedCode, 1013);
+  assert.equal(workspace.tabSubscribers.has(slow), false);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, 'tabs');
 });

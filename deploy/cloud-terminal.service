@@ -1,6 +1,7 @@
 [Unit]
 Description=Cloud Terminal web terminal
-After=network.target
+After=network.target cloud-terminal-tmux.service
+Wants=cloud-terminal-tmux.service
 
 [Service]
 Type=simple
@@ -13,6 +14,8 @@ Environment=PATH=/home/user/.bun/bin:/home/user/.local/bin:/usr/local/sbin:/usr/
 Environment=PORT=3001
 Environment=CLOUDCLI_DB_PATH=/opt/cloud-terminal/data/auth.sqlite
 Environment=BUN_PTY_LIB=/opt/cloud-terminal/current/librust_pty.so
+Environment=CLOUDCLI_PERSIST_TERMINALS=1
+Environment=CLOUDCLI_TMUX_SOCKET=cloud-terminal
 ExecStart=/home/user/.bun/bin/bun /opt/cloud-terminal/current/server.js
 Restart=on-failure
 RestartSec=2s

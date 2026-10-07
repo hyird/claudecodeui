@@ -43,6 +43,15 @@ test('small terminal output stays uncompressed inside the protobuf frame', () =>
   assert.equal(decodeOutputFrame(frame), 'ok\r\n');
 });
 
+test('fast downlink skips compression for large repetitive output', () => {
+  const output = 'terminal output\r\n'.repeat(800);
+  const frame = encodeTerminalOutput(output, 8, false);
+  const message = TerminalServerMessage.decode(frame);
+  assert.equal(message.output.compressed, false);
+  assert.equal(message.seq, 8);
+  assert.equal(decodeOutputFrame(frame), output);
+});
+
 test('terminal output below the compression threshold skips deflate even when repetitive', () => {
   const output = 'x'.repeat(256);
   const frame = encodeTerminalOutput(output, 12);

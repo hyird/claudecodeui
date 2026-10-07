@@ -193,7 +193,7 @@ class FakeTerminal {
   cols = 80;
   rows = 24;
   readonly options: Record<string, unknown>;
-  readonly buffer = { active: { baseY: 0 } };
+  readonly buffer = { active: { baseY: 0, viewportY: 0, type: 'normal' } };
   readonly parser = { registerCsiHandler: () => ({ dispose() {} }) };
   readonly element = makeElement().element;
   readonly writes: string[] = [];
@@ -412,6 +412,7 @@ function loadLoop(kind: LoopKind, harness: Harness) {
     if (specifier === '@xterm/addon-clipboard') return emptyAddon;
     if (specifier === '@xterm/addon-web-links') return emptyAddon;
     if (specifier === '@xterm/addon-webgl') return webglRuntime;
+    if (specifier === '@xterm/addon-unicode-graphemes') return { UnicodeGraphemesAddon: class {} };
     if (specifier === '@xterm/xterm') return xtermRuntime;
     if (specifier === './themes') return { terminalTheme: {} };
     if (specifier === './clipboard') return {
@@ -504,6 +505,16 @@ async function flushMicrotasks() {
 
 function emitServerMessage(harness: Harness, socket: FakeSocket, message: Record<string, unknown>) {
   socket.emit('message', harness.encode(message));
+}
+
+async function readyInputConnection(harness: Harness, generation: string) {
+  await flushMicrotasks();
+  const input = harness.sockets.at(-1)!;
+  expect(input.url).toBe('/terminal/input');
+  input.open();
+  emitServerMessage(harness, input, { type: 'ready', sessionGeneration: generation });
+  await flushMicrotasks();
+  return input;
 }
 
 function makeFailureSequence(harness: Harness) {
@@ -630,6 +641,61 @@ describe('runtime socket recovery', () => {
 });
 
 describe('terminal renderer recovery', () => {
+  test('downloaded terminal fonts redraw the existing renderer without reconnecting', async () => {
+    const harness = createHarness();
+    let releaseFonts!: () => void;
+    const fontsReady = new Promise<void>((resolve) => { releaseFonts = resolve; });
+    harness.document.fonts = { load: () => fontsReady };
+    const { cleanup } = loadLoop('terminal', harness);
+    const socket = harness.sockets[0];
+    const terminal = harness.terminalInstances[0];
+    const before = terminal.refreshCalls;
+    releaseFonts();
+    await flushMicrotasks();
+    expect(terminal.refreshCalls).toBeGreaterThan(before);
+    expect(terminal.options.fontFamily).toContain('Maple Mono NF CN');
+    expect(harness.terminalInstances).toHaveLength(1);
+    expect(harness.sockets).toHaveLength(1);
+    expect(socket.closeCalls).toBe(0);
+    cleanup();
+  });
+
+  test('a font download completing after unmount cannot revive timers or a disposed terminal', async () => {
+    const harness = createHarness();
+    let releaseFonts!: () => void;
+    const fontsReady = new Promise<void>((resolve) => { releaseFonts = resolve; });
+    harness.document.fonts = { load: () => fontsReady };
+    const { cleanup } = loadLoop('terminal', harness);
+    const terminal = harness.terminalInstances[0];
+    cleanup();
+    const before = terminal.refreshCalls;
+    releaseFonts();
+    await flushMicrotasks();
+    expect(terminal.disposed).toBe(true);
+    expect(terminal.refreshCalls).toBe(before);
+    expect(harness.clock.pendingCount).toBe(0);
+  });
+
+  test('ordinary output does not force a full viewport refresh for each frame', async () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const output = harness.sockets[0];
+    output.open();
+    emitServerMessage(harness, output, { type: 'ready', sessionGeneration: 'generation-1', reset: false });
+    await readyInputConnection(harness, 'generation-1');
+    const terminal = harness.terminalInstances[0];
+    const before = terminal.refreshCalls;
+    for (let seq = 1; seq <= 10; seq++) {
+      emitServerMessage(harness, output, { type: 'output', data: `line ${seq}\r\n`, seq });
+      await flushMicrotasks();
+    }
+    expect(terminal.writes).toHaveLength(10);
+    expect(terminal.refreshCalls).toBe(before);
+    expect(terminal.options.fontFamily).toContain('Maple Mono NF CN');
+    expect(terminal.options.fontFamily).not.toContain('Microsoft YaHei');
+    cleanup();
+  });
+
   test('unavailable WebGL keeps the terminal connection usable', () => {
     const harness = createHarness();
     harness.rendererUnavailable = true;
@@ -666,6 +732,27 @@ describe('terminal renderer recovery', () => {
 });
 
 describe('terminal client snapshot recovery', () => {
+  test('uplink failure reconnects the pair and keeps pending input for deduplicated retry', async () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const output = harness.sockets[0];
+    output.open();
+    emitServerMessage(harness, output, { type: 'ready', sessionGeneration: 'generation-1' });
+    const input = await readyInputConnection(harness, 'generation-1');
+    harness.terminalInstances[0].emitData('pending\r');
+    input.close();
+    expect(output.closeCalls).toBe(1);
+    harness.clock.advance(500);
+    const replacement = harness.sockets.at(-1)!;
+    expect(replacement.url).toBe('/terminal/output');
+    replacement.open();
+    emitServerMessage(harness, replacement, { type: 'ready', sessionGeneration: 'generation-1' });
+    const replacementInput = await readyInputConnection(harness, 'generation-1');
+    expect(sentMessagesOfType(replacementInput, 'input')).toEqual([{ type: 'input', data: 'pending\r', inputSeq: 1 }]);
+    cleanup();
+    expect(harness.clock.pendingCount).toBe(0);
+  });
+
   test('retains input queued before a first ready with an unknown generation', async () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);
@@ -681,14 +768,15 @@ describe('terminal client snapshot recovery', () => {
       type: 'ready',
       cwd: '/root',
       sessionId: 'session-1',
-      sessionGeneration: '',
+      sessionGeneration: 'generation-1',
       reset: false,
       gap: false,
       lastSeq: 0,
     });
-    await flushMicrotasks();
+    const input = await readyInputConnection(harness, 'generation-1');
 
-    expect(sentMessagesOfType(socket, 'input')).toEqual([
+    expect(sentMessagesOfType(socket, 'input')).toEqual([]);
+    expect(sentMessagesOfType(input, 'input')).toEqual([
       { type: 'input', data: 'queued before ready\r', inputSeq: 1 },
     ]);
     cleanup();
@@ -710,15 +798,15 @@ describe('terminal client snapshot recovery', () => {
       gap: false,
       lastSeq: 0,
     });
-    await flushMicrotasks();
+    const firstInput = await readyInputConnection(harness, 'generation-1');
     terminal.emitData('pending command\r');
-    expect(sentMessagesOfType(first, 'input')).toEqual([
+    expect(sentMessagesOfType(firstInput, 'input')).toEqual([
       { type: 'input', data: 'pending command\r', inputSeq: 1 },
     ]);
 
     first.close();
     harness.clock.advance(500);
-    const second = harness.sockets[1];
+    const second = harness.sockets.at(-1)!;
     second.open();
     const secondInit = sentMessagesOfType(second, 'init')[0];
     expect(secondInit.sessionGeneration).toBe('generation-1');
@@ -731,16 +819,16 @@ describe('terminal client snapshot recovery', () => {
       gap: false,
       lastSeq: 0,
     });
-    await flushMicrotasks();
-    expect(sentMessagesOfType(second, 'input')).toEqual([
+    const secondInput = await readyInputConnection(harness, 'generation-1');
+    expect(sentMessagesOfType(secondInput, 'input')).toEqual([
       { type: 'input', data: 'pending command\r', inputSeq: 1 },
     ]);
 
-    emitServerMessage(harness, second, { type: 'input-ack', inputSeq: 1 });
+    emitServerMessage(harness, secondInput, { type: 'input-ack', inputSeq: 1 });
     await flushMicrotasks();
     second.close();
     harness.clock.advance(500);
-    const third = harness.sockets[2];
+    const third = harness.sockets.at(-1)!;
     third.open();
     emitServerMessage(harness, third, {
       type: 'ready',
@@ -751,9 +839,9 @@ describe('terminal client snapshot recovery', () => {
       gap: false,
       lastSeq: 0,
     });
-    await flushMicrotasks();
+    const thirdInput = await readyInputConnection(harness, 'generation-1');
 
-    expect(sentMessagesOfType(third, 'input')).toEqual([]);
+    expect(sentMessagesOfType(thirdInput, 'input')).toEqual([]);
     cleanup();
   });
 
@@ -773,14 +861,14 @@ describe('terminal client snapshot recovery', () => {
       gap: false,
       lastSeq: 0,
     });
-    await flushMicrotasks();
+    const firstInput = await readyInputConnection(harness, 'generation-1');
     terminal.emitData('old pending command\r');
-    expect(sentMessagesOfType(first, 'input')).toHaveLength(1);
+    expect(sentMessagesOfType(firstInput, 'input')).toHaveLength(1);
 
     const firstInit = sentMessagesOfType(first, 'init')[0];
     first.close();
     harness.clock.advance(500);
-    const second = harness.sockets[1];
+    const second = harness.sockets.at(-1)!;
     second.open();
     const secondInit = sentMessagesOfType(second, 'init')[0];
     expect(secondInit.sessionGeneration).toBe('generation-1');
@@ -794,19 +882,19 @@ describe('terminal client snapshot recovery', () => {
       gap: true,
       lastSeq: 0,
     });
-    await flushMicrotasks();
+    const secondInput = await readyInputConnection(harness, 'generation-2');
 
-    expect(sentMessagesOfType(second, 'input')).toEqual([]);
+    expect(sentMessagesOfType(secondInput, 'input')).toEqual([]);
     expect(harness.stateUpdates).toContain(true);
 
     terminal.emitData('new command\r');
-    expect(sentMessagesOfType(second, 'input')).toEqual([
+    expect(sentMessagesOfType(secondInput, 'input')).toEqual([
       { type: 'input', data: 'new command\r', inputSeq: 1 },
     ]);
 
     second.close();
     harness.clock.advance(500);
-    const third = harness.sockets[2];
+    const third = harness.sockets.at(-1)!;
     third.open();
     const thirdInit = sentMessagesOfType(third, 'init')[0];
     expect(thirdInit.sessionGeneration).toBe('generation-2');

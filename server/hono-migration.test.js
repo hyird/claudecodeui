@@ -658,6 +658,36 @@ test('terminal WebSocket rejects legacy non-UUID session ids', async () => {
   socket.close();
 });
 
+test('split terminal sockets route input acknowledgements upstream and raw output downstream', async (t) => {
+  const tabId = await createTestTab();
+  const inputStreamId = randomUUID();
+  const output = new WebSocket(`${wsBaseUrl}/terminal/output`, ['cloudcli.v1', `auth.${authToken}`]);
+  t.after(() => output.close());
+  const readyPromise = readTerminalWebSocketMessage(output, (message) => message.body === 'ready', 'split downlink ready');
+  output.on('open', () => output.send(TerminalClientMessage.encode({ init: { sessionId: tabId, inputStreamId, cols: 100, rows: 30 } }).finish()));
+  const ready = await readyPromise;
+  const input = new WebSocket(`${wsBaseUrl}/terminal/input`, ['cloudcli.v1', `auth.${authToken}`]);
+  t.after(() => input.close());
+  const inputReady = readTerminalWebSocketMessage(input, (message) => message.body === 'ready', 'split uplink ready');
+  input.on('open', () => input.send(TerminalClientMessage.encode({ init: {
+    sessionId: tabId, inputStreamId, sessionGeneration: ready.ready.sessionGeneration,
+  } }).finish()));
+  await inputReady;
+  const downstreamMessages = [];
+  output.on('message', (raw) => downstreamMessages.push(TerminalServerMessage.decode(toUint8(raw))));
+  const ack = readTerminalWebSocketMessage(input, (message) => message.body === 'inputAck', 'split input acknowledgement');
+  const receivedOutput = readTerminalWebSocketMessage(output, (message) => message.body === 'output', 'split output');
+  input.send(TerminalClientMessage.encode({ input: { data: 'echo SPLIT_WS_OK\r', inputSeq: 1 } }).finish());
+  assert.equal((await ack).inputAck.inputSeq, 1);
+  const frame = await receivedOutput;
+  assert.equal(frame.output.compressed, false);
+  assert.equal(downstreamMessages.some((message) => message.body === 'inputAck'), false);
+  const duplicateAck = readTerminalWebSocketMessage(input, (message) => message.body === 'inputAck', 'split duplicate acknowledgement');
+  input.send(TerminalClientMessage.encode({ input: { data: 'echo SPLIT_WS_OK\r', inputSeq: 1 } }).finish());
+  assert.equal((await duplicateAck).inputAck.inputSeq, 1);
+  input.send(TerminalClientMessage.encode({ close: {} }).finish());
+});
+
 test('terminal input is acknowledged and duplicate delivery is ignored', async () => {
   const sessionId = await createTestTab();
   const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
@@ -698,11 +728,12 @@ test('terminal input is acknowledged and duplicate delivery is ignored', async (
   });
   await ready;
 
-  // Build the marker from octal escapes so it does not appear in the command echoed
+  // Build the marker at runtime so it does not appear in the command echoed
   // by the PTY. The server's ready frame can arrive before the shell has printed its
   // first prompt; counting a literal marker in the input would then race shell startup
   // and make a correctly ignored resend look like a second execution.
-  const command = "printf '\\137\\137RELIABLE_INPUT\\137\\137\\n'\r";
+  const markerScript = "process.stdout.write(['__RELIABLE','_INPUT__'].join('')+String.fromCharCode(10))";
+  const command = `node -e ${JSON.stringify(markerScript)}\r`;
   const firstAck = readTerminalWebSocketMessage(
     socket,
     (message) => message.body === 'inputAck' && message.inputAck.inputSeq === 1,
@@ -832,6 +863,24 @@ test('the built frontend is served compressed and revalidates with an ETag', asy
   const revalidated = await rawGet('/', { 'If-None-Match': etag });
   assert.equal(revalidated.status, 304);
   assert.equal(revalidated.bodyLength, 0);
+});
+
+test('bundled Nerd Font and Chinese fonts are cached WOFF2 assets without double compression', async () => {
+  for (const style of ['Regular', 'Bold']) {
+    const response = await fetch(`${baseUrl}/fonts/MapleMonoNFCN-${style}-v7.9.woff2`, {
+      headers: { 'Accept-Encoding': 'br, gzip' },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'font/woff2');
+    assert.match(response.headers.get('cache-control'), /max-age=31536000, immutable/);
+    assert.equal(response.headers.get('content-encoding'), null);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    assert.equal(Buffer.from(bytes.subarray(0, 4)).toString(), 'wOF2');
+    const cached = await fetch(`${baseUrl}/fonts/MapleMonoNFCN-${style}-v7.9.woff2`, {
+      headers: { 'If-None-Match': response.headers.get('etag') },
+    });
+    assert.equal(cached.status, 304);
+  }
 });
 
 // Generate the sequence with Node instead of the Unix-only `seq` utility so this

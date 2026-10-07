@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const projectDir = path.resolve(new URL('..', import.meta.url).pathname);
+const projectDir = fileURLToPath(new URL('..', import.meta.url));
 const deployScript = path.join(projectDir, 'scripts', 'deploy-local.sh');
 const source = fs.readFileSync(deployScript, 'utf8');
 
@@ -16,10 +17,11 @@ test('local deployment refuses to restart active terminal sessions by default', 
   fs.chmodSync(fakeCurl, 0o755);
 
   try {
-    const result = spawnSync('bash', [deployScript], {
+    const bashFakeBin = fakeBin.replaceAll('\\', '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
+    const result = spawnSync('bash', ['-c', 'export PATH="$1:$PATH"; exec bash scripts/deploy-local.sh', 'deploy-test', bashFakeBin], {
       cwd: projectDir,
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+      env: process.env,
     });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /refusing to restart cloud-terminal\.service with 2 active terminal session/);
@@ -28,6 +30,25 @@ test('local deployment refuses to restart active terminal sessions by default', 
   } finally {
     fs.rmSync(fakeBin, { recursive: true, force: true });
   }
+});
+
+test('persistent sessions are allowed through the deployment guard without a forced restart', () => {
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-safe-deploy-'));
+  try {
+    for (const [name, body] of Object.entries({
+      curl: 'printf \'%s\\n\' \'{"ok":true,"sessions":2,"persistentSessions":true}\'',
+      sudo: 'exit 0', tmux: 'exit 0', bun: 'echo "BUILD_WITH_PERSISTENT_SESSIONS"; exit 23',
+    })) {
+      const file = path.join(fakeBin, name);
+      fs.writeFileSync(file, `#!/usr/bin/env bash\n${body}\n`);
+      fs.chmodSync(file, 0o755);
+    }
+    const bashFakeBin = fakeBin.replaceAll('\\', '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
+    const result = spawnSync('bash', ['-c', 'export PATH="$1:$PATH"; exec bash scripts/deploy-local.sh', 'deploy-test', bashFakeBin], { cwd: projectDir, encoding: 'utf8' });
+    assert.equal(result.status, 23, result.stderr);
+    assert.match(result.stdout, /BUILD_WITH_PERSISTENT_SESSIONS/);
+    assert.doesNotMatch(result.stderr, /refusing to restart/);
+  } finally { fs.rmSync(fakeBin, { recursive: true, force: true }); }
 });
 
 test('local deployment rechecks sessions before installing and supports an explicit override', () => {
@@ -40,4 +61,7 @@ test('local deployment rechecks sessions before installing and supports an expli
   assert.ok(lastCheck < firstInstall, 'session checks must finish before deployment mutates /opt');
   assert.match(source, /--force\) FORCE_RESTART=1/);
   assert.match(source, /active_sessions > 0 && FORCE_RESTART == 0/);
+  assert.match(source, /persistentSessions/);
+  assert.match(source, /systemctl enable --now "\$\{TMUX_SERVICE\}"/);
+  assert.doesNotMatch(source, /systemctl (?:restart|stop) "\$\{TMUX_SERVICE\}"/);
 });
