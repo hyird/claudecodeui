@@ -26,12 +26,12 @@ test('snapshot serialization drops old rows while retaining the newest screen', 
 test('the byte budget trims complete historical rows and retains valid UTF-8, colors and mouse encoding', async (t) => {
   const count = terminalPolicy.scrollbackLines + 100;
   const lastRow = `row_${String(count - 1).padStart(5, '0')}`;
-  const options = { allowProposedApi: true, cols: 320, rows: 24, scrollback: terminalPolicy.scrollbackLines };
+  const options = { allowProposedApi: true, cols: 480, rows: 24, scrollback: terminalPolicy.scrollbackLines };
   const terminal = new headless.Terminal(options);
   const serializer = new SerializeAddon();
   terminal.loadAddon(serializer);
   t.after(() => terminal.dispose());
-  const colored = Array.from({ length: 150 }, (_, i) => `\x1b[${i % 2 ? 31 : 32}m中`).join('');
+  const colored = Array.from({ length: 225 }, (_, i) => `\x1b[${i % 2 ? 31 : 32}m中`).join('');
   await write(terminal, Array.from({ length: count }, (_, i) => `\x1b[0mrow_${String(i).padStart(5, '0')} ${colored}\x1b[0m\r\n`).join(''));
   assert.ok(Buffer.byteLength(serializer.serialize()) > terminalPolicy.snapshotMaxBytes);
   const snapshot = serializeTerminalSnapshot(terminal, serializer, '\x1b[?1006h');

@@ -1,4 +1,6 @@
 {
-  "scrollbackLines": 20000,
-  "snapshotMaxBytes": 16777216
+  "scrollbackLines": 10000,
+  "snapshotMaxBytes": 16777216,
+  "outputBatchesPerSecond": 25,
+  "renderFramesPerSecond": 25
 }

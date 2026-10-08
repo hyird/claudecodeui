@@ -4,6 +4,7 @@ import { UnicodeGraphemesAddon } from './unicode.js';
 import { recordTerminalEvent } from './terminal-stream.js';
 import { encodeTerminalOutput, encodeTerminalServerMessage, sendTerminalOutput } from './wire.js';
 import { TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
+import terminalPolicy from '../shared/terminal-policy.json' with { type: 'json' };
 
 export const WS_OPEN = 1;
 const TERMINAL_SOCKET_BUFFER_LIMIT = 1024 * 1024;
@@ -56,9 +57,11 @@ export function writeTerminalSnapshot(session, chunk, onParsed) {
 }
 
 // Keep each decoded terminal frame small enough for xterm to parse without monopolizing
-// the browser thread. Coalesce only the current IPC delivery, without delaying
-// an echoed key or animation frame behind a periodic flush timer.
+// the browser thread. Continuous output is paced independently of input and
+// control traffic; an idle terminal's first output is forwarded immediately.
 const TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 * 1024;
+const TERMINAL_OUTPUT_BATCH_BYTES = 256 * 1024;
+const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 1000 / terminalPolicy.outputBatchesPerSecond;
 
 function forEachTerminalOutputFrame(chunk, callback) {
   const bytes = Buffer.from(chunk);
@@ -76,6 +79,7 @@ function forEachTerminalOutputFrame(chunk, callback) {
 }
 
 export function cancelTerminalOutputFlush(session) {
+  if (session.outputFlushTask?.timer) clearTimeout(session.outputFlushTask.timer);
   session.outputFlushTask = null;
 }
 
@@ -90,28 +94,31 @@ export function flushTerminalOutput(session) {
     : session.pendingOutput.join('');
   session.pendingOutput.length = 0;
   session.pendingOutputBytes = 0;
+  session.nextOutputFlushAt = Date.now() + TERMINAL_OUTPUT_FLUSH_INTERVAL_MS;
 
   // Forward live output immediately, without waiting for the headless parser.
   // Reserve its sequence, but commit replay only after parsing so reconnect
   // snapshots still advertise exactly the bytes they contain.
   const forwardedSocket = session.socketReady ? session.socket : null;
-  session.pendingOutputEvents += 1;
-  if (forwardedSocket) {
-    sendTerminalEvent(forwardedSocket, {
-      type: 'output', data: chunk,
-      seq: session.terminalEvents.lastSeq + session.pendingOutputEvents,
+  forEachTerminalOutputFrame(chunk, (frame) => {
+    session.pendingOutputEvents += 1;
+    if (forwardedSocket) {
+      sendTerminalEvent(forwardedSocket, {
+        type: 'output', data: frame,
+        seq: session.terminalEvents.lastSeq + session.pendingOutputEvents,
+      });
+    }
+    writeTerminalSnapshot(session, frame, () => {
+      session.pendingOutputEvents -= 1;
+      recordAndSendTerminalEvent(session, { type: 'output', data: frame }, forwardedSocket);
     });
-  }
-  writeTerminalSnapshot(session, chunk, () => {
-    session.pendingOutputEvents -= 1;
-    recordAndSendTerminalEvent(session, { type: 'output', data: chunk }, forwardedSocket);
   });
 }
 
 function queueTerminalOutputPiece(session, chunk, chunkBytes) {
   if (
     session.pendingOutputBytes > 0
-    && session.pendingOutputBytes + chunkBytes > TERMINAL_OUTPUT_MAX_FRAME_BYTES
+    && session.pendingOutputBytes + chunkBytes > TERMINAL_OUTPUT_BATCH_BYTES
   ) {
     flushTerminalOutput(session);
   }
@@ -119,18 +126,21 @@ function queueTerminalOutputPiece(session, chunk, chunkBytes) {
   session.pendingOutput.push(chunk);
   session.pendingOutputBytes += chunkBytes;
 
-  if (session.pendingOutputBytes >= TERMINAL_OUTPUT_MAX_FRAME_BYTES) {
+  if (session.pendingOutputBytes >= TERMINAL_OUTPUT_BATCH_BYTES) {
     flushTerminalOutput(session);
     return;
   }
 
   if (session.outputFlushTask === null) {
-    const task = {};
+    const task = { timer: null };
     session.outputFlushTask = task;
-    setImmediate(() => {
+    const send = () => {
       if (session.outputFlushTask !== task || session.disposed) return;
       flushTerminalOutput(session);
-    });
+    };
+    const delay = Math.max(0, session.nextOutputFlushAt - Date.now());
+    if (delay > 0) task.timer = setTimeout(send, delay);
+    else setImmediate(send);
   }
 }
 

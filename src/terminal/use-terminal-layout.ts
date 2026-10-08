@@ -25,6 +25,7 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
   const resizeTimersRef = useRef<number[]>([]);
   const resizeFrameRef = useRef(0);
   const lastSizeRef = useRef({ cols: 0, rows: 0 });
+  const followResizeRef = useRef(false);
   const screenElementRef = useRef<HTMLElement | null>(null);
   const viewportElementRef = useRef<HTMLElement | null>(null);
   const hasScrollbackRef = useRef(false);
@@ -128,8 +129,17 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
       return;
     }
 
+    const followResizedViewport = () => {
+      if (!followResizeRef.current) return;
+      terminal.scrollToBottom();
+      // xterm's scrollbar may still clamp to its previous scroll height until
+      // the next render. Retry on the existing layout passes until it catches up.
+      followResizeRef.current = terminal.buffer.active.viewportY !== terminal.buffer.active.baseY;
+    };
+
     const last = lastSizeRef.current;
     if (dims.cols === last.cols && dims.rows === last.rows) {
+      followResizedViewport();
       return;
     }
     lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
@@ -138,8 +148,10 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
       terminal.resize(dims.cols, dims.rows);
       // Reflow can keep a historical viewport anchor. A changed grid should
       // show the live prompt and continue following subsequent output.
-      terminal.scrollToBottom();
+      followResizeRef.current = true;
     }
+
+    followResizedViewport();
 
     onResize(dims.cols, dims.rows);
   }, [proposeFrameDimensions, onResize]);
@@ -240,6 +252,7 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     screenElementRef.current = null;
     viewportElementRef.current = null;
     hasScrollbackRef.current = false;
+    followResizeRef.current = false;
   }, []);
 
   return {

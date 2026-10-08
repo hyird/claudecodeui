@@ -1,5 +1,7 @@
 import { WebglAddon } from '@xterm/addon-webgl';
 import type { Terminal } from '@xterm/xterm';
+import terminalPolicy from '../../shared/terminal-policy.json';
+import { limitTerminalFrameRate } from './frame-rate';
 
 export const TERMINAL_FONT_FAMILY = '"Maple Mono NF CN", "CaskaydiaMono Nerd Font", "JetBrainsMono Nerd Font", "Symbols Nerd Font Mono", Consolas, monospace';
 // Width of the scrollback scrollbar to reserve so the rightmost column is never
@@ -49,7 +51,8 @@ export function configureTerminalRenderer(terminal: Terminal, resizeAfterLayoutS
     webglAddon = undefined;
   }
 
-  return { dispose() { disposed = true; webglContextLoss?.dispose(); } };
+  const frameRate = limitTerminalFrameRate(terminal, terminalPolicy.renderFramesPerSecond);
+  return { dispose() { disposed = true; frameRate.dispose(); webglContextLoss?.dispose(); } };
 }
 
 export function registerTerminalModeReports(terminal: Terminal) {

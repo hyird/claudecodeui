@@ -223,11 +223,11 @@ test('terminal keeps a visible-tab heartbeat to detect silently dropped sockets'
   assert.match(terminalPaneSource, /window\.clearInterval\(heartbeatTimer\)/);
 });
 
-test('terminal output coalesces only the current delivery into bounded frames', () => {
+test('terminal output paces continuous batches and promptly sends idle output', () => {
   assert.match(serverSource, /TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 \* 1024/);
-  assert.match(serverSource, /setImmediate\(\(\) => \{/);
+  assert.match(serverSource, /else setImmediate\(send\)/);
   assert.match(serverSource, /session.outputFlushTask !== task \|\| session.disposed/);
-  assert.equal(serverSource.includes('TERMINAL_OUTPUT_FLUSH_INTERVAL_MS'), false);
+  assert.match(serverSource, /1000 \/ terminalPolicy.outputBatchesPerSecond/);
   assert.match(serverSource, /Buffer\.from\(chunk\)/);
 });
 

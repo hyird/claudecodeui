@@ -40,6 +40,8 @@ function setup(t, cols = 20, rows = 4) {
     SerializeAddon, UnicodeGraphemesAddon, createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent,
     TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot,
     TERMINAL_OUTPUT_MAX_FRAME_BYTES: 16 * 1024,
+    TERMINAL_OUTPUT_BATCH_BYTES: 256 * 1024,
+    TERMINAL_OUTPUT_FLUSH_INTERVAL_MS: 40,
     TERMINAL_SOCKET_BUFFER_LIMIT: 1024 * 1024,
     WS_OPEN: 1,
     UUID_V4_PATTERN: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
@@ -104,6 +106,22 @@ test('small live output is sent before the next timer without waiting for the hi
   assert.deepEqual(delivered, ['first-second', 'timer']);
   await drain(session.terminal);
   assert.equal(ws.messages.filter((m) => m.data === 'first-second').length, 1);
+});
+
+test('continuous output is combined behind the 25 Hz deadline without losing order', async (t) => {
+  const { context, session } = setup(t);
+  const ws = socket(session.workspace);
+  context.attachSocket(ws, session);
+  await drain(session.terminal);
+  context.queueTerminalOutput(session, 'first');
+  await new Promise((resolve) => setImmediate(resolve));
+  context.queueTerminalOutput(session, '-second');
+  context.queueTerminalOutput(session, '-third');
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(ws.messages.filter((m) => m.seq > 0).map((m) => m.data), ['first']);
+  await new Promise((resolve) => setTimeout(resolve, 45));
+  await drain(session.terminal);
+  assert.deepEqual(ws.messages.filter((m) => m.seq > 0).map((m) => m.data), ['first', '-second-third']);
 });
 
 test('web PTYs advertise a remote clipboard route to fullscreen programs', (t) => {

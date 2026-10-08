@@ -89,6 +89,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
       pendingOutput: [],
       pendingOutputBytes: 0,
       outputFlushTask: null,
+      nextOutputFlushAt: 0,
     };
 
     shellProcess.onData((chunk) => {
