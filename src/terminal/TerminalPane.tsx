@@ -14,6 +14,7 @@ import type {
 } from './types';
 import { connectTerminal, type TerminalConnection } from './connection';
 import { useTerminalLayout } from './use-terminal-layout';
+import terminalPolicy from '../../shared/terminal-policy.json';
 import {
   configureTerminalRenderer, registerTerminalModeReports, TERMINAL_FONT_FAMILY,
   TERMINAL_SCROLLBAR_GUTTER,
@@ -48,6 +49,7 @@ export default function TerminalPane({
   const activeRef = useRef(active);
   const focusOnMountRef = useRef(focusOnMount);
   useEffect(() => { activeRef.current = active; }, [active]);
+  useEffect(() => { focusOnMountRef.current = focusOnMount; }, [focusOnMount]);
 
   const sendResize = useCallback((cols: number, rows: number) => connectionRef.current?.resize(cols, rows), []);
   const { clearResizeTimers, clearScreenTransform, fitAndResize, proposeFrameDimensions,
@@ -68,7 +70,7 @@ export default function TerminalPane({
       fontSize: preferences.fontSize,
       lineHeight: 1.12,
       overviewRuler: { width: TERMINAL_SCROLLBAR_GUTTER },
-      scrollback: 10000,
+      scrollback: terminalPolicy.scrollbackLines,
       theme: terminalTheme,
     });
     const fitAddon = new FitAddon();

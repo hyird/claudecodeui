@@ -15,13 +15,14 @@ function extractTerminalStack() {
   return match[0];
 }
 
-test('only the active terminal pane is mounted to avoid websocket bursts on login', () => {
+test('each terminal tab keeps its own mounted pane and independent connection pair', () => {
   const terminalStack = extractTerminalStack();
 
-  assert.match(terminalStack, /activeTab && \(/);
-  assert.match(terminalStack, /key=\{activeTab\.id\}/);
-  assert.match(terminalStack, /tab=\{activeTab\}/);
-  assert.equal(terminalStack.includes('tabs.map'), false);
+  assert.match(terminalStack, /tabsController.tabsState.tabs.map\(\(tab\) => \(/);
+  assert.match(terminalStack, /key=\{tab.id\}/);
+  assert.match(terminalStack, /tab=\{tab\}/);
+  assert.match(terminalStack, /active=\{tab.id === activeTab\?\.id\}/);
+  assert.match(terminalPaneSource, /const connectionRef = useRef<TerminalConnection \| null>\(null\)/);
 });
 
 test('terminal tabs expose standard semantics and keyboard navigation', () => {
@@ -59,7 +60,7 @@ test('tabs can be reordered by pointer drag without using HTML5 draggable', () =
 });
 
 test('keyboard tab navigation cannot race with terminal autofocus', () => {
-  assert.match(source, /focusOnMount=\{[\s\S]*?pendingKeyboardTabFocusRef\.current !== activeTab\.id/);
+  assert.match(source, /focusOnMount=\{[\s\S]*?pendingKeyboardTabFocusRef\.current !== tab\.id/);
   assert.match(terminalPaneSource, /const focusOnMountRef = useRef\(focusOnMount\)/);
   assert.match(
     terminalPaneSource,
@@ -172,7 +173,7 @@ test('tab controls recover from silently dropped sockets without losing queued m
 });
 
 test('toolbar does not remount or restart the active terminal session', () => {
-  assert.match(extractTerminalStack(), /key=\{activeTab\.id\}/);
+  assert.match(extractTerminalStack(), /key=\{tab\.id\}/);
   assert.equal(source.includes('reconnectKeys'), false);
   assert.equal(source.includes('activeReconnectKey'), false);
   assert.equal(source.includes('reconnectActiveTab'), false);
@@ -244,7 +245,7 @@ test('terminal input remains queued until the server acknowledges it', () => {
 
 test('terminal reset renders only the authoritative server snapshot', () => {
   assert.match(terminalPaneSource, /if \(message\.reset\) \{/);
-  assert.match(terminalPaneSource, /writeTerminalData\('\\x1bc'\)/);
+  assert.match(terminalPaneSource, /terminal\.write\(`\\x1bc\\x1b\[\?2026h\$\{message\.data\}\\x1b\[\?2026l`/);
   assert.equal(terminalPaneSource.includes('Session ${message.sessionId}'), false);
   assert.equal(terminalPaneSource.includes('${message.cwd}'), false);
 });

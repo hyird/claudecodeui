@@ -11,6 +11,7 @@ import {
   WS_OPEN, createTerminalSnapshot, writeTerminalSnapshot, clearTerminalOutputFlushTimer,
   flushTerminalOutput, queueTerminalOutput, sendTerminalSnapshot, websocketWritable,
   readTerminalSnapshot, resizeSession, recordAndSendTerminalEvent,
+  sendTerminalEvent,
 } from './terminal-output.js';
 
 function resolveShell() {
@@ -156,6 +157,9 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
       // survives. Its first viewer must receive the broker's complete snapshot.
       const replayPlan = getTerminalReplayPlan(session.terminalEvents, session.forceSnapshot ? 0 : lastSeq);
       session.forceSnapshot = false;
+      const terminalSnapshot = replayPlan.mode === 'reset' ? readTerminalSnapshot(session) : null;
+      // Advertise ready only after the exact stream and snapshot are established.
+      session.socketReady = true;
       ws.send(encodeTerminalServerMessage({
         type: 'ready',
         cwd: session.cwd,
@@ -171,12 +175,8 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
           sendTerminalEvent(ws, event);
         }
       } else {
-        const terminalSnapshot = readTerminalSnapshot(session);
-        if (terminalSnapshot) {
-          sendTerminalSnapshot(ws, terminalSnapshot);
-        }
+        sendTerminalSnapshot(ws, terminalSnapshot);
       }
-      session.socketReady = true;
       broadcastTabsState(session.workspace);
     });
   }
@@ -256,6 +256,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
       // can only join its exact stream and generation; it never starts another PTY.
       if (!existingSession || existingSession.closed || existingSession.disposed
         || !existingSession.socketReady
+        || existingSession.socket?.readyState !== WS_OPEN
         || existingSession.socket?.data.kind !== 'terminal-output'
         || existingSession.socket.data.inputStreamId !== inputStreamId
         || existingSession.generation !== readString(message.sessionGeneration)) {
@@ -264,6 +265,8 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
         return null;
       }
       const oldInputSocket = existingSession.inputSocket;
+      // Receipt and parsing of the complete snapshot precede input attachment.
+      existingSession.socket.data.snapshotBufferAllowance = 0;
       existingSession.inputSocket = ws;
       ws.data.inputStreamId = inputStreamId;
       oldInputSocket?.close(1000, 'Replaced by newer terminal input');

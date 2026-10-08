@@ -48,6 +48,9 @@ export function createWebSocketGateway({ app, sessions, workspaces, terminals, a
         }
       }
     },
+    drain(ws) {
+      if (ws.getBufferedAmount() === 0) ws.data.snapshotBufferAllowance = 0;
+    },
     close(ws) {
       const { kind } = ws.data;
       removeAuthSessionSubscriber(ws.data.auth.tokenHash, ws);

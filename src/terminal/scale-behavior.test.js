@@ -147,13 +147,13 @@ test('terminal output and scroll events refresh without blocking later frames', 
   assert.match(source, /onReady\(\) \{ updateScrollbackAffordance\(\); resizeAfterLayoutSettles\(\); forceFullRefresh\(\); \}/);
   assert.match(source, /const writeTerminalData = \(data: string\) => \{/);
   assert.match(source, /terminal\.write\(data\)/);
-  assert.doesNotMatch(source, /new Promise<void>/);
+  assert.doesNotMatch(source.match(/const writeTerminalData =[^]*?\n  \};/)?.[0] ?? '', /new Promise<void>/);
   assert.match(source, /terminal\.onScroll\(\(\) => \{/);
   assert.match(source, /terminal\.onWriteParsed\(\(\) => \{/);
   assert.match(source, /terminal\.onResize\(\(\) => \{/);
   assert.match(source, /forceFullRefresh\(\)/);
   assert.equal(source.includes('followOutput'), false);
-  assert.equal(source.includes('scrollToBottom'), false);
+  assert.match(source, /awaitingSnapshot === socket[^]*?terminal\.scrollToBottom\(\)/);
 });
 
 test('terminal DOM lookups are cached instead of re-queried every frame', () => {

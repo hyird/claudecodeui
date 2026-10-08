@@ -3,7 +3,7 @@ import ts from 'typescript';
 
 const modules = [
   'index', 'terminal-validation', 'terminal-workspaces', 'terminal-output',
-  'terminal-sessions', 'auth-http', 'auth-sockets', 'websocket-server', 'static-assets',
+  'terminal-sessions', 'terminal-snapshot', 'auth-http', 'auth-sockets', 'websocket-server', 'static-assets',
 ].map((name) => fs.readFileSync(new URL(`../${name}.js`, import.meta.url), 'utf8'));
 
 export function readServerSource() {

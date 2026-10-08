@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { UnicodeGraphemesAddon } from './unicode.js';
+import { serializeTerminalSnapshot } from './terminal-snapshot.js';
 import { createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent } from './terminal-stream.js';
 
 // Exercise the actual server functions with a real xterm parser and a fake PTY.
@@ -37,7 +38,7 @@ function setup(t, cols = 20, rows = 4) {
       constructor(options) { super(options); terminals.push(this); }
     },
     SerializeAddon, UnicodeGraphemesAddon, createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent,
-    SERVER_SNAPSHOT_SCROLLBACK: 10000,
+    TERMINAL_SCROLLBACK_LINES: 2000, serializeTerminalSnapshot,
     TERMINAL_OUTPUT_MAX_FRAME_BYTES: 16 * 1024,
     TERMINAL_OUTPUT_FLUSH_INTERVAL_MS: 2,
     TERMINAL_SOCKET_BUFFER_LIMIT: 1024 * 1024,
@@ -53,6 +54,7 @@ function setup(t, cols = 20, rows = 4) {
     saveTerminalInputStream() {}, deleteTerminalInputStream() {},
     persistentPty: { enabled: false, prepare: () => null, close() {} },
     encodeTerminalServerMessage: (message) => message,
+    encodeTerminalOutput: (data, seq) => ({ type: 'output', data, seq }),
     decodeTerminalClientMessage: (message) => message,
     sendTerminalOutput: (ws, data, seq) => ws.send({ type: 'output', data, seq }),
     ptySpawn(_command, _args, options) {
@@ -81,7 +83,7 @@ function setup(t, cols = 20, rows = 4) {
 
 function socket(workspace) {
   return {
-    readyState: 1, data: { workspace }, messages: [],
+    readyState: 1, data: { workspace }, messages: [], getBufferedAmount: () => 0,
     send(message) { this.messages.push(message); },
     close(code) { this.closedCode = code; this.readyState = 3; },
   };
@@ -347,7 +349,7 @@ test('sustained output stays bounded, ordered and complete through parser callba
   context.queueTerminalOutput(session, output);
   context.flushTerminalOutput(session);
   await drain(session.terminal);
-  const frames = ws.messages.filter((message) => message.type === 'output');
+  const frames = ws.messages.filter((message) => message.type === 'output' && message.seq > 0);
   assert.equal(ws.messages[0].type, 'ready');
   assert.equal(frames.map((frame) => frame.data).join(''), output);
   frames.forEach((frame, index) => {
@@ -384,11 +386,11 @@ test('live output reaches a ready downlink before the headless parser and is com
   context.flushTerminalOutput(session);
   context.queueTerminalOutput(session, 'two');
   context.flushTerminalOutput(session);
-  assert.deepEqual(output.messages.filter((message) => message.type === 'output').map(({ seq, data }) => [seq, data]), [[1, 'one'], [2, 'two']]);
+  assert.deepEqual(output.messages.filter((message) => message.type === 'output' && message.seq > 0).map(({ seq, data }) => [seq, data]), [[1, 'one'], [2, 'two']]);
   assert.equal(session.terminalEvents.lastSeq, 0, 'live output does not wait for snapshot parsing');
   await drain(session.terminal);
   assert.equal(session.terminalEvents.lastSeq, 2);
-  assert.equal(output.messages.filter((message) => message.type === 'output').length, 2);
+  assert.equal(output.messages.filter((message) => message.type === 'output' && message.seq > 0).length, 2);
 });
 
 test('input acknowledgements use a separate socket even while the output viewer is congested', async (t) => {
@@ -411,6 +413,27 @@ test('input acknowledgements use a separate socket even while the output viewer 
   assert.equal(output.messages.some((message) => message.type === 'input-ack'), false);
   context.handleTerminalMessage(output, { type: 'input', data: 'forbidden', inputSeq: 2 });
   assert.deepEqual(session.pty.writes, ['echo test\r']);
+});
+
+test('the advertised output-ready state already accepts its matching input attachment', async (t) => {
+  const { context, session } = setup(t);
+  const streamId = randomUUID();
+  const output = socket(session.workspace);
+  output.data.kind = 'terminal-output';
+  const input = socket(session.workspace);
+  input.data.kind = 'terminal-input';
+  const send = output.send;
+  output.send = function (message) {
+    send.call(this, message);
+    if (message.type === 'ready') context.handleTerminalMessage(input, {
+      type: 'init', sessionId: session.id, inputStreamId: streamId, sessionGeneration: message.sessionGeneration,
+    });
+  };
+  context.handleTerminalMessage(output, { type: 'init', sessionId: session.id, inputStreamId: streamId, cols: 20, rows: 4 });
+  await drain(session.terminal);
+  assert.equal(input.messages[0].type, 'ready');
+  assert.equal(input.closedCode, undefined);
+  assert.equal(session.inputSocket, input);
 });
 
 test('input attachment rejects mismatched streams and generations without creating a PTY', async (t) => {

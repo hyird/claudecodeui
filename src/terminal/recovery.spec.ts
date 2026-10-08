@@ -234,7 +234,15 @@ class FakeTerminal {
   emitParsed() { this.parsedListener?.(); }
   onResize() { return { dispose() {} }; }
   writeln() {}
-  write(data: string) { this.writes.push(data); }
+  deferWrites = false;
+  readonly writeCallbacks: Array<() => void> = [];
+  write(data: string, onParsed?: () => void) {
+    this.writes.push(data);
+    if (onParsed) {
+      if (this.deferWrites) this.writeCallbacks.push(onParsed); else onParsed();
+    }
+  }
+  scrollToBottom() { this.buffer.active.viewportY = this.buffer.active.baseY; }
   clear() {}
   refresh() { this.refreshCalls += 1; }
   resize(cols: number, rows: number) {
@@ -435,6 +443,7 @@ function loadLoop(kind: LoopKind, harness: Harness) {
     }
     if (specifier === '../uuid') return { createUuidV4: () => '00000000-0000-4000-8000-000000000001' };
     if (specifier === './auth/CollaboratorsDialog') return { default: () => null };
+    if (specifier.endsWith('.json')) return { __esModule: true, default: JSON.parse(fs.readFileSync(new URL(specifier, from), 'utf8')) };
     if (specifier.startsWith('.')) {
       const candidates = ['.ts', '.tsx'].map((extension) => new URL(specifier + extension, from));
       const file = candidates.find((candidate) => fs.existsSync(candidate));
@@ -812,6 +821,66 @@ describe('terminal renderer recovery', () => {
 });
 
 describe('terminal client snapshot recovery', () => {
+  test('a full restore is one atomic write and input waits for the parser to finish', async () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const terminal = harness.terminalInstances[0];
+    terminal.deferWrites = true;
+    const output = harness.sockets[0];
+    output.open();
+    emitServerMessage(harness, output, { type: 'ready', reset: true, sessionGeneration: 'restore' });
+    await flushMicrotasks();
+    expect(harness.sockets).toHaveLength(1);
+    expect(terminal.writes).toEqual([]);
+    terminal.emitData('queued\r');
+    emitServerMessage(harness, output, { type: 'output', data: 'complete history' });
+    await flushMicrotasks();
+    expect(harness.sockets).toHaveLength(1);
+    expect(terminal.writes).toEqual(['\x1bc\x1b[?2026hcomplete history\x1b[?2026l']);
+    terminal.writeCallbacks.shift()!();
+    const input = await readyInputConnection(harness, 'restore');
+    expect(sentMessagesOfType(input, 'input')).toEqual([{ type: 'input', data: 'queued\r', inputSeq: 1 }]);
+    cleanup();
+  });
+
+  test('a stale restore callback cannot attach input to a closed output socket', async () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const terminal = harness.terminalInstances[0];
+    terminal.deferWrites = true;
+    const output = harness.sockets[0];
+    output.open();
+    emitServerMessage(harness, output, { type: 'ready', reset: true, sessionGeneration: 'restore' });
+    emitServerMessage(harness, output, { type: 'output', data: 'history' });
+    await flushMicrotasks();
+    output.close();
+    terminal.writeCallbacks.shift()!();
+    await flushMicrotasks();
+    expect(harness.sockets).toHaveLength(1);
+    cleanup();
+  });
+
+  test('a replaced-output handshake retries without printing an error or losing queued input', async () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const output = harness.sockets[0];
+    output.open();
+    emitServerMessage(harness, output, { type: 'ready', sessionGeneration: 'generation' });
+    const input = await readyInputConnection(harness, 'generation');
+    harness.terminalInstances[0].emitData('pending\r');
+    emitServerMessage(harness, input, { type: 'error', message: 'Terminal output connection is not ready' });
+    await flushMicrotasks();
+    expect(output.closeCalls).toBe(1);
+    expect(harness.terminalInstances[0].writes).toEqual([]);
+    harness.clock.advance(500);
+    const replacement = harness.sockets.at(-1)!;
+    replacement.open();
+    emitServerMessage(harness, replacement, { type: 'ready', sessionGeneration: 'generation' });
+    const restoredInput = await readyInputConnection(harness, 'generation');
+    expect(sentMessagesOfType(restoredInput, 'input')).toEqual([{ type: 'input', data: 'pending\r', inputSeq: 1 }]);
+    cleanup();
+  });
+
   test('uplink failure reconnects the pair and keeps pending input for deduplicated retry', async () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);
@@ -962,6 +1031,7 @@ describe('terminal client snapshot recovery', () => {
       gap: true,
       lastSeq: 0,
     });
+    emitServerMessage(harness, second, { type: 'output', data: '\x1b[0m' });
     const secondInput = await readyInputConnection(harness, 'generation-2');
 
     expect(sentMessagesOfType(secondInput, 'input')).toEqual([]);
@@ -1005,13 +1075,13 @@ describe('terminal client snapshot recovery', () => {
     });
     await flushMicrotasks();
 
-    expect(terminal.writes).toEqual(['\x1bc', 'authoritative snapshot']);
+    expect(terminal.writes).toEqual(['\x1bc\x1b[?2026hauthoritative snapshot\x1b[?2026l']);
     cleanup();
   });
 
   test('RIS restores dirty normal and alternate screens before a serialized snapshot', async () => {
     const paneSource = fs.readFileSync(new URL('./connection.ts', import.meta.url), 'utf8');
-    const resetMatch = paneSource.match(/writeTerminalData\('([^']+)'\)/);
+    const resetMatch = paneSource.match(/terminal.write\(`(\\x1bc)/);
     expect(resetMatch?.[1]).toBeDefined();
     const resetSequence = resetMatch![1].replace(/\\x([0-9a-f]{2})/gi, (_, value: string) => (
       String.fromCharCode(Number.parseInt(value, 16))

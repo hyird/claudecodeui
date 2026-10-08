@@ -75,6 +75,7 @@ export function connectTerminal({
   let lastAppliedTerminalSeq = 0;
   const pendingTerminalMessages = new Map<number, TerminalServerMessage>();
   let terminalResyncTimer = 0;
+  let awaitingSnapshot: WebSocket | null = null;
 
   const writeTerminalData = (data: string) => {
     terminal.write(data);
@@ -104,7 +105,7 @@ export function connectTerminal({
 
   const applyTerminalServerMessage = async (socket: WebSocket, message: TerminalServerMessage) => {
     if (message.type === 'ready') {
-        const sessionGeneration = typeof message.sessionGeneration === 'string'
+      const sessionGeneration = typeof message.sessionGeneration === 'string'
         ? message.sessionGeneration
         : '';
       if (sessionGeneration) {
@@ -121,17 +122,33 @@ export function connectTerminal({
       if (message.reset) {
         pendingTerminalMessages.clear();
         lastAppliedTerminalSeq = typeof message.lastSeq === 'number' ? message.lastSeq : 0;
-        // The serialized server snapshot that follows is the source of truth.
-        // Do not prepend internal session ids or cwd lines: they clutter new
-        // terminals and can corrupt the cursor position of a restored TUI.
-        writeTerminalData('\x1bc');
+        // Retain the existing display until the complete snapshot arrives.
+        awaitingSnapshot = socket;
+        return;
       }
+      awaitingSnapshot = null;
       connectInputSocket(socket);
       onReady();
       return;
     }
 
     if (message.type === 'output' && typeof message.data === 'string') {
+      if (awaitingSnapshot === socket) {
+        await new Promise<void>((resolve) => {
+          // One write and DEC 2026 prevent painting intermediate history rows.
+          terminal.write(`\x1bc\x1b[?2026h${message.data}\x1b[?2026l`, () => {
+            if (!disposed && currentOutputSocket === socket && awaitingSnapshot === socket
+              && socket.readyState === WebSocket.OPEN) {
+              awaitingSnapshot = null;
+              terminal.scrollToBottom();
+              onReady();
+              connectInputSocket(socket);
+            }
+            resolve();
+          });
+        });
+        return;
+      }
       writeTerminalData(message.data);
       return;
     }
@@ -196,7 +213,7 @@ export function connectTerminal({
 
   const handleTerminalServerMessage = async (socket: WebSocket, raw: MessageEvent['data']) => {
     const message = await decodeTerminalServerMessage(raw);
-    if (!message || currentOutputSocket !== socket) {
+    if (!message || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) {
       return;
     }
 
@@ -224,7 +241,7 @@ export function connectTerminal({
   }
 
   function connectInputSocket(outputSocket: WebSocket) {
-    if (disposed || currentOutputSocket !== outputSocket) return;
+    if (disposed || currentOutputSocket !== outputSocket || outputSocket.readyState !== WebSocket.OPEN) return;
     closeInputSocket();
     const inputSocket = openAuthenticatedSocket('/terminal/input', authToken);
     inputSocket.binaryType = 'arraybuffer';
@@ -234,6 +251,10 @@ export function connectTerminal({
     let inputMessageQueue = Promise.resolve();
     const failInputConnection = () => {
       if (currentInputSocket !== inputSocket) return;
+      if (currentOutputSocket !== outputSocket || outputSocket.readyState !== WebSocket.OPEN) {
+        failInputConnection();
+        return;
+      }
       closeInputSocket();
       outputSocket.close();
     };
@@ -278,6 +299,12 @@ export function connectTerminal({
         } else if (message.type === 'input-ack') {
           await applyTerminalServerMessage(inputSocket, message);
         } else if (message.type === 'error') {
+          // An output replacement can overtake the input handshake. Retry the
+          // pair without inserting this recoverable transport error into the TUI.
+          if (message.message === 'Terminal output connection is not ready') {
+            failInputConnection();
+            return;
+          }
           await applyTerminalServerMessage(inputSocket, message);
           failInputConnection();
         }
@@ -341,6 +368,7 @@ export function connectTerminal({
     clearConnectionTimer();
     clearPongTimer();
     closeInputSocket();
+    awaitingSnapshot = null;
     terminalMessageQueue = Promise.resolve();
 
     const socket = createTerminalSocket(authToken);
@@ -512,6 +540,7 @@ export function connectTerminal({
 
   function dispose() {
     disposed = true;
+    awaitingSnapshot = null;
     inputReady = false;
     closeInputSocket();
     clearReconnectTimer();

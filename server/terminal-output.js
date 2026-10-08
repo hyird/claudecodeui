@@ -2,10 +2,10 @@ import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { UnicodeGraphemesAddon } from './unicode.js';
 import { recordTerminalEvent } from './terminal-stream.js';
-import { encodeTerminalServerMessage, sendTerminalOutput } from './wire.js';
+import { encodeTerminalOutput, encodeTerminalServerMessage, sendTerminalOutput } from './wire.js';
+import { TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
 
 export const WS_OPEN = 1;
-const SERVER_SNAPSHOT_SCROLLBACK = 10000;
 const TERMINAL_SOCKET_BUFFER_LIMIT = 1024 * 1024;
 const { Terminal: HeadlessTerminal } = headlessXterm;
 
@@ -14,7 +14,7 @@ export function createTerminalSnapshot(cols, rows) {
     allowProposedApi: true,
     cols,
     rows,
-    scrollback: SERVER_SNAPSHOT_SCROLLBACK,
+    scrollback: TERMINAL_SCROLLBACK_LINES,
   });
   const serializer = new SerializeAddon();
   terminal.loadAddon(new UnicodeGraphemesAddon());
@@ -144,19 +144,20 @@ export function queueTerminalOutput(session, chunk) {
 }
 
 export function sendTerminalSnapshot(ws, snapshot) {
-  forEachTerminalOutputFrame(snapshot, (frame) => {
-    if (websocketWritable(ws)) {
-      if (sendTerminalOutput(ws, frame, undefined, ws.data.kind !== 'terminal-output') === 0) {
-        ws.close(1013, 'Terminal output dropped');
-      }
-    }
-  });
+  if (!websocketWritable(ws)) return;
+  // A restore is one compressed message, unlike latency-sensitive live output.
+  // Empty screens still need a frame so the client can finish its restore.
+  const data = snapshot || '\x1b[0m';
+  const payload = encodeTerminalOutput(data, undefined, true);
+  ws.data.snapshotBufferAllowance = payload.byteLength ?? Buffer.byteLength(data) + 64;
+  if (ws.send(payload) === 0) ws.close(1013, 'Terminal snapshot dropped');
+  if (ws.getBufferedAmount?.() === 0) ws.data.snapshotBufferAllowance = 0;
 }
 
 export function websocketWritable(ws) {
   if (ws?.readyState !== WS_OPEN) return false;
   if (typeof ws.getBufferedAmount === 'function'
-    && ws.getBufferedAmount() > TERMINAL_SOCKET_BUFFER_LIMIT) {
+    && ws.getBufferedAmount() > TERMINAL_SOCKET_BUFFER_LIMIT + (ws.data?.snapshotBufferAllowance ?? 0)) {
     ws.close(1013, 'Terminal viewer is too slow');
     return false;
   }
@@ -165,7 +166,7 @@ export function websocketWritable(ws) {
 
 export function readTerminalSnapshot(session) {
   if (session.snapshotDirty || !session.terminalSnapshot) {
-    session.terminalSnapshot = session.serializer.serialize() + session.mouseEncoding.mode;
+    session.terminalSnapshot = serializeTerminalSnapshot(session.terminal, session.serializer, session.mouseEncoding.mode);
     session.snapshotDirty = false;
   }
 
@@ -188,7 +189,7 @@ export function resizeSession(session, cols, rows) {
   });
 }
 
-function sendTerminalEvent(ws, event) {
+export function sendTerminalEvent(ws, event) {
   if (!websocketWritable(ws)) {
     return;
   }

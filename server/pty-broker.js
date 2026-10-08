@@ -8,6 +8,7 @@ import { SerializeAddon } from '@xterm/addon-serialize';
 import { UnicodeGraphemesAddon } from './unicode.js';
 import { createTerminalEventLog, recordTerminalEvent, getTerminalReplayPlan } from './terminal-stream.js';
 import { readPtyMessages, sendPtyMessage, requestPtyBroker } from './pty-channel.js';
+import { TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
 
 const socketPath = process.env.CLOUDCLI_PTY_SOCKET || '/run/cloud-terminal/pty.sock';
 
@@ -25,13 +26,13 @@ if (process.argv.includes('--request')) {
   const snapshot = (session) => new Promise((resolve) => {
     const seq = session.log.lastSeq;
     session.terminal.write('', () => resolve({ seq,
-      data: session.serializer.serialize({ scrollback: 10000 }) + session.mouseEncoding,
+      data: serializeTerminalSnapshot(session.terminal, session.serializer, session.mouseEncoding),
       cols: session.terminal.cols, rows: session.terminal.rows }));
   });
   function createSession(id, options) {
     const cols = dimension(options.cols, 100, 500);
     const rows = dimension(options.rows, 30, 300);
-    const terminal = new headlessXterm.Terminal({ allowProposedApi: true, cols, rows, scrollback: 10000 });
+    const terminal = new headlessXterm.Terminal({ allowProposedApi: true, cols, rows, scrollback: TERMINAL_SCROLLBACK_LINES });
     const serializer = new SerializeAddon();
     terminal.loadAddon(new UnicodeGraphemesAddon());
     terminal.loadAddon(serializer);

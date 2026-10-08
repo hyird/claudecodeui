@@ -10,17 +10,17 @@ test('terminal attach replays a serialized screen snapshot instead of raw PTY hi
   assert.match(source, /SerializeAddon/);
   assert.match(source, /terminalSnapshot/);
   assert.match(source, /session\.terminal\.write\(chunk,/);
-  assert.match(source, /session\.serializer\.serialize\(\)/);
+  assert.match(source, /serializeTerminalSnapshot\(session\.terminal, session\.serializer/);
   assert.match(source, /sendTerminalSnapshot\(ws,\s*terminalSnapshot\)/);
   assert.match(source, /function sendTerminalSnapshot\(ws, snapshot\)/);
-  assert.match(source, /forEachTerminalOutputFrame\(snapshot,/);
+  assert.match(source, /encodeTerminalOutput\(data, undefined, true\)/);
   assert.equal(source.includes("session.buffer.join('')"), false);
   assert.equal(source.includes('for (const chunk of session.buffer)'), false);
 });
 
 test('server snapshot scrollback is bounded for lower memory reconnect state', () => {
-  assert.match(source, /const SERVER_SNAPSHOT_SCROLLBACK = 10000/);
-  assert.match(source, /scrollback:\s*SERVER_SNAPSHOT_SCROLLBACK/);
+  assert.match(source, /TERMINAL_SCROLLBACK_LINES = terminalPolicy.scrollbackLines/);
+  assert.match(source, /scrollback:\s*TERMINAL_SCROLLBACK_LINES/);
   assert.equal(source.includes('scrollback: BUFFER_LIMIT'), false);
 });
 
@@ -30,8 +30,8 @@ test('terminal output marks snapshots dirty instead of serializing on every chun
   assert.match(source, /function readTerminalSnapshot\(session\)/);
   assert.match(writeSnapshot, /session\.snapshotDirty = true/);
   assert.equal(writeSnapshot.includes('session.serializer.serialize()'), false);
-  assert.match(source, /session\.terminalSnapshot = session\.serializer\.serialize\(\)/);
-  assert.match(source, /const terminalSnapshot = readTerminalSnapshot\(session\)/);
+  assert.match(source, /session\.terminalSnapshot = serializeTerminalSnapshot\(/);
+  assert.match(source, /const terminalSnapshot = replayPlan.mode === 'reset' \? readTerminalSnapshot\(session\)/);
 });
 
 test('serialized tab titles are stripped of volatile spinner prefixes', () => {

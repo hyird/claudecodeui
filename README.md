@@ -10,10 +10,13 @@
 - 主题和字号设置
 - 自动适配终端尺寸
 - 上行、下行分别使用 `/terminal/input` 和 `/terminal/output` 两个 WebSocket
+- 每个终端标签持有独立的上下行连接，切换标签不会断开或重新恢复历史
 - 随网页提供 Maple Mono NF CN 编程字体，包含 Nerd Font 图标和 2:1 中英文等宽字形
 - Unicode 15 emoji/组合字符占列支持
 - Linux systemd 部署通过独立 bun-pty 服务保留更新前的终端会话
-- 浏览器本地保存 10,000 行历史，原生滚轮和滚动条同步更新，无需服务端滚动往返
+- 历史最多保留最近 2,000 行；恢复快照按 1 MiB 预算进一步裁掉旧行，保留完整当前屏幕
+- 原生滚轮和滚动条同步更新，无需服务端滚动往返
+- 刷新时整份压缩快照一次恢复，完成绘制后再连接上行，避免逐行滚动和初始化竞态
 
 首次启动时创建管理员账户，登录后可从工具栏的“管理协作者”添加或移除账户。
 移除账户会结束该账户的终端会话。账户之间的终端状态独立，但 PTY 仍以
@@ -76,6 +79,9 @@ sudo journalctl -u cloud-terminal.service -n 50 --no-pager
 不要在更新时重启 PTY 服务，也不要把它设置成 Web 服务的 `PartOf`。
 PTY 服务通过权限为 0600 的 Unix socket 转发原始字节，不包装终端屏幕；
 历史滚动由浏览器 xterm 完成。输入确认和去重由 PTY 服务处理。
+
+在远端 Debian 切换到服务账户使用 `sudo -iu cloudcli`。`sudo -i cloudcli` 会执行系统里
+另一个 CloudCLI 命令；该程序的认证和 WebSocket 协议与本项目不同。
 
 首次从旧架构迁移时，旧 PTY 无法转移到新服务。脚本仍会拒绝打断这些会话，
 需要先结束旧会话；确认可以中断时才使用 `./scripts/deploy-local.sh --force`。

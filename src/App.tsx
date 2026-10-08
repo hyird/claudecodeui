@@ -160,17 +160,19 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
         role="tabpanel"
         aria-labelledby={activeTab ? `terminal-tab-${activeTab.id}` : undefined}
       >
-        {activeTab && (
+        {tabsController.tabsState.tabs.map((tab) => (
           <div
-            key={activeTab.id}
-            className="terminal-layer visible"
+            key={tab.id}
+            className={`terminal-layer ${tab.id === activeTab?.id ? 'visible' : ''}`}
+            aria-hidden={tab.id !== activeTab?.id}
           >
             <TerminalPane
-              tab={activeTab}
-              active
+              tab={tab}
+              active={tab.id === activeTab?.id}
               focusOnMount={
-                pendingKeyboardTabFocusRef.current !== activeTab.id
-                && pendingTabFocusRef.current?.focusId !== activeTab.id
+                tab.id === activeTab?.id
+                && pendingKeyboardTabFocusRef.current !== tab.id
+                && pendingTabFocusRef.current?.focusId !== tab.id
               }
               authToken={authToken}
               preferences={preferences}
@@ -178,7 +180,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
               onTitleChange={updateTabTitle}
             />
           </div>
-        )}
+        ))}
       </section>
 
       {settingsOpen && (

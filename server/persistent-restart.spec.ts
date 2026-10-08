@@ -6,9 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { inflateSync } from 'node:zlib';
 import headlessXterm from '@xterm/headless';
 import { cloudcli } from '../proto/messages.js';
 import { requestPtyBroker } from './pty-channel.js';
+import terminalPolicy from '../shared/terminal-policy.json';
 
 const projectDir = fileURLToPath(new URL('..', import.meta.url));
 (process.platform === 'win32' ? test.skip : test)('bun-pty service preserves shell, history and input deduplication across web restarts', async () => {
@@ -53,14 +55,15 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     const ws = new WebSocket(`ws://127.0.0.1:${port}${pathname}`, ['cloudcli.v1', `auth.${token}`]);
     sockets.push(ws);
     const messages: any[] = [];
-    const terminal = new headlessXterm.Terminal({ allowProposedApi: true, cols: 200, rows: 24, scrollback: 10000 });
+    const terminal = new headlessXterm.Terminal({ allowProposedApi: true, cols: 200, rows: 24, scrollback: terminalPolicy.scrollbackLines });
     terminals.push(terminal);
     ws.binaryType = 'arraybuffer';
     ws.addEventListener('message', (event) => {
       const bytes = new Uint8Array(event.data as ArrayBuffer);
       const message = pathname.endsWith('/tabs') ? cloudcli.TabsServerMessage.decode(bytes) : cloudcli.TerminalServerMessage.decode(bytes);
       messages.push(message);
-      if ('output' in message && message.output) terminal.write(message.output.data);
+      if ('output' in message && message.output) terminal.write(message.output.compressed
+        ? inflateSync(message.output.data) : message.output.data);
       if ('ready' in message && message.ready?.reset) terminal.reset();
     });
     await new Promise<void>((resolve, reject) => { ws.addEventListener('open', () => resolve(), { once: true }); ws.addEventListener('error', reject, { once: true }); });
@@ -81,11 +84,11 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     const input = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
     const original = await inspect();
     expect(original.pid).toBeGreaterThan(0);
-    // Exercise a nearly full scrollback snapshot larger than the live socket limit.
+    // Produce more history than the cap, then restore only the newest rows.
     const command = 'export CT_COUNT=$(( ${CT_COUNT:-0} + 1 )); printf "history-%0180d\\n" {1..10000}; printf "CT_READY_%s\\n" "$CT_COUNT"\r';
     input.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 1, data: command } }).finish());
     await waitFor(() => input.messages.some((m) => m.inputAck?.inputSeq === 1));
-    await waitFor(() => output.terminal.buffer.active.baseY > 9900);
+    await waitFor(() => output.terminal.buffer.active.baseY >= 2000);
     expect(output.terminal.buffer.active.type).toBe('normal');
     await stop();
     expect((await inspect()).pid).toBe(original.pid);
@@ -94,16 +97,33 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     expect(restoredTabs.messages[0].tabs.activeId).toBe(tabId);
     const restored = await connect('/terminal/output', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation, lastSeq: 1, cols: 200, rows: 24 });
     expect(restored.messages.find((m) => m.ready).ready.sessionGeneration).toBe(generation);
-    await waitFor(() => restored.terminal.buffer.active.baseY > 9900);
+    await waitFor(() => restored.terminal.buffer.active.baseY >= 1900);
     expect(restored.terminal.buffer.active.type).toBe('normal');
     const restoredInput = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 1, data: command } }).finish());
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 2, data: 'printf "CT_FINAL_%s\\n" "$CT_COUNT"\r' } }).finish());
     await waitFor(async () => (await inspect()).data.includes('CT_FINAL_1'));
     expect((await inspect()).pid).toBe(original.pid);
-    // Disconnect the browser and produce output while the web process is down.
-    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 3, data: '(sleep 0.3; printf "\\nBROKER_BACKGROUND_OK\\n") &\r' } }).finish());
+    // Exercise incremental replay through actual module imports. Source-extraction
+    // tests previously hid a missing replay-function import that crashed the web process.
+    await waitFor(() => restored.messages.some((m) => m.output && Buffer.from(m.output.data).includes('CT_FINAL_1')));
+    const lastSeq = Math.max(...restored.messages.map((m) => Number(m.output?.seq ?? 0)));
+    restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 3,
+      data: '(sleep 0.2; printf "\\nINCREMENTAL_REPLAY_OK\\n") &\r' } }).finish());
     await waitFor(() => restoredInput.messages.some((m) => m.inputAck?.inputSeq === 3));
+    restored.ws.close();
+    await waitFor(() => restored.ws.readyState === WebSocket.CLOSED);
+    await waitFor(async () => /\r?\nINCREMENTAL_REPLAY_OK\r?\n/.test((await inspect()).data));
+    const replayed = await connect('/terminal/output', registration.token, { sessionId: tabId,
+      inputStreamId: streamId, sessionGeneration: generation, lastSeq, cols: 200, rows: 24 });
+    expect(replayed.messages.find((m) => m.ready).ready.reset).toBe(false);
+    await waitFor(() => replayed.messages.some((m) => m.output && Buffer.from(m.output.data).includes('INCREMENTAL_REPLAY_OK')));
+    expect((await fetch(`${baseUrl}/api/health`)).ok).toBe(true);
+    const replayedInput = await connect('/terminal/input', registration.token, { sessionId: tabId,
+      inputStreamId: streamId, sessionGeneration: generation });
+    // Disconnect the browser and produce output while the web process is down.
+    replayedInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 4, data: '(sleep 0.3; printf "\\nBROKER_BACKGROUND_OK\\n") &\r' } }).finish());
+    await waitFor(() => replayedInput.messages.some((m) => m.inputAck?.inputSeq === 4));
     await stop();
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect((await inspect()).data).toMatch(/\r?\nBROKER_BACKGROUND_OK\r?\n/);

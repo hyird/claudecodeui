@@ -1059,15 +1059,17 @@ button:focus-visible {
   background: transparent; /* let the ambient canvas show around the frame */
 }
 
-/* Hidden layers must be display:none so inactive terminals keep zero size */
+/* Keep every tab's grid measured while only the selected pane is visible. */
 .terminal-layer {
   position: absolute;
   inset: 0;
-  display: none;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .terminal-layer.visible {
-  display: block;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .tab.dragging { opacity: 0.45; pointer-events: none; }
