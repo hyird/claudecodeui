@@ -898,11 +898,8 @@ const SEQ_OUTPUT_MIN_CHARS = 1288895;
 const TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 * 1024;
 
 test('bulk terminal output stays responsive with bounded frames and no lost bytes', async () => {
-  // bun-pty hands over the PTY in 4 KB reads and drains ~166 of them per event-loop
-  // turn, so one frame per read means one protobuf encode, one deflate and one socket
-  // write per 4 KB. The server batches a turn's reads into a single output event; this
-  // drives a real shell through a real socket to confirm both halves of that: many
-  // fewer frames, and every byte still arriving in order.
+  // Drive a real shell through a real socket: every byte must arrive in order,
+  // frames stay bounded, and a control request remains responsive during the flood.
   const sessionId = await createTestTab();
   const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
   const inputStreamId = randomUUID();
@@ -911,6 +908,9 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
   let largestOutputFrame = 0;
   let text = '';
   let ready = false;
+  let pingAt = null;
+  let pongAt = null;
+  let complete = false;
 
   const done = new Promise((resolve, reject) => {
     const timeout = setTimeout(
@@ -923,6 +923,11 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
     socket.on('error', (error) => { clearTimeout(timeout); reject(error); });
     socket.on('message', (raw) => {
       const message = TerminalServerMessage.decode(toUint8(raw));
+      if (message.body === 'pong' && pingAt !== null) {
+        pongAt = performance.now();
+        if (complete) { clearTimeout(timeout); resolve(); }
+        return;
+      }
       if (message.body === 'ready' && !ready) {
         ready = true;
         socket.send(TerminalClientMessage.encode({
@@ -938,9 +943,13 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
       const decoded = message.output.compressed ? inflateSync(payload) : Buffer.from(payload);
       largestOutputFrame = Math.max(largestOutputFrame, decoded.byteLength);
       text += decoded.toString('utf8');
+      if (pingAt === null && text.length > 4096) {
+        pingAt = performance.now();
+        socket.send(TerminalClientMessage.encode({ ping: {} }).finish());
+      }
       if (text.includes('__DONE__\r\n')) {
-        clearTimeout(timeout);
-        resolve();
+        complete = true;
+        if (pongAt !== null) { clearTimeout(timeout); resolve(); }
       }
     });
   });
@@ -982,14 +991,10 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
       + `got ${largestOutputFrame}`,
   );
 
-  // Without coalescing this averages the 4 KB PTY read size. The 8 KB floor is
-  // therefore unreachable unless a turn's reads are actually being batched.
-  const averageFrameBytes = text.length / outputFrames;
-  assert.ok(
-    averageFrameBytes > 8192,
-    `expected coalesced frames, got ${outputFrames} frames averaging `
-    + `${Math.round(averageFrameBytes)} bytes (uncoalesced would be ~4096)`,
-  );
+  const expected = Array.from({ length: 200000 }, (_, i) => String(i + 1)).join('\n');
+  assert.ok(normalizedText.includes(`${expected}\n__DONE__`), 'every sequence line must arrive intact and in order');
+  assert.ok(pongAt !== null && pingAt !== null && pongAt - pingAt < 250,
+    `control traffic stalled during bulk output: ${pongAt - pingAt} ms`);
 
   socket.send(TerminalClientMessage.encode({ close: {} }).finish());
   socket.close();

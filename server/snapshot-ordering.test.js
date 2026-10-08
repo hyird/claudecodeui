@@ -14,7 +14,7 @@ import { createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent } fr
 // Importing the server itself would start Bun's HTTP listener and auth database.
 const functions = [
   'createTerminalSnapshot', 'writeTerminalSnapshot', 'forEachTerminalOutputFrame',
-  'clearTerminalOutputFlushTimer', 'flushTerminalOutput', 'queueTerminalOutputPiece',
+  'cancelTerminalOutputFlush', 'flushTerminalOutput', 'queueTerminalOutputPiece',
   'queueTerminalOutput', 'sendTerminalSnapshot', 'readTerminalSnapshot', 'resizeSession',
   'sendTerminalEvent', 'recordAndSendTerminalEvent', 'createSession', 'attachSocket',
   'detachSocket', 'closeSession', 'handleInit', 'handleTerminalMessage',
@@ -33,14 +33,13 @@ function setup(t, cols = 20, rows = 4) {
     tabSubscribers: new Set(),
   };
   const context = vm.createContext({
-    Buffer, setTimeout, clearTimeout, randomUUID, process,
+    Buffer, setTimeout, clearTimeout, setImmediate, randomUUID, process,
     HeadlessTerminal: class extends headlessXterm.Terminal {
       constructor(options) { super(options); terminals.push(this); }
     },
     SerializeAddon, UnicodeGraphemesAddon, createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent,
     TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot,
     TERMINAL_OUTPUT_MAX_FRAME_BYTES: 16 * 1024,
-    TERMINAL_OUTPUT_FLUSH_INTERVAL_MS: 2,
     TERMINAL_SOCKET_BUFFER_LIMIT: 1024 * 1024,
     WS_OPEN: 1,
     UUID_V4_PATTERN: /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
@@ -75,7 +74,7 @@ function setup(t, cols = 20, rows = 4) {
   context.workspaces.set(workspace.userId, workspace);
   const session = context.createSession(sessionId, { cols, rows }, workspace);
   t.after(() => {
-    for (const value of context.sessions.values()) context.clearTerminalOutputFlushTimer(value);
+    for (const value of context.sessions.values()) context.cancelTerminalOutputFlush(value);
     for (const terminal of terminals) terminal.dispose();
   });
   return { context, session, ptys, ptyOptions };
@@ -90,6 +89,22 @@ function socket(workspace) {
 }
 
 const drain = (terminal) => new Promise((resolve) => terminal.write('', resolve));
+
+test('small live output is sent before the next timer without waiting for the history parser', async (t) => {
+  const { context, session } = setup(t);
+  const ws = socket(session.workspace);
+  context.attachSocket(ws, session);
+  await drain(session.terminal);
+  const delivered = [];
+  const send = ws.send.bind(ws);
+  ws.send = (message) => { if (message.type === 'output') delivered.push(message.data); send(message); };
+  context.queueTerminalOutput(session, 'first');
+  context.queueTerminalOutput(session, '-second');
+  await new Promise((resolve) => setTimeout(() => { delivered.push('timer'); resolve(); }, 0));
+  assert.deepEqual(delivered, ['first-second', 'timer']);
+  await drain(session.terminal);
+  assert.equal(ws.messages.filter((m) => m.data === 'first-second').length, 1);
+});
 
 test('web PTYs advertise a remote clipboard route to fullscreen programs', (t) => {
   const { ptyOptions } = setup(t);

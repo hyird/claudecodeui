@@ -136,6 +136,9 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
 
     if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
       terminal.resize(dims.cols, dims.rows);
+      // Reflow can keep a historical viewport anchor. A changed grid should
+      // show the live prompt and continue following subsequent output.
+      terminal.scrollToBottom();
     }
 
     onResize(dims.cols, dims.rows);

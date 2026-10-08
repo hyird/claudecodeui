@@ -1,0 +1,40 @@
+diff --git a/src/terminal.ts b/src/terminal.ts
+index 71ae27d183812cf0feb5d55b84adb7d702c90d13..ab4cd85af763283b09c827c44028d4512d3797d0 100644
+--- a/src/terminal.ts
++++ b/src/terminal.ts
+@@ -243,7 +243,8 @@ export class Terminal implements IPty {
+ 		if (this._readLoop) return;
+ 		this._readLoop = true;
+ 
+-		const buf = Buffer.allocUnsafe(4096);
++		const buf = Buffer.allocUnsafe(16 * 1024);
++		let burstBytes = 0;
+ 
+ 		while (this._readLoop && !this._closing) {
+ 			const n = lib.symbols.bun_pty_read(this.handle, ptr(buf), buf.length);
+@@ -254,6 +255,13 @@ export class Terminal implements IPty {
+ 				if (decoded) {
+ 					this._onData.fire(decoded);
+ 				}
++				// Bound a busy PTY's synchronous drain so input, other terminals and
++				// IPC can run even while a command continuously produces output.
++				burstBytes += n;
++				if (burstBytes >= 256 * 1024) {
++					burstBytes = 0;
++					await new Promise((r) => setTimeout(r, 0));
++				}
+ 			} else if (n === -2) {
+ 				// CHILD_EXITED - flush any remaining bytes in the decoder
+ 				const remaining = this._decoder.decode();
+@@ -271,8 +279,9 @@ export class Terminal implements IPty {
+ 				}
+ 				break;
+ 			} else {
+-				// 0 bytes: wait
+-				await new Promise((r) => setTimeout(r, 8));
++				// A short idle wait avoids visibly quantizing 60 Hz TUI updates.
++				burstBytes = 0;
++				await new Promise((r) => setTimeout(r, 1));
+ 			}
+ 		}
+ 	}

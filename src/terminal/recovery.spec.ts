@@ -248,6 +248,9 @@ class FakeTerminal {
   resize(cols: number, rows: number) {
     this.cols = cols;
     this.rows = rows;
+    const screen = this.element.querySelector('.xterm-screen') as { offsetWidth: number; offsetHeight: number };
+    screen.offsetWidth = cols * 10;
+    screen.offsetHeight = rows * 25;
   }
   input(data: string) { this.emitData(data); }
   hasSelection() { return false; }
@@ -677,6 +680,22 @@ describe('runtime socket recovery', () => {
 });
 
 describe('terminal renderer recovery', () => {
+  test('a changed grid returns to live output while an unchanged fit preserves manual scrolling', () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const terminal = harness.terminalInstances[0];
+    harness.clock.advance(120);
+    terminal.buffer.active.baseY = 200;
+    terminal.buffer.active.viewportY = 50;
+    harness.clock.advance(120);
+    expect(terminal.buffer.active.viewportY).toBe(50);
+    harness.container.clientWidth = 640;
+    // The open handler runs the same fit used by ResizeObserver before init.
+    harness.sockets[0].open();
+    expect(terminal.buffer.active.viewportY).toBe(200);
+    cleanup();
+  });
+
   test('OMP sees synchronized output support and its current state through the input socket', async () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);

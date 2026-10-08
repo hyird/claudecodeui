@@ -56,10 +56,9 @@ export function writeTerminalSnapshot(session, chunk, onParsed) {
 }
 
 // Keep each decoded terminal frame small enough for xterm to parse without monopolizing
-// the browser thread. A busy PTY reaches the byte cap and sends immediately; light output
-// such as an echoed key is forced out within 2 ms.
+// the browser thread. Coalesce only the current IPC delivery, without delaying
+// an echoed key or animation frame behind a periodic flush timer.
 const TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 * 1024;
-const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 2;
 
 function forEachTerminalOutputFrame(chunk, callback) {
   const bytes = Buffer.from(chunk);
@@ -76,15 +75,12 @@ function forEachTerminalOutputFrame(chunk, callback) {
   }
 }
 
-export function clearTerminalOutputFlushTimer(session) {
-  if (session.outputFlushTimer !== null) {
-    clearTimeout(session.outputFlushTimer);
-    session.outputFlushTimer = null;
-  }
+export function cancelTerminalOutputFlush(session) {
+  session.outputFlushTask = null;
 }
 
 export function flushTerminalOutput(session) {
-  clearTerminalOutputFlushTimer(session);
+  cancelTerminalOutputFlush(session);
   if (session.pendingOutput.length === 0) {
     return;
   }
@@ -128,11 +124,13 @@ function queueTerminalOutputPiece(session, chunk, chunkBytes) {
     return;
   }
 
-  if (session.outputFlushTimer === null) {
-    session.outputFlushTimer = setTimeout(
-      () => flushTerminalOutput(session),
-      TERMINAL_OUTPUT_FLUSH_INTERVAL_MS,
-    );
+  if (session.outputFlushTask === null) {
+    const task = {};
+    session.outputFlushTask = task;
+    setImmediate(() => {
+      if (session.outputFlushTask !== task || session.disposed) return;
+      flushTerminalOutput(session);
+    });
   }
 }
 

@@ -8,7 +8,7 @@ import { readTerminalInputStream, saveTerminalInputStream, deleteTerminalInputSt
 import { decodeTerminalClientMessage, encodeTerminalServerMessage } from './wire.js';
 import { UUID_V4_PATTERN, readString, readNumber } from './terminal-validation.js';
 import {
-  WS_OPEN, createTerminalSnapshot, writeTerminalSnapshot, clearTerminalOutputFlushTimer,
+  WS_OPEN, createTerminalSnapshot, writeTerminalSnapshot, cancelTerminalOutputFlush,
   flushTerminalOutput, queueTerminalOutput, sendTerminalSnapshot, websocketWritable,
   readTerminalSnapshot, resizeSession, recordAndSendTerminalEvent,
   sendTerminalEvent,
@@ -88,7 +88,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
       disposed: false,
       pendingOutput: [],
       pendingOutputBytes: 0,
-      outputFlushTimer: null,
+      outputFlushTask: null,
     };
 
     shellProcess.onData((chunk) => {
@@ -98,7 +98,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
     shellProcess.onDisconnect?.(() => {
       if (session.disposed) return;
       session.disposed = true;
-      clearTerminalOutputFlushTimer(session);
+      cancelTerminalOutputFlush(session);
       session.socket?.close(1011, 'PTY service disconnected');
       session.inputSocket?.close(1011, 'PTY service disconnected');
       if (sessions.get(sessionId) === session) sessions.delete(sessionId);
@@ -207,7 +207,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
 
     // The session is going away and its socket with it, so buffered output has nowhere
     // left to land — drop it instead of letting a queued flush revive a dead session.
-    clearTerminalOutputFlushTimer(session);
+    cancelTerminalOutputFlush(session);
     session.disposed = true;
     session.pendingOutput.length = 0;
     session.pendingOutputBytes = 0;

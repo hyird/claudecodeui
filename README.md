@@ -48,6 +48,9 @@ bun run dev
 只改变压缩格式，保留原始字形。
 
 PTY 使用官方 `bun-pty` 包，依赖安装以 `bun.lock` 为准。
+`patches/bun-pty@0.4.11.patch` 由 Bun 安装时自动应用：空闲读取等待从 8 ms
+缩短到 1 ms，读取块增至 16 KiB，连续读取 256 KiB 后让出事件循环。
+Web 输出仅合并当前一批 IPC 消息，不再额外等待 2 ms；尺寸变化后自动回到底部。
 
 测试跑在 node:test 上（Bun 的 runner 无法承载 node:test 文件），所以还需要 Node：
 

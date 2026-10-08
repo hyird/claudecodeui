@@ -223,13 +223,11 @@ test('terminal keeps a visible-tab heartbeat to detect silently dropped sockets'
   assert.match(terminalPaneSource, /window\.clearInterval\(heartbeatTimer\)/);
 });
 
-test('terminal output uses bounded frames with a 2ms forced send', () => {
+test('terminal output coalesces only the current delivery into bounded frames', () => {
   assert.match(serverSource, /TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 \* 1024/);
-  assert.match(serverSource, /TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 2/);
-  assert.match(
-    serverSource,
-    /setTimeout\(\s*\n\s*\(\) => flushTerminalOutput\(session\),\s*\n\s*TERMINAL_OUTPUT_FLUSH_INTERVAL_MS/,
-  );
+  assert.match(serverSource, /setImmediate\(\(\) => \{/);
+  assert.match(serverSource, /session.outputFlushTask !== task \|\| session.disposed/);
+  assert.equal(serverSource.includes('TERMINAL_OUTPUT_FLUSH_INTERVAL_MS'), false);
   assert.match(serverSource, /Buffer\.from\(chunk\)/);
 });
 
