@@ -251,16 +251,16 @@ export function connectTerminal({
     let inputMessageQueue = Promise.resolve();
     const failInputConnection = () => {
       if (currentInputSocket !== inputSocket) return;
-      if (currentOutputSocket !== outputSocket || outputSocket.readyState !== WebSocket.OPEN) {
-        failInputConnection();
-        return;
-      }
       closeInputSocket();
       outputSocket.close();
     };
     inputConnectionTimer = window.setTimeout(failInputConnection, TERMINAL_CONNECT_TIMEOUT_MS);
     inputSocket.addEventListener('open', () => {
       if (currentInputSocket !== inputSocket) return;
+      if (currentOutputSocket !== outputSocket || outputSocket.readyState !== WebSocket.OPEN) {
+        failInputConnection();
+        return;
+      }
       try {
         inputSocket.send(encodeTerminalClientMessage({
           type: 'init', sessionId: tabId,

@@ -881,6 +881,20 @@ describe('terminal client snapshot recovery', () => {
     cleanup();
   });
 
+  test('an input timeout closes a stale pair even before the output close event arrives', async () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const output = harness.sockets[0];
+    output.open();
+    emitServerMessage(harness, output, { type: 'ready', sessionGeneration: 'generation' });
+    await flushMicrotasks();
+    const input = harness.sockets.at(-1)!;
+    output.readyState = FakeSocket.CLOSED;
+    expect(() => harness.clock.advance(10000)).not.toThrow();
+    expect(input.closeCalls).toBe(1);
+    cleanup();
+  });
+
   test('uplink failure reconnects the pair and keeps pending input for deduplicated retry', async () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);

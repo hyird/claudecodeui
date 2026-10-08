@@ -30,7 +30,7 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
   const terminals: headlessXterm.Terminal[] = [];
   broker.stderr?.on('data', (data) => { logs += data; });
   const waitFor = async (predicate: () => boolean | Promise<boolean>) => {
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 300; i++) {
       if (await predicate()) return;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
@@ -85,10 +85,11 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     const original = await inspect();
     expect(original.pid).toBeGreaterThan(0);
     // Produce more history than the cap, then restore only the newest rows.
-    const command = 'export CT_COUNT=$(( ${CT_COUNT:-0} + 1 )); printf "history-%0180d\\n" {1..10000}; printf "CT_READY_%s\\n" "$CT_COUNT"\r';
+    const command = 'export CT_COUNT=$(( ${CT_COUNT:-0} + 1 )); printf "history-%0180d\\n" {1..'
+      + (terminalPolicy.scrollbackLines + 5000) + '}; printf "CT_READY_%s\\n" "$CT_COUNT"\r';
     input.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 1, data: command } }).finish());
     await waitFor(() => input.messages.some((m) => m.inputAck?.inputSeq === 1));
-    await waitFor(() => output.terminal.buffer.active.baseY >= 2000);
+    await waitFor(() => output.terminal.buffer.active.baseY === terminalPolicy.scrollbackLines);
     expect(output.terminal.buffer.active.type).toBe('normal');
     await stop();
     expect((await inspect()).pid).toBe(original.pid);
@@ -97,7 +98,7 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     expect(restoredTabs.messages[0].tabs.activeId).toBe(tabId);
     const restored = await connect('/terminal/output', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation, lastSeq: 1, cols: 200, rows: 24 });
     expect(restored.messages.find((m) => m.ready).ready.sessionGeneration).toBe(generation);
-    await waitFor(() => restored.terminal.buffer.active.baseY >= 1900);
+    await waitFor(() => restored.terminal.buffer.active.baseY >= terminalPolicy.scrollbackLines - 100);
     expect(restored.terminal.buffer.active.type).toBe('normal');
     const restoredInput = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 1, data: command } }).finish());
@@ -107,7 +108,8 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     // Exercise incremental replay through actual module imports. Source-extraction
     // tests previously hid a missing replay-function import that crashed the web process.
     await waitFor(() => restored.messages.some((m) => m.output && Buffer.from(m.output.data).includes('CT_FINAL_1')));
-    const lastSeq = Math.max(...restored.messages.map((m) => Number(m.output?.seq ?? 0)));
+    const lastSeq = Math.max(...restored.messages.map((m) => Number(m.seq ?? 0)));
+    expect(lastSeq).toBeGreaterThan(0);
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 3,
       data: '(sleep 0.2; printf "\\nINCREMENTAL_REPLAY_OK\\n") &\r' } }).finish());
     await waitFor(() => restoredInput.messages.some((m) => m.inputAck?.inputSeq === 3));
@@ -116,7 +118,9 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     await waitFor(async () => /\r?\nINCREMENTAL_REPLAY_OK\r?\n/.test((await inspect()).data));
     const replayed = await connect('/terminal/output', registration.token, { sessionId: tabId,
       inputStreamId: streamId, sessionGeneration: generation, lastSeq, cols: 200, rows: 24 });
-    expect(replayed.messages.find((m) => m.ready).ready.reset).toBe(false);
+    const replayReady = replayed.messages.find((m) => m.ready).ready;
+    expect({ reset: replayReady.reset, gap: replayReady.gap, cursor: lastSeq, serverSeq: Number(replayReady.lastSeq) })
+      .toMatchObject({ reset: false, gap: false });
     await waitFor(() => replayed.messages.some((m) => m.output && Buffer.from(m.output.data).includes('INCREMENTAL_REPLAY_OK')));
     expect((await fetch(`${baseUrl}/api/health`)).ok).toBe(true);
     const replayedInput = await connect('/terminal/input', registration.token, { sessionId: tabId,

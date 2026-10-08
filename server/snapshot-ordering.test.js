@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { UnicodeGraphemesAddon } from './unicode.js';
-import { serializeTerminalSnapshot } from './terminal-snapshot.js';
+import { TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
 import { createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent } from './terminal-stream.js';
 
 // Exercise the actual server functions with a real xterm parser and a fake PTY.
@@ -38,7 +38,7 @@ function setup(t, cols = 20, rows = 4) {
       constructor(options) { super(options); terminals.push(this); }
     },
     SerializeAddon, UnicodeGraphemesAddon, createTerminalEventLog, getTerminalReplayPlan, recordTerminalEvent,
-    TERMINAL_SCROLLBACK_LINES: 2000, serializeTerminalSnapshot,
+    TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot,
     TERMINAL_OUTPUT_MAX_FRAME_BYTES: 16 * 1024,
     TERMINAL_OUTPUT_FLUSH_INTERVAL_MS: 2,
     TERMINAL_SOCKET_BUFFER_LIMIT: 1024 * 1024,
