@@ -126,6 +126,11 @@ service_db_path() {
   printf '%s\n' "${BASE}/.cloudcli.sqlite"
 }
 
+# A first deployment has no web unit yet; stopping an unknown unit fails.
+unit_loaded() {
+  [ "$(systemctl show -p LoadState --value "$1")" = loaded ]
+}
+
 backup_unit() {
   if [ -e "$1" ]; then
     install -D -m 0644 "$1" "${BACKUP}/$2"
@@ -145,9 +150,11 @@ restore_unit() {
 rollback() {
   set +e
   echo '--- deploy failed; restoring the previous release ---' >&2
-  systemctl stop "${SERVICE}"
-  # The failed release may have hit the start rate limit while crash-looping.
-  systemctl reset-failed "${SERVICE}"
+  if unit_loaded "${SERVICE}"; then
+    systemctl stop "${SERVICE}"
+    # The failed release may have hit the start rate limit while crash-looping.
+    systemctl reset-failed "${SERVICE}"
+  fi
   if (( SWAPPED )); then
     rm -rf "${CURRENT}"
     if [ -d "${PREV}" ]; then mv "${PREV}" "${CURRENT}"; fi
@@ -233,7 +240,7 @@ main() {
   backup_unit "${UNIT_DIR}/${PTY_SERVICE}" pty
   backup_unit "${LEGACY_DROP_IN}" drop-in
   STOPPED=1
-  systemctl stop "${SERVICE}"
+  if unit_loaded "${SERVICE}"; then systemctl stop "${SERVICE}"; fi
 
   install -d -o "${RUN_AS}" -g "${RUN_GROUP}" -m 0700 "${DATA}"
   if [ -n "${LEGACY_DB}" ]; then
