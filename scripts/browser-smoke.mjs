@@ -278,7 +278,7 @@ function assertHealthyTerminal(label, state) {
   if (
     state.terminalScrollbar?.trackHeight > 0
     && (
-      state.terminalScrollbar.rulerWidth !== 4
+      state.terminalScrollbar.rulerWidth !== 3
       || JSON.stringify(state.terminalScrollbar.rulerBorderPixel)
         !== JSON.stringify(state.terminalScrollbar.viewportBackgroundPixel)
     )
@@ -712,8 +712,8 @@ const scrollbackState = await waitForState(
   (state) => (
     state.terminalScrollbar?.hasScrollback
     && state.terminalScrollbar.nativeWidth === '0px'
-    && state.terminalScrollbar.trackWidth === 4
-    && state.terminalScrollbar.sliderWidth === 4
+    && state.terminalScrollbar.trackWidth === 3
+    && state.terminalScrollbar.sliderWidth === 3
   ),
   'terminal scrollbar did not settle at the compact width',
 );

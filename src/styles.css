@@ -605,25 +605,37 @@ button:focus-visible {
   padding: 0 2px;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
 }
 
-.tabs::-webkit-scrollbar {
+/* Ultra-thin native scrollbars everywhere (tab strip, dialogs, auth screen).
+   Chrome ignores ::-webkit-scrollbar once `scrollbar-width` is set, so the
+   standard properties are only the fallback for browsers without it (Firefox,
+   whose thinnest option is `thin`). The terminal draws its own overlay
+   scrollbar; its width is TERMINAL_SCROLLBAR_GUTTER in renderer.ts. */
+::-webkit-scrollbar {
+  width: 3px;
   height: 3px;
 }
 
-.tabs::-webkit-scrollbar-track {
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-.tabs::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.35);
   border-radius: 3px;
 }
 
-.tabs:hover::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.22);
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.6);
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+  }
 }
 
 .tab {
@@ -1155,8 +1167,8 @@ button:focus-visible {
   position: absolute;
   inset: 10px 12px 12px;
   overflow: hidden;
-  /* The native 8px scrollbar occupies the rest of the right-hand margin. */
-  padding: 12px 4px 12px 12px;
+  /* Right 9 + 3px overlay scrollbar gutter = the 12px of the other sides. */
+  padding: 12px 9px 12px 12px;
   border: 1px solid var(--edge-hairline);
   border-radius: var(--radius-frame);
   background: var(--bg-terminal);
@@ -1197,7 +1209,7 @@ button:focus-visible {
 }
 
 /* xterm 6 renders its own VS Code-style scrollbar above the viewport. Its width
-   comes from `overviewRuler.width`; keep the thumb pill-shaped at that compact size. */
+   comes from `overviewRuler.width` (3px); keep the thumb pill-shaped at that size. */
 .terminal-pane .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
   border-radius: 999px;
 }
@@ -1315,8 +1327,8 @@ button:focus-visible {
 
   .terminal-frame {
     inset: 6px;
-    /* Right 2 + 8px native scrollbar gutter = 10px. */
-    padding: 10px 2px 10px 10px;
+    /* Right 7 + 3px overlay scrollbar gutter = 10px. */
+    padding: 10px 7px 10px 10px;
     border-radius: var(--radius-md);
   }
 }

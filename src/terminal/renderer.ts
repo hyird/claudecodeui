@@ -7,7 +7,7 @@ export const TERMINAL_FONT_FAMILY = '"Maple Mono NF CN", "CaskaydiaMono Nerd Fon
 // Width of the scrollback scrollbar to reserve so the rightmost column is never
 // rendered beneath it. Match the xterm overlay's `overviewRuler.width` below.
 // xterm's own FitAddon reserves the same gutter (`- scrollBarWidth`).
-export const TERMINAL_SCROLLBAR_GUTTER = 8;
+export const TERMINAL_SCROLLBAR_GUTTER = 3;
 // At most this many WebGL restores in a row for contexts that die within the
 // stable window; a context that survives the window resets the budget.
 const WEBGL_MAX_QUICK_RESTORES = 3;

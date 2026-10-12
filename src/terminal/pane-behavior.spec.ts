@@ -68,7 +68,7 @@ describe('terminal pane layout', () => {
     socket.open();
 
     // 801x600 px frame of 10x25 px cells: an unguarded fit would claim 80x24. The
-    // 8 px scrollbar gutter and 1 px edge guard leave room for 79x23 whole cells.
+    // 3 px scrollbar gutter and 1 px edge guard leave room for 79x23 whole cells.
     const [init] = sentMessagesOfType(socket, 'init');
     expect({ cols: init.cols, rows: init.rows }).toEqual({ cols: 79, rows: 23 });
     cleanup();
