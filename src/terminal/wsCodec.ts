@@ -14,8 +14,6 @@ type DecompressionStreamConstructor = new (
   format: 'deflate'
 ) => TransformStream<Uint8Array, Uint8Array>;
 
-const textDecoder = new TextDecoder();
-
 export type TerminalClientMessage =
   | {
       type: 'init';
@@ -65,9 +63,10 @@ async function inflateDeflate(payload: Uint8Array) {
     throw new Error('Compressed terminal output requires DecompressionStream support');
   }
 
-  const payloadCopy = new Uint8Array(payload.byteLength);
-  payloadCopy.set(payload);
-  const stream = new Blob([payloadCopy.buffer]).stream().pipeThrough(new DecompressionStreamCtor('deflate'));
+  // The Blob reads only this view's bytes, so no copy is needed. Frames come from
+  // a WebSocket ArrayBuffer, never a SharedArrayBuffer.
+  const stream = new Blob([payload as Uint8Array<ArrayBuffer>]).stream()
+    .pipeThrough(new DecompressionStreamCtor('deflate'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
@@ -134,8 +133,9 @@ export async function decodeTerminalServerMessage(
       const output = message.output!;
       const payload = output.data ?? new Uint8Array(0);
       try {
+        // xterm decodes UTF-8 bytes itself and keeps partial sequences across writes.
         const data = output.compressed ? await inflateDeflate(payload) : payload;
-        return { type: 'output', data: textDecoder.decode(data), seq: message.seq };
+        return { type: 'output', data, seq: message.seq };
       } catch {
         return { type: 'error', message: 'Unable to decode compressed terminal output', seq: message.seq };
       }

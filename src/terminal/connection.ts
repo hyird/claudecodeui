@@ -77,10 +77,6 @@ export function connectTerminal({
   let terminalResyncTimer = 0;
   let awaitingSnapshot: WebSocket | null = null;
 
-  const writeTerminalData = (data: string) => {
-    terminal.write(data);
-  };
-
   function clearTerminalResyncTimer() {
     if (terminalResyncTimer) {
       window.clearTimeout(terminalResyncTimer);
@@ -132,11 +128,16 @@ export function connectTerminal({
       return;
     }
 
-    if (message.type === 'output' && typeof message.data === 'string') {
+    if (message.type === 'output' && message.data instanceof Uint8Array) {
+      const data = message.data;
       if (awaitingSnapshot === socket) {
         await new Promise<void>((resolve) => {
-          // One write and DEC 2026 prevent painting intermediate history rows.
-          terminal.write(`\x1bc\x1b[?2026h${message.data}\x1b[?2026l`, () => {
+          // xterm parses queued writes in order. DEC 2026 holds rendering from the
+          // reset through the last snapshot byte, so no intermediate history row
+          // paints, without copying the snapshot into one prefixed string.
+          terminal.write('\x1bc\x1b[?2026h');
+          terminal.write(data);
+          terminal.write('\x1b[?2026l', () => {
             if (!disposed && currentOutputSocket === socket && awaitingSnapshot === socket
               && socket.readyState === WebSocket.OPEN) {
               awaitingSnapshot = null;
@@ -149,7 +150,7 @@ export function connectTerminal({
         });
         return;
       }
-      writeTerminalData(message.data);
+      terminal.write(data);
       return;
     }
 

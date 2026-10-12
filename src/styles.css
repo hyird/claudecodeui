@@ -6,21 +6,9 @@
    frosted surfaces to refract.
    ========================================================================== */
 
-@font-face {
-  font-family: "Maple Mono NF CN";
-  src: url("/fonts/MapleMonoNFCN-Regular-v7.9.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Maple Mono NF CN";
-  src: url("/fonts/MapleMonoNFCN-Bold-v7.9.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-}
+/* Maple Mono NF CN as unicode-range chunks, generated with the font files by
+   scripts/build-terminal-fonts.py. A page downloads only the chunks its text uses. */
+@import "@cloud-terminal/maple-mono-nf-cn/maple-mono-nf-cn.css";
 
 :root {
   color-scheme: dark;
@@ -71,7 +59,7 @@
 
   /* Type */
   --font-ui:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial,
+    "Maple Mono NF CN", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial,
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC",
     system-ui, sans-serif;
 
@@ -104,7 +92,8 @@ body,
 
 button,
 select,
-input {
+input,
+textarea {
   font: inherit;
   color: inherit;
 }
@@ -146,9 +135,6 @@ button:focus-visible {
     radial-gradient(820px 520px at 50% -18%, hsl(var(--auth-primary) / 0.10), transparent 68%),
     hsl(var(--auth-background));
   color: hsl(var(--auth-foreground));
-  font-family:
-    "Encode Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 .auth-screen::before {
@@ -217,7 +203,6 @@ button:focus-visible {
 .auth-loading h1 {
   margin: 0;
   color: hsl(var(--auth-foreground));
-  font-family: Merriweather, Georgia, Cambria, "Times New Roman", serif;
   font-size: 28px;
   line-height: 1.18;
   font-weight: 700;
@@ -249,7 +234,7 @@ button:focus-visible {
 .auth-field label {
   color: hsl(var(--auth-foreground));
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .auth-input-wrap {
@@ -526,8 +511,10 @@ button:focus-visible {
     linear-gradient(180deg, #0d0f15 0%, #0a0b10 55%, #08090d 100%);
 }
 
-/* A whisper of animated drift keeps the ambient light from feeling like a
-   static wallpaper. Slow, low-amplitude — never distracting. */
+/* A second, offset light layer keeps the ambient canvas from reading as a
+   flat wallpaper. It is deliberately static: the topbar's backdrop-filter
+   re-blurs whatever moves beneath it, so an infinite drift animation kept the
+   GPU busy on idle terminals. The transform is the old drift's midpoint. */
 .app-shell::before {
   content: "";
   position: absolute;
@@ -538,16 +525,7 @@ button:focus-visible {
     radial-gradient(620px 620px at 22% 18%, rgba(110, 161, 255, 0.08), transparent 60%),
     radial-gradient(520px 520px at 80% 72%, rgba(150, 126, 255, 0.06), transparent 60%);
   opacity: 0.9;
-  animation: ambient-drift 26s ease-in-out infinite alternate;
-}
-
-@keyframes ambient-drift {
-  from {
-    transform: translate3d(-1.5%, -1%, 0) scale(1.02);
-  }
-  to {
-    transform: translate3d(2%, 1.5%, 0) scale(1.06);
-  }
+  transform: translate3d(0.25%, 0.25%, 0) scale(1.04);
 }
 
 /* --------------------------------------------------------------------------
@@ -585,7 +563,7 @@ button:focus-visible {
   padding-right: 4px;
   color: var(--text-primary);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.01em;
   white-space: nowrap;
   user-select: none;
@@ -998,7 +976,7 @@ button:focus-visible {
 .settings-popover strong {
   min-width: 44px;
   color: var(--text-primary);
-  font-weight: 600;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   text-align: center;
   font-size: 13px;
@@ -1250,10 +1228,6 @@ button:focus-visible {
   }
 
   /* Designed static fallbacks, not frozen frames */
-  .app-shell::before {
-    animation: none;
-  }
-
   .status-dot.connecting {
     animation: none;
     box-shadow: 0 0 0 3px var(--warning-glow);
@@ -1350,8 +1324,8 @@ button:focus-visible {
 /* --------------------------------------------------------------------------
    Resize flicker guard — backdrop-filter re-blurs the whole backdrop on every
    frame of a window resize, which tears/flickers in Chromium/Electron. While
-   the window is actively resizing, swap the frost for opaque chrome and freeze
-   the ambient drift; the frost returns the moment the resize settles.
+   the window is actively resizing, swap the frost for opaque chrome; the
+   frost returns the moment the resize settles.
    -------------------------------------------------------------------------- */
 
 :root.is-resizing .topbar,
@@ -1359,8 +1333,4 @@ button:focus-visible {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   background: #14161d;
-}
-
-:root.is-resizing .app-shell::before {
-  animation-play-state: paused;
 }

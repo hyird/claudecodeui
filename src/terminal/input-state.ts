@@ -34,7 +34,16 @@ export function getTerminalInputState(tabId: string) {
   return state;
 }
 
+// The encoder replaces lone surrogates with U+FFFD; any surrogate takes the slow
+// path so the fast path never changes what the server receives.
+const SURROGATE = /[\uD800-\uDFFF]/;
+
 export function splitTerminalInput(data: string) {
+  // Keystrokes: a BMP code unit is at most 3 UTF-8 bytes, so short surrogate-free
+  // input already fits one frame and round-trips unchanged.
+  if (data.length * 3 <= TERMINAL_INPUT_MAX_FRAME_BYTES && !SURROGATE.test(data)) {
+    return data ? [data] : [];
+  }
   const bytes = terminalInputEncoder.encode(data);
   const frames: string[] = [];
   let offset = 0;

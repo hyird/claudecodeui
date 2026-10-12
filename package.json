@@ -13,7 +13,11 @@
     "build:server": "bun build server/index.js --target=bun --outfile dist-server/server.js && bun build server/pty-broker.js --target=bun --outfile dist-server/pty-broker.js",
     "preview": "vite preview --host 0.0.0.0",
     "start": "bun server/index.js",
-    "test": "node --test \"server/*.test.js\" \"src/**/*.test.js\" && bun test spec",
+    "test": "concurrently --max-processes 1 --group --names types,node,bun \"bun run test:types\" \"bun run test:node\" \"bun run test:bun\"",
+    "test:types": "tsc -p tsconfig.spec.json",
+    "test:node": "node --test \"server/*.test.js\"",
+    "test:bun": "bun test spec",
+    "smoke:browser": "node scripts/browser-smoke.mjs",
     "proto": "pbjs -t static-module -w es6 --no-create --no-verify --no-convert --no-delimited -o proto/messages.js proto/messages.proto && pbts -o proto/messages.d.ts proto/messages.js"
   },
   "dependencies": {
@@ -34,6 +38,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/bun": "^1.4.2",
     "@types/node": "^22.20.5",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",

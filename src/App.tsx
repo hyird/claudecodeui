@@ -50,11 +50,12 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   }, []);
 
   const updateFontSize = useCallback((value: number | string) => {
-    setPreferences((current) => ({
-      ...current,
-      fontSize: clampFontSize(value),
-    }));
+    const fontSize = clampFontSize(value);
+    // Keep the preferences object stable so memoized panes skip a no-op change.
+    setPreferences((current) => (current.fontSize === fontSize ? current : { ...current, fontSize }));
   }, []);
+
+  const closeCollaborators = useCallback(() => setCollaboratorsOpen(false), []);
 
   useEffect(() => {
     document.title = activeTab?.title
@@ -167,7 +168,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
             aria-hidden={tab.id !== activeTab?.id}
           >
             <TerminalPane
-              tab={tab}
+              tabId={tab.id}
               active={tab.id === activeTab?.id}
               focusOnMount={
                 tab.id === activeTab?.id
@@ -219,7 +220,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
           </div>
         </div>
       )}
-      {collaboratorsOpen && <CollaboratorsDialog token={authToken} onClose={() => setCollaboratorsOpen(false)} />}
+      {collaboratorsOpen && <CollaboratorsDialog token={authToken} onClose={closeCollaborators} />}
     </main>
   );
 }

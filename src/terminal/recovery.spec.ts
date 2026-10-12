@@ -1,572 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import fs from 'node:fs';
-import * as vm from 'node:vm';
-import ts from 'typescript';
 import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
-
-type Listener = (event: { type: string; data?: unknown }) => void;
-
-class FakeClock {
-  private nextId = 1;
-  private nowMs = 0;
-  private timers = new Map<number, {
-    callback: () => void;
-    due: number;
-    interval: number;
-  }>();
-
-  setTimeout(callback: () => void, delay: number) {
-    const id = this.nextId++;
-    this.timers.set(id, {
-      callback,
-      due: this.nowMs + Math.max(0, delay),
-      interval: 0,
-    });
-    return id;
-  }
-
-  clearTimeout(id: number) {
-    this.timers.delete(id);
-  }
-
-  setInterval(callback: () => void, delay: number) {
-    const id = this.nextId++;
-    this.timers.set(id, {
-      callback,
-      due: this.nowMs + Math.max(0, delay),
-      interval: Math.max(1, delay),
-    });
-    return id;
-  }
-
-  clearInterval(id: number) {
-    this.timers.delete(id);
-  }
-
-  advance(duration: number) {
-    const target = this.nowMs + duration;
-    while (true) {
-      let nextId: number | undefined;
-      let nextDue = Number.POSITIVE_INFINITY;
-      for (const [id, timer] of this.timers) {
-        if (timer.due <= target && timer.due < nextDue) {
-          nextId = id;
-          nextDue = timer.due;
-        }
-      }
-
-      if (nextId === undefined) {
-        break;
-      }
-
-      this.nowMs = nextDue;
-      const timer = this.timers.get(nextId);
-      if (!timer) {
-        continue;
-      }
-      if (timer.interval === 0) {
-        this.timers.delete(nextId);
-      } else {
-        timer.due += timer.interval;
-      }
-      timer.callback();
-    }
-    this.nowMs = target;
-  }
-
-  get pendingCount() {
-    return this.timers.size;
-  }
-}
-
-class FakeEventTarget {
-  private listeners = new Map<string, Set<Listener>>();
-
-  addEventListener(type: string, listener: Listener) {
-    let listeners = this.listeners.get(type);
-    if (!listeners) {
-      listeners = new Set();
-      this.listeners.set(type, listeners);
-    }
-    listeners.add(listener);
-  }
-
-  removeEventListener(type: string, listener: Listener) {
-    const listeners = this.listeners.get(type);
-    listeners?.delete(listener);
-    if (listeners?.size === 0) {
-      this.listeners.delete(type);
-    }
-  }
-
-  dispatch(type: string, data?: unknown) {
-    for (const listener of [...(this.listeners.get(type) ?? [])]) {
-      listener({ type, data });
-    }
-  }
-
-  listenerCount(type: string) {
-    return this.listeners.get(type)?.size ?? 0;
-  }
-}
-
-class FakeSocket extends FakeEventTarget {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSING = 2;
-  static readonly CLOSED = 3;
-
-  readonly sent: unknown[] = [];
-  closeCalls = 0;
-  readyState = FakeSocket.CONNECTING;
-  binaryType = '';
-  sendThrows = false;
-
-  constructor(readonly url: string) {
-    super();
-  }
-
-  send(value: unknown) {
-    if (this.sendThrows) {
-      throw new Error('socket send failed');
-    }
-    this.sent.push(value);
-  }
-
-  open() {
-    this.readyState = FakeSocket.OPEN;
-    this.dispatch('open');
-  }
-
-  close() {
-    if (this.readyState === FakeSocket.CLOSED) {
-      return;
-    }
-    this.closeCalls += 1;
-    this.readyState = FakeSocket.CLOSED;
-    this.dispatch('close');
-  }
-
-  emit(type: string, data?: unknown) {
-    this.dispatch(type, data);
-  }
-}
-
-function classList() {
-  const values = new Set<string>();
-  return {
-    add: (...names: string[]) => names.forEach((name) => values.add(name)),
-    remove: (...names: string[]) => names.forEach((name) => values.delete(name)),
-    contains: (name: string) => values.has(name),
-    toggle: (name: string, force?: boolean) => {
-      const next = force === undefined ? !values.has(name) : force;
-      if (next) values.add(name); else values.delete(name);
-      return next;
-    },
-  };
-}
-
-function makeElement() {
-  const screen = {
-    isConnected: true,
-    offsetWidth: 800,
-    offsetHeight: 600,
-    style: {} as Record<string, string>,
-    classList: classList(),
-  };
-  const viewport = {
-    isConnected: true,
-    classList: classList(),
-  };
-  const element = {
-    clientWidth: 800,
-    clientHeight: 600,
-    classList: classList(),
-    style: {} as Record<string, string>,
-    querySelector: (selector: string) => selector === '.xterm-screen' ? screen : viewport,
-  };
-  return { element, screen, viewport };
-}
-
-class FakeTerminal {
-  cols = 80;
-  rows = 24;
-  readonly options: Record<string, unknown>;
-  readonly buffer = { active: { baseY: 0, viewportY: 0, type: 'normal' } };
-  readonly modes = { mouseTrackingMode: 'none', synchronizedOutputMode: false };
-  readonly modeReportHandlers = new Map<string, (params: number[]) => boolean>();
-  readonly parser = { registerCsiHandler: (id: { prefix?: string }, handler: (params: number[]) => boolean) => {
-    const key = id.prefix ?? '';
-    this.modeReportHandlers.set(key, handler);
-    return { dispose: () => { this.modeReportHandlers.delete(key); } };
-  } };
-  readonly element = makeElement().element;
-  readonly writes: string[] = [];
-  private dataListener: ((data: string) => void) | undefined;
-  private parsedListener: (() => void) | undefined;
-  wheelHandler?: (event: { preventDefault(): void; stopPropagation(): void }) => boolean;
-  disposed = false;
-  refreshCalls = 0;
-
-  constructor(options: Record<string, unknown>) {
-    this.options = options;
-  }
-
-  loadAddon(addon: { activate?: (terminal: FakeTerminal) => void }) { addon.activate?.(this); }
-  open() {}
-  attachCustomKeyEventHandler() {}
-  attachCustomWheelEventHandler(handler: typeof this.wheelHandler) { this.wheelHandler = handler; }
-  onData(listener: (data: string) => void) {
-    this.dataListener = listener;
-    return {
-      dispose: () => {
-        if (this.dataListener === listener) {
-          this.dataListener = undefined;
-        }
-      },
-    };
-  }
-  emitData(data: string) { this.dataListener?.(data); }
-  onTitleChange() { return { dispose() {} }; }
-  onScroll() { return { dispose() {} }; }
-  onWriteParsed(listener: () => void) { this.parsedListener = listener; return { dispose: () => { this.parsedListener = undefined; } }; }
-  emitParsed() { this.parsedListener?.(); }
-  onResize() { return { dispose() {} }; }
-  writeln() {}
-  deferWrites = false;
-  readonly writeCallbacks: Array<() => void> = [];
-  write(data: string, onParsed?: () => void) {
-    this.writes.push(data);
-    if (onParsed) {
-      if (this.deferWrites) this.writeCallbacks.push(onParsed); else onParsed();
-    }
-  }
-  scrollToBottom() { this.buffer.active.viewportY = this.buffer.active.baseY; }
-  clear() {}
-  refresh() { this.refreshCalls += 1; }
-  resize(cols: number, rows: number) {
-    this.cols = cols;
-    this.rows = rows;
-    const screen = this.element.querySelector('.xterm-screen') as { offsetWidth: number; offsetHeight: number };
-    screen.offsetWidth = cols * 10;
-    screen.offsetHeight = rows * 25;
-  }
-  input(data: string) { this.emitData(data); }
-  hasSelection() { return false; }
-  getSelection() { return ''; }
-  focus() {}
-  blur() {}
-  dispose() { this.disposed = true; }
-}
-
-class FakeResizeObserver {
-  disconnected = false;
-
-  constructor(readonly callback: () => void) {}
-  observe() {}
-  disconnect() { this.disconnected = true; }
-}
-
-type Harness = ReturnType<typeof createHarness>;
-
-function createHarness() {
-  const clock = new FakeClock();
-  const window = new FakeEventTarget() as FakeEventTarget & Record<string, unknown>;
-  const document = new FakeEventTarget() as FakeEventTarget & Record<string, unknown>;
-  const sockets: FakeSocket[] = [];
-  const root = { classList: classList() };
-  const container = makeElement().element;
-  const localStorage = new Map<string, string>();
-  const terminalInstances: FakeTerminal[] = [];
-  const rendererAddons: Array<{ disposed: boolean; contextLossListener?: () => void }> = [];
-  const stateUpdates: unknown[] = [];
-
-  Object.assign(window, {
-    setTimeout: (callback: () => void, delay: number) => clock.setTimeout(callback, delay),
-    clearTimeout: (id: number) => clock.clearTimeout(id),
-    setInterval: (callback: () => void, delay: number) => clock.setInterval(callback, delay),
-    clearInterval: (id: number) => clock.clearInterval(id),
-    requestAnimationFrame: (callback: () => void) => clock.setTimeout(callback, 0),
-    cancelAnimationFrame: (id: number) => clock.clearTimeout(id),
-    getComputedStyle: () => ({ paddingLeft: '0px', paddingRight: '0px', paddingTop: '0px', paddingBottom: '0px' }),
-    dispatchEvent: (event: { type: string }) => { window.dispatch(event.type); return true; },
-  });
-  Object.assign(document, {
-    visibilityState: 'visible',
-    documentElement: root,
-    body: { appendChild() {}, removeChild() {} },
-    title: '',
-    createElement: () => ({ style: {}, select() {}, value: '' }),
-    execCommand: () => true,
-    dispatchEvent: (event: { type: string }) => { document.dispatch(event.type); return true; },
-  });
-
-  const setLocalStorage = {
-    getItem: (key: string) => localStorage.get(key) ?? null,
-    setItem: (key: string, value: string) => localStorage.set(key, value),
-  };
-  const navigator = { clipboard: undefined, onLine: true };
-
-  const openAuthenticatedSocket = (path: string) => {
-    const socket = new FakeSocket(path);
-    sockets.push(socket);
-    return socket;
-  };
-
-  const hooks = {
-    effects: [] as Array<() => void | (() => void)>,
-    refs: [] as Array<{ current: unknown }>,
-    useCallback: <T extends (...args: never[]) => unknown>(callback: T) => callback,
-    useEffect: (callback: () => void | (() => void)) => { hooks.effects.push(callback); },
-    useLayoutEffect: () => {},
-    useMemo: <T>(factory: () => T) => factory(),
-    useRef: <T>(current: T) => {
-      const ref = { current };
-      hooks.refs.push(ref);
-      return ref;
-    },
-    useState: <T>(initial: T | (() => T)) => {
-      let value = typeof initial === 'function' ? (initial as () => T)() : initial;
-      return [value, (next: T | ((previous: T) => T)) => {
-        value = typeof next === 'function' ? (next as (previous: T) => T)(value) : next;
-        stateUpdates.push(value);
-      }] as const;
-    },
-  };
-
-  const encode = (message: unknown) => JSON.stringify(message);
-  const decode = async (raw: unknown) => {
-    if (typeof raw !== 'string') return null;
-    try { return JSON.parse(raw); } catch { return null; }
-  };
-
-  return {
-    clock,
-    window,
-    document,
-    sockets,
-    container,
-    localStorage: setLocalStorage,
-    navigator,
-    terminalInstances,
-    rendererAddons,
-    rendererUnavailable: false,
-    stateUpdates,
-    hooks,
-    openAuthenticatedSocket,
-    encode,
-    decode,
-    FakeSocket,
-    FakeTerminal,
-    FakeResizeObserver,
-  };
-}
-
-type LoopKind = 'tabs' | 'terminal';
-
-function loadLoop(kind: LoopKind, harness: Harness) {
-  const sourceUrl = kind === 'tabs'
-    ? new URL('../App.tsx', import.meta.url)
-    : new URL('./TerminalPane.tsx', import.meta.url);
-  const source = fs.readFileSync(sourceUrl, 'utf8');
-  const output = ts.transpileModule(source, {
-    compilerOptions: {
-      jsx: ts.JsxEmit.ReactJSX,
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020,
-    },
-    fileName: sourceUrl.pathname,
-  }).outputText;
-
-  const module = { exports: {} as Record<string, unknown> };
-  const reactRuntime = {
-    ...harness.hooks,
-  };
-  const jsxRuntime = {
-    Fragment: Symbol('Fragment'),
-    jsx: (type: unknown, props: unknown) => ({ type, props }),
-    jsxs: (type: unknown, props: unknown) => ({ type, props }),
-  };
-  const iconRuntime = new Proxy({}, { get: () => function Icon() { return null; } });
-  const authRuntime = { AuthGate: function AuthGate() { return null; } };
-  const terminalPaneRuntime = {
-    default: function TerminalPane() { return null; },
-    clearTerminalInputStates() {},
-    discardTerminalInputState() {},
-  };
-  const fitRuntime = { FitAddon: class { proposeDimensions() { return { cols: 80, rows: 24 }; } } };
-  const emptyAddon = { ClipboardAddon: class {}, WebLinksAddon: class {} };
-  const webglRuntime = { WebglAddon: class {
-    disposed = false;
-    contextLossListener?: () => void;
-    constructor() { harness.rendererAddons.push(this); }
-    activate() {
-      if (harness.rendererUnavailable) throw new Error('WebGL unavailable');
-    }
-    onContextLoss(listener: () => void) {
-      this.contextLossListener = listener;
-      return { dispose: () => { this.contextLossListener = undefined; } };
-    }
-    dispose() { this.disposed = true; }
-  } };
-  const xtermRuntime = { Terminal: class extends harness.FakeTerminal {
-    constructor(options: Record<string, unknown>) {
-      super(options);
-      harness.terminalInstances.push(this);
-    }
-  } };
-  const wsCodecRuntime = {
-    encodeTabsClientMessage: harness.encode,
-    decodeTabsServerMessage: harness.decode,
-    encodeTerminalClientMessage: harness.encode,
-    decodeTerminalServerMessage: harness.decode,
-  };
-  const moduleCache = new Map<string, Record<string, unknown>>();
-  const require = (specifier: string, from = sourceUrl): any => {
-    if (specifier === 'react') return reactRuntime;
-    if (specifier === 'react/jsx-runtime') return jsxRuntime;
-    if (specifier === 'lucide-react') return iconRuntime;
-    if (specifier === './auth') return authRuntime;
-    if (specifier === './terminal/TerminalPane') return terminalPaneRuntime;
-    if (specifier === '@xterm/addon-fit') return fitRuntime;
-    if (specifier === '@xterm/addon-clipboard') return emptyAddon;
-    if (specifier === '@xterm/addon-web-links') return emptyAddon;
-    if (specifier === '@xterm/addon-webgl') return webglRuntime;
-    if (specifier === '@xterm/addon-unicode-graphemes') return { UnicodeGraphemesAddon: class {} };
-    if (specifier === '@xterm/xterm') return xtermRuntime;
-    if (specifier === './themes') return { terminalTheme: {} };
-    if (specifier === './clipboard') return {
-      copyToClipboard: async () => true,
-      readClipboardText: async () => '',
-    };
-    if (specifier === './terminal/wsCodec' || specifier === './wsCodec') return wsCodecRuntime;
-    if (specifier === '../wsHost' || specifier === './wsHost') {
-      return { openAuthenticatedSocket: harness.openAuthenticatedSocket };
-    }
-    if (specifier === '../uuid') return { createUuidV4: () => '00000000-0000-4000-8000-000000000001' };
-    if (specifier === './auth/CollaboratorsDialog') return { default: () => null };
-    if (specifier.endsWith('.json')) return { __esModule: true, default: JSON.parse(fs.readFileSync(new URL(specifier, from), 'utf8')) };
-    if (specifier.startsWith('.')) {
-      const candidates = ['.ts', '.tsx'].map((extension) => new URL(specifier + extension, from));
-      const file = candidates.find((candidate) => fs.existsSync(candidate));
-      if (file) {
-        const cached = moduleCache.get(file.href);
-        if (cached) return cached;
-        const child = { exports: {} as Record<string, unknown> };
-        moduleCache.set(file.href, child.exports);
-        const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
-          compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
-          fileName: file.pathname,
-        }).outputText;
-        const run = vm.runInContext(`(function(require,module,exports){${compiled}\n})`, context);
-        run((name: string) => require(name, file), child, child.exports);
-        return child.exports;
-      }
-    }
-    throw new Error(`Unexpected VM import: ${specifier}`);
-  };
-
-  const deterministicMath = Object.create(Math) as Math & { random: () => number };
-  deterministicMath.random = () => 0;
-  const context = vm.createContext({
-    console,
-    Math: deterministicMath,
-    TextEncoder,
-    TextDecoder,
-    WebSocket: harness.FakeSocket,
-    ResizeObserver: harness.FakeResizeObserver,
-    window: harness.window,
-    document: harness.document,
-    localStorage: harness.localStorage,
-    navigator: harness.navigator,
-  });
-  const wrapper = vm.runInContext(
-    `(function (require, module, exports, __filename, __dirname) {${output}\nif (typeof TerminalApp !== 'undefined') module.exports.__recoveryTerminalApp = TerminalApp;\n})`,
-    context,
-  ) as (require: typeof require, module: typeof module, exports: typeof module.exports, filename: string, dirname: string) => void;
-  wrapper(require, module, module.exports, sourceUrl.pathname, sourceUrl.pathname.slice(0, sourceUrl.pathname.lastIndexOf('/')));
-
-  const component = (kind === 'tabs' ? module.exports.__recoveryTerminalApp : module.exports.default) as (props: Record<string, unknown>) => unknown;
-  const props = kind === 'tabs'
-    ? { authToken: 'test-token', user: { username: 'tester' }, onLogout: async () => {} }
-    : {
-      tab: { id: '00000000-0000-4000-8000-000000000001', title: 'Terminal', status: 'connecting' },
-      active: true,
-      focusOnMount: false,
-      authToken: 'test-token',
-      preferences: { fontSize: 14 },
-      onStatusChange: () => {},
-      onTitleChange: () => {},
-    };
-  component(props);
-
-  if (kind === 'terminal') {
-    harness.hooks.refs[0].current = harness.container;
-  }
-
-  const marker = kind === 'tabs' ? 'createTabsSocket' : 'connectTerminal';
-  const effect = harness.hooks.effects.find((candidate) => candidate.toString().includes(marker));
-  if (!effect) {
-    throw new Error(`Could not locate ${kind} recovery effect`);
-  }
-  const cleanup = effect() ?? (() => {});
-  return { cleanup, component };
-}
-
-function emitResume(harness: Harness, event: 'focus' | 'visibilitychange' | 'online') {
-  if (event === 'visibilitychange') {
-    harness.document.dispatch(event);
-  } else {
-    harness.window.dispatch(event);
-  }
-}
-
-function pingCount(socket: FakeSocket) {
-  return socket.sent.filter((message) => typeof message === 'string' && message.includes('"type":"ping"')).length;
-}
-
-function sentMessages(socket: FakeSocket) {
-  return socket.sent
-    .filter((message): message is string => typeof message === 'string')
-    .map((message) => JSON.parse(message) as Record<string, unknown>);
-}
-
-function sentMessagesOfType(socket: FakeSocket, type: string) {
-  return sentMessages(socket).filter((message) => message.type === type);
-}
-
-async function flushMicrotasks() {
-  for (let index = 0; index < 20; index += 1) {
-    await Promise.resolve();
-  }
-}
-
-function emitServerMessage(harness: Harness, socket: FakeSocket, message: Record<string, unknown>) {
-  socket.emit('message', harness.encode(message));
-}
-
-async function readyInputConnection(harness: Harness, generation: string) {
-  await flushMicrotasks();
-  const input = harness.sockets.at(-1)!;
-  expect(input.url).toBe('/terminal/input');
-  input.open();
-  emitServerMessage(harness, input, { type: 'ready', sessionGeneration: generation });
-  await flushMicrotasks();
-  return input;
-}
-
-function makeFailureSequence(harness: Harness) {
-  const reconnectDelays = [500, 1000, 2000];
-  for (const delay of reconnectDelays) {
-    const socket = harness.sockets.at(-1)!;
-    socket.close();
-    harness.clock.advance(delay);
-  }
-  const socket = harness.sockets.at(-1)!;
-  socket.close();
-  return socket;
-}
+import {
+  FakeFontFaceSet, FakeSocket, TEST_TAB_ID, createHarness, emitResume, emitServerMessage, flushMicrotasks, loadLoop,
+  makeFailureSequence, pingCount, readyInputConnection, runEffect, sentMessagesOfType,
+} from './test-support/component-harness';
 
 describe('runtime socket recovery', () => {
   for (const kind of ['tabs', 'terminal'] as const) {
@@ -615,6 +53,31 @@ describe('runtime socket recovery', () => {
       expect(pingCount(first)).toBe(1);
       harness.clock.advance(500);
 
+      expect(first.closeCalls).toBe(1);
+      cleanup();
+    });
+
+    test(`${kind} heartbeat detects a silently dropped socket while a pong keeps it alive`, async () => {
+      const harness = createHarness();
+      const { cleanup } = loadLoop(kind, harness);
+      const first = harness.sockets[0];
+      first.open();
+
+      harness.clock.advance(19999);
+      expect(pingCount(first)).toBe(0);
+      harness.clock.advance(1);
+      expect(pingCount(first)).toBe(1);
+      // High latency within the generous pong window is not a dead connection.
+      harness.clock.advance(7999);
+      expect(first.closeCalls).toBe(0);
+      emitServerMessage(harness, first, { type: 'pong' });
+      await flushMicrotasks();
+      harness.clock.advance(1);
+      expect(first.closeCalls).toBe(0);
+
+      harness.clock.advance(20000 - 8000);
+      expect(pingCount(first)).toBe(2);
+      harness.clock.advance(8000);
       expect(first.closeCalls).toBe(1);
       cleanup();
     });
@@ -749,14 +212,17 @@ describe('terminal renderer recovery', () => {
     cleanup();
   });
 
-  test('downloaded terminal fonts redraw the existing renderer without reconnecting', async () => {
+  test('the base terminal font redraws the existing renderer without reconnecting', async () => {
     const harness = createHarness();
     let releaseFonts!: () => void;
     const fontsReady = new Promise<void>((resolve) => { releaseFonts = resolve; });
-    harness.document.fonts = { load: () => fontsReady };
+    const fonts = new FakeFontFaceSet(fontsReady);
+    harness.document.fonts = fonts;
     const { cleanup } = loadLoop('terminal', harness);
     const socket = harness.sockets[0];
     const terminal = harness.terminalInstances[0];
+    // Only the regular base chunk gates the cell measurement; bold loads on first use.
+    expect(fonts.loadCalls).toEqual([['14px "Maple Mono NF CN"', 'W']]);
     const before = terminal.refreshCalls;
     releaseFonts();
     await flushMicrotasks();
@@ -768,19 +234,36 @@ describe('terminal renderer recovery', () => {
     cleanup();
   });
 
+  test('a font chunk finishing later clears the glyph atlas and repaints the viewport', () => {
+    const harness = createHarness();
+    const fonts = new FakeFontFaceSet(new Promise<void>(() => {}));
+    harness.document.fonts = fonts;
+    const { cleanup } = loadLoop('terminal', harness);
+    const terminal = harness.terminalInstances[0];
+    const before = terminal.refreshCalls;
+    fonts.dispatch('loadingdone');
+    expect(terminal.textureAtlasClears).toBe(1);
+    expect(terminal.refreshCalls).toBeGreaterThan(before);
+    cleanup();
+    expect(fonts.listenerCount('loadingdone')).toBe(0);
+  });
+
   test('a font download completing after unmount cannot revive timers or a disposed terminal', async () => {
     const harness = createHarness();
     let releaseFonts!: () => void;
     const fontsReady = new Promise<void>((resolve) => { releaseFonts = resolve; });
-    harness.document.fonts = { load: () => fontsReady };
+    const fonts = new FakeFontFaceSet(fontsReady);
+    harness.document.fonts = fonts;
     const { cleanup } = loadLoop('terminal', harness);
     const terminal = harness.terminalInstances[0];
     cleanup();
     const before = terminal.refreshCalls;
     releaseFonts();
+    fonts.dispatch('loadingdone');
     await flushMicrotasks();
     expect(terminal.disposed).toBe(true);
     expect(terminal.refreshCalls).toBe(before);
+    expect(terminal.textureAtlasClears).toBe(0);
     expect(harness.clock.pendingCount).toBe(0);
   });
 
@@ -818,7 +301,7 @@ describe('terminal renderer recovery', () => {
     cleanup();
   });
 
-  test('context loss redraws the same terminal without replacing its socket', () => {
+  test('context loss redraws the same terminal on a fresh WebGL renderer without replacing its socket', () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);
     const socket = harness.sockets[0];
@@ -830,6 +313,9 @@ describe('terminal renderer recovery', () => {
 
     expect(addon.disposed).toBe(true);
     expect(addon.contextLossListener).toBeUndefined();
+    expect(harness.rendererAddons).toHaveLength(2);
+    expect(harness.rendererAddons[1].disposed).toBe(false);
+    expect(harness.rendererAddons[1].contextLossListener).toBeDefined();
     expect(terminal.refreshCalls).toBeGreaterThan(before);
     expect(terminal.disposed).toBe(false);
     expect(socket.closeCalls).toBe(0);
@@ -837,10 +323,49 @@ describe('terminal renderer recovery', () => {
     cleanup();
     expect(harness.clock.pendingCount).toBe(0);
   });
+
+  test('contexts that keep dying young stop at the DOM renderer until one survives the stable window', () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    // The initial context and three quick replacements all die within seconds.
+    for (let loss = 0; loss < 4; loss++) {
+      harness.clock.advance(1000);
+      harness.rendererAddons.at(-1)!.contextLossListener!();
+    }
+    expect(harness.rendererAddons).toHaveLength(4);
+    expect(harness.rendererAddons.every((addon) => addon.disposed)).toBe(true);
+    cleanup();
+
+    const stable = createHarness();
+    const stableLoop = loadLoop('terminal', stable);
+    for (let loss = 0; loss < 3; loss++) stable.rendererAddons.at(-1)!.contextLossListener!();
+    stable.clock.advance(30_000);
+    stable.rendererAddons.at(-1)!.contextLossListener!();
+    expect(stable.rendererAddons).toHaveLength(5);
+    expect(stable.rendererAddons.at(-1)!.disposed).toBe(false);
+    stableLoop.cleanup();
+  });
+
+  test('a background pane restores its lost WebGL renderer only when shown', () => {
+    const harness = createHarness();
+    const { cleanup, component } = loadLoop('terminal', harness, { active: false });
+    harness.rendererAddons[0].contextLossListener!();
+    expect(harness.rendererAddons).toHaveLength(1);
+
+    harness.hooks.beginRender();
+    component({
+      tabId: TEST_TAB_ID, active: true, focusOnMount: false, authToken: 'test-token',
+      preferences: { fontSize: 14 }, onStatusChange() {}, onTitleChange() {},
+    });
+    runEffect(harness, 'setActive(active)');
+    expect(harness.rendererAddons).toHaveLength(2);
+    expect(harness.rendererAddons[1].disposed).toBe(false);
+    cleanup();
+  });
 });
 
 describe('terminal client snapshot recovery', () => {
-  test('a full restore is one atomic write and input waits for the parser to finish', async () => {
+  test('a full restore is one synchronized update and input waits for the parser to finish', async () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);
     const terminal = harness.terminalInstances[0];
@@ -855,7 +380,10 @@ describe('terminal client snapshot recovery', () => {
     emitServerMessage(harness, output, { type: 'output', data: 'complete history' });
     await flushMicrotasks();
     expect(harness.sockets).toHaveLength(1);
-    expect(terminal.writes).toEqual(['\x1bc\x1b[?2026hcomplete history\x1b[?2026l']);
+    // RIS and DEC 2026 around the snapshot bytes; only the closing write reports
+    // completion, after xterm has parsed everything queued before it.
+    expect(terminal.writes).toEqual(['\x1bc\x1b[?2026h', 'complete history', '\x1b[?2026l']);
+    expect(terminal.writeCallbacks).toHaveLength(1);
     terminal.writeCallbacks.shift()!();
     const input = await readyInputConnection(harness, 'restore');
     expect(sentMessagesOfType(input, 'input')).toEqual([{ type: 'input', data: 'queued\r', inputSeq: 1 }]);
@@ -1108,19 +636,11 @@ describe('terminal client snapshot recovery', () => {
     });
     await flushMicrotasks();
 
-    expect(terminal.writes).toEqual(['\x1bc\x1b[?2026hauthoritative snapshot\x1b[?2026l']);
+    expect(terminal.writes.join('')).toBe('\x1bc\x1b[?2026hauthoritative snapshot\x1b[?2026l');
     cleanup();
   });
 
-  test('RIS restores dirty normal and alternate screens before a serialized snapshot', async () => {
-    const paneSource = fs.readFileSync(new URL('./connection.ts', import.meta.url), 'utf8');
-    const resetMatch = paneSource.match(/terminal.write\(`(\\x1bc)/);
-    expect(resetMatch?.[1]).toBeDefined();
-    const resetSequence = resetMatch![1].replace(/\\x([0-9a-f]{2})/gi, (_, value: string) => (
-      String.fromCharCode(Number.parseInt(value, 16))
-    ));
-    expect(resetSequence).toBe('\x1bc');
-
+  test('the client reset frame restores dirty normal and alternate screens to a serialized snapshot', async () => {
     const reference = new headlessXterm.Terminal({ allowProposedApi: true, cols: 20, rows: 4, scrollback: 1000 });
     const referenceSerializer = new SerializeAddon();
     reference.loadAddon(referenceSerializer);
@@ -1128,12 +648,25 @@ describe('terminal client snapshot recovery', () => {
     await new Promise<void>((resolve) => reference.write('\x1b[?1049h\x1b[Halternate snapshot', resolve));
     const snapshot = referenceSerializer.serialize();
 
+    // Drive the real client so the frame it writes (RIS + synchronized snapshot)
+    // is what gets replayed onto a dirty xterm, not a copy of its escape sequence.
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const socket = harness.sockets[0];
+    socket.open();
+    emitServerMessage(harness, socket, { type: 'ready', sessionGeneration: 'generation-1', reset: true, lastSeq: 0 });
+    emitServerMessage(harness, socket, { type: 'output', data: snapshot, seq: 1 });
+    await flushMicrotasks();
+    const resetWrites = [...harness.terminalInstances[0].writes];
+    cleanup();
+    expect(resetWrites.length).toBeGreaterThan(0);
+
     const dirty = new headlessXterm.Terminal({ allowProposedApi: true, cols: 20, rows: 4, scrollback: 1000 });
     const dirtySerializer = new SerializeAddon();
     dirty.loadAddon(dirtySerializer);
     await new Promise<void>((resolve) => dirty.write('dirty normal\r\n', resolve));
     await new Promise<void>((resolve) => dirty.write('\x1b[?1049h\x1b[Hdirty alternate', resolve));
-    await new Promise<void>((resolve) => dirty.write(resetSequence + snapshot, resolve));
+    for (const data of resetWrites) await new Promise<void>((resolve) => dirty.write(data, resolve));
 
     expect(dirty.buffer.active.type).toBe('alternate');
     expect(dirtySerializer.serialize()).toBe(snapshot);

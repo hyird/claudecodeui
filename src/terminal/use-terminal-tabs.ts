@@ -119,23 +119,27 @@ export function useTerminalTabs(authToken: string) {
         ? current.activeId
         : normalized.activeId;
 
-      return {
-        ...normalized,
-        activeId,
-        tabs: orderedTabs.map((tab) => {
-          const pendingTitle = pendingTitlesRef.current[tab.id];
-          if (!pendingTitle) {
-            return tab;
-          }
-          if (pendingTitle === tab.title) {
-            delete pendingTitlesRef.current[tab.id];
-            return tab;
-          }
+      // Reuse unchanged tab objects, and the whole state when nothing changed,
+      // so a broadcast about one tab does not re-render every tab and pane.
+      const currentById = new Map(current.tabs.map((tab) => [tab.id, tab]));
+      const tabs = orderedTabs.map((tab) => {
+        const pendingTitle = pendingTitlesRef.current[tab.id];
+        let next = tab;
+        if (pendingTitle === tab.title) {
+          delete pendingTitlesRef.current[tab.id];
+        } else if (pendingTitle) {
           // A status broadcast may race ahead of the title mutation. Keep the latest
           // local title visible until the server echoes that exact value back.
-          return { ...tab, title: pendingTitle };
-        }),
-      };
+          next = { ...tab, title: pendingTitle };
+        }
+        const previous = currentById.get(next.id);
+        return previous && previous.title === next.title && previous.status === next.status ? previous : next;
+      });
+      if (activeId === current.activeId && tabs.length === current.tabs.length
+        && tabs.every((tab, index) => tab === current.tabs[index])) {
+        return current;
+      }
+      return { tabs, activeId };
     });
   }, []);
 
@@ -410,12 +414,15 @@ export function useTerminalTabs(authToken: string) {
 
 
   const updateTabStatus = useCallback((tabId: string, status: TerminalStatus) => {
-    setTabsState((current) => ({
-      ...current,
-      tabs: current.tabs.map((tab) => (
-        tab.id === tabId ? { ...tab, status } : tab
-      )),
-    }));
+    setTabsState((current) => {
+      const index = current.tabs.findIndex((tab) => tab.id === tabId);
+      if (index < 0 || current.tabs[index].status === status) {
+        return current;
+      }
+      const tabs = current.tabs.slice();
+      tabs[index] = { ...tabs[index], status };
+      return { ...current, tabs };
+    });
   }, []);
 
   const updateTabTitle = useCallback((tabId: string, rawTitle: string) => {

@@ -12,6 +12,14 @@ type FrameClock = {
 // xterm 6 has no public FPS setting. Isolate the adapter to its render debouncer:
 // parsing, mode replies, dirty-row accumulation and refresh callbacks stay intact.
 // Renderer replacement on WebGL context loss uses this same debouncer.
+//
+// Paused terminals (background tabs) skip rendering entirely. xterm's own
+// IntersectionObserver pause never fires for a `visibility: hidden` layer, which
+// still intersects the viewport. While paused, the debouncer keeps accumulating
+// dirty rows and holds a sentinel frame so writes schedule no animation frames;
+// the caller issues a full-viewport refresh on resume.
+const PAUSED_FRAME = -1;
+
 export function limitTerminalFrameRate(terminal: Terminal, fps: number, clock: FrameClock = {
   now: () => performance.now(),
   requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
@@ -20,13 +28,18 @@ export function limitTerminalFrameRate(terminal: Terminal, fps: number, clock: F
     _core?: { _renderService?: { _renderDebouncer?: RenderDebouncer } };
   };
   const debouncer = core._core?._renderService?._renderDebouncer;
-  if (!debouncer || typeof debouncer._innerRefresh !== 'function') return { dispose() {} };
+  if (!debouncer || typeof debouncer._innerRefresh !== 'function') return { setPaused() {}, dispose() {} };
   const original = debouncer._innerRefresh;
   const interval = 1000 / fps;
   let nextFrameAt = 0;
   let disposed = false;
+  let paused = false;
   const render = () => {
     if (disposed) { original.call(debouncer); return; }
+    if (paused) {
+      debouncer._animationFrame = PAUSED_FRAME;
+      return;
+    }
     const now = clock.now();
     if (now < nextFrameAt) {
       debouncer._animationFrame = clock.requestAnimationFrame(render);
@@ -39,8 +52,15 @@ export function limitTerminalFrameRate(terminal: Terminal, fps: number, clock: F
     original.call(debouncer);
   };
   debouncer._innerRefresh = render;
-  return { dispose() {
-    disposed = true;
-    if (debouncer._innerRefresh === render) debouncer._innerRefresh = original;
-  } };
+  return {
+    setPaused(next: boolean) {
+      paused = next;
+      if (!next && debouncer._animationFrame === PAUSED_FRAME) debouncer._animationFrame = undefined;
+    },
+    dispose() {
+      disposed = true;
+      if (debouncer._animationFrame === PAUSED_FRAME) debouncer._animationFrame = undefined;
+      if (debouncer._innerRefresh === render) debouncer._innerRefresh = original;
+    },
+  };
 }

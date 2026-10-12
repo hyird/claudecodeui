@@ -93,9 +93,9 @@ describe('isAuthExpiredError', () => {
 
 describe('register', () => {
   test('returns the session and posts to the register endpoint', async () => {
-    stubFetch(() => jsonResponse(200, { success: true, user: { id: 1, username: 'alice' }, token: 'tok' }));
+    stubFetch(() => jsonResponse(200, { success: true, user: { id: 1, username: 'alice', role: 'admin' }, token: 'tok' }));
     const session = await register('alice', 'secret123');
-    expect(session).toEqual({ token: 'tok', user: { id: 1, username: 'alice' } });
+    expect(session).toEqual({ token: 'tok', user: { id: 1, username: 'alice', role: 'admin' } });
     expect(fetchCalls[0]?.url).toBe('/api/auth/register');
     expect(fetchCalls[0]?.init?.method).toBe('POST');
     expect(fetchCalls[0]?.init?.body).toBe(JSON.stringify({ username: 'alice', password: 'secret123' }));
@@ -116,8 +116,8 @@ describe('register', () => {
 
 describe('login', () => {
   test('returns the session on success', async () => {
-    stubFetch(() => jsonResponse(200, { success: true, user: { id: 1, username: 'alice' }, token: 'fresh' }));
-    expect(await login('alice', 'secret123')).toEqual({ token: 'fresh', user: { id: 1, username: 'alice' } });
+    stubFetch(() => jsonResponse(200, { success: true, user: { id: 1, username: 'alice', role: 'member' }, token: 'fresh' }));
+    expect(await login('alice', 'secret123')).toEqual({ token: 'fresh', user: { id: 1, username: 'alice', role: 'member' } });
   });
 
   test('localizes an invalid-credentials error', async () => {
@@ -135,7 +135,8 @@ describe('login', () => {
 
 describe('logout', () => {
   test('never throws even when the request fails', async () => {
-    globalThis.fetch = (async () => { throw new Error('network down'); }) as typeof fetch;
+    // A stand-in for the global fetch; only the call signature matters here.
+    globalThis.fetch = (async () => { throw new Error('network down'); }) as unknown as typeof fetch;
     await expect(logout('tok')).resolves.toBeUndefined();
   });
 });

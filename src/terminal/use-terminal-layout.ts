@@ -79,24 +79,26 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     return undefined;
   }, []);
 
-  const measureCellCapacity = useCallback((fallback?: TerminalDimensions) => {
+  // Whole cells that fit the frame, measured from xterm's rendered screen.
+  // Undefined until the screen has a measurable size.
+  const measureCellCapacity = useCallback((): TerminalDimensions | undefined => {
     const terminal = terminalRef.current;
     const container = containerRef.current;
     const screen = readScreenElement();
     if (!terminal || !container || !screen) {
-      return fallback;
+      return undefined;
     }
 
-    const baseCols = terminal.cols || fallback?.cols || lastSizeRef.current.cols;
-    const baseRows = terminal.rows || fallback?.rows || lastSizeRef.current.rows;
+    const baseCols = terminal.cols || lastSizeRef.current.cols;
+    const baseRows = terminal.rows || lastSizeRef.current.rows;
     if (baseCols <= 0 || baseRows <= 0 || screen.offsetWidth <= 0 || screen.offsetHeight <= 0) {
-      return fallback;
+      return undefined;
     }
 
     const cellWidth = screen.offsetWidth / baseCols;
     const cellHeight = screen.offsetHeight / baseRows;
     if (!Number.isFinite(cellWidth) || !Number.isFinite(cellHeight) || cellWidth <= 0 || cellHeight <= 0) {
-      return fallback;
+      return undefined;
     }
 
     const style = window.getComputedStyle(container);
@@ -116,8 +118,10 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     };
   }, [readScreenElement]);
 
+  // FitAddon's proposal forces its own style reads, so ask it only when the
+  // rendered screen cannot be measured yet.
   const proposeFrameDimensions = useCallback(() => (
-    measureCellCapacity(readFitDimensions())
+    measureCellCapacity() ?? readFitDimensions()
   ), [measureCellCapacity, readFitDimensions]);
 
   // Fit to the largest whole-cell grid the current frame can contain. Any
@@ -224,18 +228,12 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
 
   // During a window drag, keep fitting to whole cells. Any sub-cell remainder
   // stays as blank space instead of scaling or clipping the character grid.
+  // ResizeObserver already delivers at most once per frame, after layout and
+  // before paint, so this synchronous fit lands in the same frame; an extra
+  // animation-frame pass would only re-measure the same layout a frame late.
   const resizeDuringDrag = useCallback(() => {
     fitAndResize();
     clearScreenTransform();
-
-    if (resizeFrameRef.current) {
-      window.cancelAnimationFrame(resizeFrameRef.current);
-    }
-    resizeFrameRef.current = window.requestAnimationFrame(() => {
-      resizeFrameRef.current = 0;
-      fitAndResize();
-      clearScreenTransform();
-    });
 
     resizeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     resizeTimersRef.current = [
@@ -253,6 +251,9 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     viewportElementRef.current = null;
     hasScrollbackRef.current = false;
     followResizeRef.current = false;
+    // A replacement terminal starts at xterm's default grid, so the next fit
+    // must not short-circuit against the disposed terminal's size.
+    lastSizeRef.current = { cols: 0, rows: 0 };
   }, []);
 
   return {

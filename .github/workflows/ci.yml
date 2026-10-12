@@ -5,9 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR supersedes the run in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -18,20 +27,35 @@ jobs:
         with:
           bun-version: 1.3.14
 
-      # The suites themselves run under node:test — Bun's runner cannot host
+      # The server suites run under node:test — Bun's runner cannot host
       # node:test files (oven-sh/bun#5090) — so Node is needed too.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # proto/messages.js and messages.d.ts are generated but committed; fail if
+      # they no longer match proto/messages.proto.
+      - name: Check generated protobuf code
+        run: bun run proto && git diff --exit-code proto
 
       # Must precede the tests: the SPA-fallback and compression suites assert
       # against a real dist/.
       - name: Build
         run: bun run build
 
+      # Runs the spec type-check, the node:test suites and the bun specs; all three
+      # report even when an earlier one fails.
       - name: Test
         run: npm test
 

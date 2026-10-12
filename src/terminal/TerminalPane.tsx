@@ -3,25 +3,25 @@ import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { UnicodeGraphemesAddon } from '@xterm/addon-unicode-graphemes';
 import { Terminal } from '@xterm/xterm';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 
 import { terminalTheme } from './themes';
 import { copyToClipboard, readClipboardText } from './clipboard';
-import type {
-  TerminalPreferences,
-  TerminalStatus,
-  TerminalTab,
-} from './types';
+import type { TerminalPreferences, TerminalStatus } from './types';
 import { connectTerminal, type TerminalConnection } from './connection';
 import { useTerminalLayout } from './use-terminal-layout';
 import terminalPolicy from '../../shared/terminal-policy.json';
 import {
   configureTerminalRenderer, registerTerminalModeReports, TERMINAL_FONT_FAMILY,
   TERMINAL_SCROLLBAR_GUTTER,
+  type TerminalRenderer,
 } from './renderer';
 
+// Every prop is a primitive or a referentially stable value (preferences state,
+// memoized callbacks), so the default shallow memo skips re-rendering every pane
+// when another tab's title or status changes.
 type TerminalPaneProps = {
-  tab: TerminalTab;
+  tabId: string;
   active: boolean;
   focusOnMount: boolean;
   authToken: string;
@@ -30,8 +30,8 @@ type TerminalPaneProps = {
   onTitleChange: (tabId: string, title: string) => void;
 };
 
-export default function TerminalPane({
-  tab,
+function TerminalPane({
+  tabId,
   active,
   focusOnMount,
   authToken,
@@ -43,6 +43,8 @@ export default function TerminalPane({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const connectionRef = useRef<TerminalConnection | null>(null);
+  const rendererRef = useRef<TerminalRenderer | null>(null);
+  const wasActiveRef = useRef(false);
   const [sessionRebuiltNoticeVisible, setSessionRebuiltNoticeVisible] = useState(false);
   const [pendingCopyText, setPendingCopyText] = useState<string | null>(null);
   const [manualCopyText, setManualCopyText] = useState<string | null>(null);
@@ -101,6 +103,8 @@ export default function TerminalPane({
 
     terminal.open(container);
     const renderer = configureTerminalRenderer(terminal, resizeAfterLayoutSettles, forceFullRefresh);
+    renderer.setActive(activeRef.current);
+    rendererRef.current = renderer;
     const modeReports = registerTerminalModeReports(terminal);
     // Input handling mirrors cloudcli-plugin-terminal's TerminalSession.
     terminal.attachCustomKeyEventHandler((event) => {
@@ -140,7 +144,7 @@ export default function TerminalPane({
     terminal.writeln('\x1b[90mConnecting...\x1b[0m');
 
     const connection = connectTerminal({
-      terminal, tabId: tab.id, authToken, onStatusChange,
+      terminal, tabId, authToken, onStatusChange,
       beforeInit: fitAndResize, afterInit: resizeAfterLayoutSettles,
       onReady() { updateScrollbackAffordance(); resizeAfterLayoutSettles(); forceFullRefresh(); },
       onSessionRebuilt: setSessionRebuiltNoticeVisible,
@@ -149,7 +153,7 @@ export default function TerminalPane({
     const sendInput = connection.sendInput;
     const dataSubscription = terminal.onData(sendInput);
     const titleSubscription = terminal.onTitleChange((title) => {
-      onTitleChange(tab.id, title);
+      onTitleChange(tabId, title);
     });
     const refreshAfterTerminalChange = () => {
       updateScrollbackAffordance();
@@ -190,6 +194,7 @@ export default function TerminalPane({
       modeReports.dispose();
       resizeObserver.disconnect();
       renderer.dispose();
+      rendererRef.current = null;
       terminal.dispose();
       connectionRef.current = null;
       fitAddonRef.current = null;
@@ -209,7 +214,7 @@ export default function TerminalPane({
     resetLayout,
     updateScrollbackAffordance,
     authToken,
-    tab.id,
+    tabId,
   ]);
 
   useEffect(() => {
@@ -220,27 +225,25 @@ export default function TerminalPane({
 
     terminal.options.fontSize = preferences.fontSize;
     terminal.options.theme = terminalTheme;
-    if (active) {
-      resizeAfterLayoutSettles();
-    } else {
-      terminal.blur();
-    }
-  }, [active, preferences.fontSize, resizeAfterLayoutSettles]);
-
-  useEffect(() => {
+    rendererRef.current?.setActive(active);
+    const becameActive = active && !wasActiveRef.current;
+    wasActiveRef.current = active;
     if (!active) {
+      terminal.blur();
       return;
     }
 
     resizeAfterLayoutSettles();
-    if (focusOnMountRef.current) {
-      terminalRef.current?.focus();
+    // Only a newly shown pane takes focus; a font-size change must not pull
+    // focus away from the settings stepper.
+    if (becameActive && focusOnMountRef.current) {
+      terminal.focus();
     }
-  }, [active, resizeAfterLayoutSettles]);
+  }, [active, preferences.fontSize, resizeAfterLayoutSettles]);
 
   return (
     <div className="terminal-pane">
-      <div id={`terminal-frame-${tab.id}`} ref={containerRef} className="terminal-frame" />
+      <div id={`terminal-frame-${tabId}`} ref={containerRef} className="terminal-frame" />
       <div className="terminal-notices">
         {sessionRebuiltNoticeVisible && (
           <div className="terminal-session-notice" role="status" aria-live="polite" aria-atomic="true">
@@ -301,3 +304,5 @@ export default function TerminalPane({
     </div>
   );
 }
+
+export default memo(TerminalPane);

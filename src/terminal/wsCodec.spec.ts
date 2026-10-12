@@ -115,9 +115,10 @@ describe('terminal server -> client', () => {
       .toEqual({ type: 'input-ack', inputSeq: 12 });
   });
 
-  test('a small payload travels uncompressed and decodes to text', async () => {
-    expect(await decodeTerminalServerMessage(encodeTerminalOutput('hello world', 5)))
-      .toEqual({ type: 'output', data: 'hello world', seq: 5 });
+  // Output stays UTF-8 bytes end to end; xterm decodes them itself.
+  test('a small payload travels uncompressed and decodes to its UTF-8 bytes', async () => {
+    expect(await decodeTerminalServerMessage(encodeTerminalOutput('hello 世界', 5)))
+      .toEqual({ type: 'output', data: new TextEncoder().encode('hello 世界'), seq: 5 });
   });
 
   test('a large payload is deflated by the server and inflated by the client', async () => {
@@ -125,7 +126,7 @@ describe('terminal server -> client', () => {
     const frame = encodeTerminalOutput(big, 9);
     // The server must actually have compressed it, otherwise this asserts nothing.
     expect(frame.byteLength).toBeLessThan(big.length);
-    expect(await decodeTerminalServerMessage(frame)).toEqual({ type: 'output', data: big, seq: 9 });
+    expect(await decodeTerminalServerMessage(frame)).toEqual({ type: 'output', data: new TextEncoder().encode(big), seq: 9 });
   });
 
   test('exit maps an empty signal back to null', async () => {
