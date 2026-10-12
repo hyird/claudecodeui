@@ -1,20 +1,29 @@
+# Template: scripts/deploy.sh and scripts/deploy-local.sh render the @-delimited
+# placeholders through deploy/render-unit.sh.
+#
+# Deliberately unsandboxed: this unit hosts the user's interactive shells.
+# Before systemd 255 every seccomp-based option (LockPersonality=,
+# RestrictAddressFamilies=, ProtectKernel*=, ...) implies NoNewPrivileges= for
+# a User= service, which breaks sudo. Mount-namespace options would hide the
+# shells' mounts and /tmp from the rest of the host.
 [Unit]
 Description=Cloud Terminal persistent bun-pty service
-After=network.target
 
 [Service]
 Type=simple
-User=user
-Group=user
-WorkingDirectory=/opt/cloud-terminal/current
+User=@USER@
+Group=@GROUP@
+# Not the release directory: deployments replace it while this service keeps
+# running.
+WorkingDirectory=~
 RuntimeDirectory=cloud-terminal
 RuntimeDirectoryMode=0700
-Environment=HOME=/home/user
+Environment=HOME=@HOME@
 Environment=SHELL=/bin/bash
-Environment=PATH=/home/user/.bun/bin:/home/user/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=BUN_PTY_LIB=/opt/cloud-terminal/current/librust_pty.so
+Environment=PATH=@BUN_DIR@:@HOME@/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=BUN_PTY_LIB=@BASE@/current/librust_pty.so
 Environment=CLOUDCLI_PTY_SOCKET=/run/cloud-terminal/pty.sock
-ExecStart=/home/user/.bun/bin/bun /opt/cloud-terminal/current/pty-broker.js
+ExecStart=@BUN@ @BASE@/current/pty-broker.js
 Restart=on-failure
 RestartSec=2s
 KillMode=control-group

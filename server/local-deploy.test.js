@@ -7,61 +7,151 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const projectDir = fileURLToPath(new URL('..', import.meta.url));
-const deployScript = path.join(projectDir, 'scripts', 'deploy-local.sh');
-const source = fs.readFileSync(deployScript, 'utf8');
+// On Windows `bash` is usually WSL, which cannot run executables from a
+// Windows temp directory under the same path; these are POSIX deployment scripts.
+const skip = process.platform === 'win32' && 'deployment scripts run under a POSIX bash';
 
-test('local deployment refuses to restart active terminal sessions by default', () => {
-  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-deploy-test-'));
-  const fakeCurl = path.join(fakeBin, 'curl');
-  fs.writeFileSync(fakeCurl, '#!/usr/bin/env bash\nprintf \'%s\\n\' \'{"ok":true,"sessions":2}\'\n');
-  fs.chmodSync(fakeCurl, 0o755);
+const LEGACY_HEALTH = '{"ok":true,"sessions":2}';
+const PERSISTENT_HEALTH = '{"ok":true,"sessions":2,"persistentSessions":true,"persistentBackend":"bun-pty"}';
 
-  try {
-    const bashFakeBin = fakeBin.replaceAll('\\', '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
-    const result = spawnSync('bash', ['-c', 'export PATH="$1:$PATH"; exec bash scripts/deploy-local.sh', 'deploy-test', bashFakeBin], {
-      cwd: projectDir,
+// A copy of the deploy script in a throwaway project with stand-in build output,
+// and fake curl/sudo/bun that record what the script asked them to do.
+function createFakeProject({ health, bunExit = 0 }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-deploy-'));
+  const write = (relative, content, mode = 0o644) => {
+    const file = path.join(root, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content, { mode });
+  };
+  for (const relative of ['scripts/deploy-local.sh', 'deploy/render-unit.sh', 'deploy/cloud-terminal.service', 'deploy/cloud-terminal-pty.service']) {
+    write(relative, fs.readFileSync(path.join(projectDir, relative)));
+  }
+  for (const relative of ['dist/index.html', 'dist/logo.svg', 'dist-server/server.js', 'dist-server/pty-broker.js',
+    'node_modules/bun-pty/rust-pty/target/release/librust_pty.so']) {
+    write(relative, 'stand-in');
+  }
+  // health is the /api/health payload per call; the last one repeats.
+  health.forEach((payload, index) => write(`state/health-${index + 1}`, `${payload}\n`));
+  write('bin/curl', `#!/usr/bin/env bash
+n=$(( $(cat "$FAKE_STATE/curl-calls" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$FAKE_STATE/curl-calls"
+(( n <= ${health.length} )) || n=${health.length}
+cat "$FAKE_STATE/health-$n"
+`, 0o755);
+  write('bin/sudo', '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$FAKE_STATE/sudo.log"\n', 0o755);
+  write('bin/bun', `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$FAKE_STATE/bun.log"\nexit ${bunExit}\n`, 0o755);
+
+  const read = (name) => {
+    const file = path.join(root, 'state', name);
+    return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  };
+  return {
+    run: (...args) => spawnSync('bash', [path.join(root, 'scripts', 'deploy-local.sh'), ...args], {
+      cwd: root,
       encoding: 'utf8',
-      env: process.env,
-    });
+      env: { ...process.env, PATH: `${path.join(root, 'bin')}:${process.env.PATH}`, FAKE_STATE: path.join(root, 'state') },
+    }),
+    sudoLog: () => read('sudo.log'),
+    bunLog: () => read('bun.log'),
+    remove: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+test('local deployment refuses to restart active legacy terminal sessions by default', { skip }, () => {
+  const project = createFakeProject({ health: [LEGACY_HEALTH] });
+  try {
+    const result = project.run();
     assert.equal(result.status, 1);
     assert.match(result.stderr, /refusing to restart cloud-terminal\.service with 2 active terminal session/);
     assert.match(result.stderr, /explicitly use --force/);
-    assert.equal(result.stdout.includes('bun run build'), false);
+    assert.equal(project.bunLog(), '');
+    assert.equal(project.sudoLog(), '');
   } finally {
-    fs.rmSync(fakeBin, { recursive: true, force: true });
+    project.remove();
   }
 });
 
-test('persistent sessions are allowed through the deployment guard without a forced restart', () => {
-  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-safe-deploy-'));
+test('--force deploys over active legacy terminal sessions', { skip }, () => {
+  const project = createFakeProject({ health: [LEGACY_HEALTH], bunExit: 23 });
   try {
-    for (const [name, body] of Object.entries({
-      curl: 'printf \'%s\\n\' \'{"ok":true,"sessions":2,"persistentSessions":true,"persistentBackend":"bun-pty"}\'',
-      sudo: 'exit 0', bun: 'echo "BUILD_WITH_PERSISTENT_SESSIONS"; exit 23',
-    })) {
-      const file = path.join(fakeBin, name);
-      fs.writeFileSync(file, `#!/usr/bin/env bash\n${body}\n`);
-      fs.chmodSync(file, 0o755);
-    }
-    const bashFakeBin = fakeBin.replaceAll('\\', '/').replace(/^([A-Za-z]):/, (_, drive) => `/${drive.toLowerCase()}`);
-    const result = spawnSync('bash', ['-c', 'export PATH="$1:$PATH"; exec bash scripts/deploy-local.sh', 'deploy-test', bashFakeBin], { cwd: projectDir, encoding: 'utf8' });
+    const result = project.run('--force');
     assert.equal(result.status, 23, result.stderr);
-    assert.match(result.stdout, /BUILD_WITH_PERSISTENT_SESSIONS/);
-    assert.doesNotMatch(result.stderr, /refusing to restart/);
-  } finally { fs.rmSync(fakeBin, { recursive: true, force: true }); }
+    assert.equal(project.bunLog(), 'run build\n');
+  } finally {
+    project.remove();
+  }
 });
 
-test('local deployment rechecks sessions before installing and supports an explicit override', () => {
-  const firstCheck = source.indexOf('check_active_sessions');
-  const lastCheck = source.lastIndexOf('check_active_sessions');
-  const firstInstall = source.indexOf('sudo -n install');
+test('persistent sessions are allowed through the deployment guard without a forced restart', { skip }, () => {
+  const project = createFakeProject({ health: [PERSISTENT_HEALTH], bunExit: 23 });
+  try {
+    const result = project.run();
+    assert.equal(result.status, 23, result.stderr);
+    assert.equal(project.bunLog(), 'run build\n');
+    assert.doesNotMatch(result.stderr, /refusing to restart/);
+  } finally {
+    project.remove();
+  }
+});
 
-  assert.ok(firstCheck >= 0);
-  assert.ok(lastCheck > firstCheck);
-  assert.ok(lastCheck < firstInstall, 'session checks must finish before deployment mutates /opt');
-  assert.match(source, /--force\) FORCE_RESTART=1/);
-  assert.match(source, /active_sessions > 0 && FORCE_RESTART == 0/);
-  assert.match(source, /persistentBackend/);
-  assert.match(source, /systemctl enable --now "\$\{PTY_SERVICE\}"/);
-  assert.doesNotMatch(source, /systemctl (?:restart|stop) "\$\{PTY_SERVICE\}"/);
+test('a legacy session opened during build and test stops the deployment before /opt changes', { skip }, () => {
+  const project = createFakeProject({ health: [PERSISTENT_HEALTH, LEGACY_HEALTH] });
+  try {
+    const result = project.run();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /refusing to restart/);
+    assert.equal(project.bunLog(), 'run build\nrun test\n');
+    assert.equal(project.sudoLog(), '-n true\n');
+  } finally {
+    project.remove();
+  }
+});
+
+test('local deployment installs units and replaces dist without restarting the PTY service', { skip }, () => {
+  const project = createFakeProject({ health: [PERSISTENT_HEALTH] });
+  try {
+    // sudo is a recorder, so the run stops wherever the real host state is
+    // missing (e.g. the PTY socket); only the requested commands matter here.
+    project.run();
+    const sudo = project.sudoLog();
+    assert.match(sudo, /^-n install .* \/etc\/systemd\/system\/cloud-terminal\.service$/m);
+    assert.match(sudo, /^-n install .* \/etc\/systemd\/system\/cloud-terminal-pty\.service$/m);
+    assert.match(sudo, /^-n cp -R dist \/opt\/cloud-terminal\/current\/dist\.next$/m);
+    assert.match(sudo, /^-n mv \/opt\/cloud-terminal\/current\/dist\.next \/opt\/cloud-terminal\/current\/dist$/m);
+    assert.match(sudo, /^-n systemctl enable --now cloud-terminal-pty\.service$/m);
+    assert.doesNotMatch(sudo, /systemctl (?:restart|stop|reload-or-restart|try-restart) cloud-terminal-pty/);
+  } finally {
+    project.remove();
+  }
+});
+
+test('unit templates render every placeholder and reject unsafe values', { skip }, () => {
+  const values = ['USER=svc', 'GROUP=svc', 'HOME=/home/svc', 'BUN=/home/svc/.bun/bin/bun', 'BUN_DIR=/home/svc/.bun/bin',
+    'BASE=/srv/ct', 'PORT=4001', 'PTY_SERVICE=ct-pty.service'];
+  const render = (template, ...pairs) => spawnSync('bash', ['-c', 'source deploy/render-unit.sh && render_unit "$@"', 'render', template, ...pairs], {
+    cwd: projectDir,
+    encoding: 'utf8',
+  });
+
+  const web = render('deploy/cloud-terminal.service', ...values);
+  assert.equal(web.status, 0, web.stderr);
+  assert.doesNotMatch(web.stdout, /@[A-Z_]+@/);
+  assert.match(web.stdout, /^ExecStart=\/home\/svc\/\.bun\/bin\/bun \/srv\/ct\/current\/server\.js$/m);
+  assert.match(web.stdout, /^Wants=ct-pty\.service$/m);
+  assert.match(web.stdout, /^ReadWritePaths=\/srv\/ct\/data -\/run\/cloud-terminal$/m);
+
+  const pty = render('deploy/cloud-terminal-pty.service', ...values);
+  assert.equal(pty.status, 0, pty.stderr);
+  assert.match(pty.stdout, /^ExecStart=\/home\/svc\/\.bun\/bin\/bun \/srv\/ct\/current\/pty-broker\.js$/m);
+  // The PTY unit hosts interactive shells: sudo must keep working and the web
+  // service must never take it down with it.
+  assert.doesNotMatch(pty.stdout, /^(?:NoNewPrivileges|ProtectSystem|PartOf|BindsTo)=/m);
+
+  const missing = render('deploy/cloud-terminal.service', ...values.filter((pair) => !pair.startsWith('BASE=')));
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /no value for @BASE@/);
+
+  const unsafe = render('deploy/cloud-terminal.service', ...values.map((pair) => (pair.startsWith('HOME=') ? 'HOME=/home/svc %h' : pair)));
+  assert.equal(unsafe.status, 1);
+  assert.match(unsafe.stderr, /unsafe systemd unit value HOME=/);
 });

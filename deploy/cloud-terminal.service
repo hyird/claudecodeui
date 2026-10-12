@@ -1,27 +1,47 @@
+# Template: scripts/deploy.sh and scripts/deploy-local.sh render the @-delimited
+# placeholders through deploy/render-unit.sh.
 [Unit]
 Description=Cloud Terminal web terminal
-After=network.target cloud-terminal-pty.service
-Wants=cloud-terminal-pty.service
+After=network.target @PTY_SERVICE@
+Wants=@PTY_SERVICE@
 
 [Service]
 Type=simple
-User=user
-Group=user
-WorkingDirectory=/opt/cloud-terminal/current
-Environment=HOME=/home/user
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@BASE@/current
+Environment=HOME=@HOME@
 Environment=SHELL=/bin/bash
-Environment=PATH=/home/user/.bun/bin:/home/user/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=PORT=3001
-Environment=CLOUDCLI_DB_PATH=/opt/cloud-terminal/data/auth.sqlite
-Environment=BUN_PTY_LIB=/opt/cloud-terminal/current/librust_pty.so
+Environment=PATH=@BUN_DIR@:@HOME@/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PORT=@PORT@
+Environment=CLOUDCLI_DB_PATH=@BASE@/data/auth.sqlite
+Environment=BUN_PTY_LIB=@BASE@/current/librust_pty.so
 Environment=CLOUDCLI_PERSIST_TERMINALS=1
 Environment=CLOUDCLI_PTY_SOCKET=/run/cloud-terminal/pty.sock
-ExecStart=/home/user/.bun/bin/bun /opt/cloud-terminal/current/server.js
+ExecStart=@BUN@ @BASE@/current/server.js
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=10s
 KillMode=mixed
 LimitNOFILE=65536
+
+# Sandbox. Shells run in @PTY_SERVICE@, so this process only serves HTTP and
+# WebSockets, writes SQLite (plus -wal/-shm) under data/, reads current/, and
+# connects to the PTY socket. The server bundles carry the `// @bun` pragma, so
+# Bun keeps no transpiler cache and needs no writable home.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# "-": the PTY unit creates /run/cloud-terminal; a missing directory must
+# surface as a failed broker ping, not as a namespace setup failure.
+ReadWritePaths=@BASE@/data -/run/cloud-terminal
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
