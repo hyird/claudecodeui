@@ -1,4 +1,5 @@
-import { deflateSync } from 'node:zlib';
+import { deflate, deflateSync } from 'node:zlib';
+import { promisify } from 'node:util';
 
 import { cloudcli } from '../proto/messages.js';
 
@@ -106,36 +107,48 @@ export function encodeTerminalServerMessage(message) {
   return TerminalServerMessage.encode(payload).finish();
 }
 
-// The split downlink sends raw bytes to avoid compression/decompression latency
-// on fast networks. Legacy clients retain optional DEFLATE compatibility.
-export function encodeTerminalOutput(text, seq = 0, compress = true) {
-  const raw = Buffer.from(String(text), 'utf8');
-  let payload = raw;
-  let useCompressed = false;
+const deflateAsync = promisify(deflate);
 
-  if (compress && raw.length >= TERMINAL_OUTPUT_COMPRESSION_THRESHOLD) {
-    const compressed = deflateSync(raw, { level: 1 });
-    if (compressed.length < raw.length) {
-      payload = compressed;
-      useCompressed = true;
-    }
-  }
-
-  const message = {
-    output: { data: payload, compressed: useCompressed },
-  };
+function encodeOutputMessage(data, compressed, seq) {
+  const message = { output: { data, compressed } };
   if (Number.isFinite(seq) && seq > 0) {
     message.seq = Math.floor(seq);
   }
   return TerminalServerMessage.encode(message).finish();
 }
 
-export function sendTerminalOutput(ws, text, seq = 0, compress = true) {
-  const value = String(text);
-  if (!value) {
+// The split downlink sends raw bytes to avoid compression/decompression latency
+// on fast networks. Legacy clients retain optional DEFLATE compatibility.
+// `data` is text or its already encoded UTF-8 bytes, which are framed without a copy.
+export function encodeTerminalOutput(data, seq = 0, compress = true) {
+  const raw = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
+  if (compress && raw.length >= TERMINAL_OUTPUT_COMPRESSION_THRESHOLD) {
+    const compressed = deflateSync(raw, { level: 1 });
+    if (compressed.length < raw.length) {
+      return encodeOutputMessage(compressed, true, seq);
+    }
+  }
+  return encodeOutputMessage(raw, false, seq);
+}
+
+// A restore can be a 16 MiB history; compress it on the zlib thread pool so the
+// event loop keeps serving every other terminal meanwhile.
+export async function encodeTerminalSnapshot(text) {
+  const raw = Buffer.from(text, 'utf8');
+  if (raw.length >= TERMINAL_OUTPUT_COMPRESSION_THRESHOLD) {
+    const compressed = await deflateAsync(raw, { level: 1 });
+    if (compressed.length < raw.length) {
+      return encodeOutputMessage(compressed, true, 0);
+    }
+  }
+  return encodeOutputMessage(raw, false, 0);
+}
+
+export function sendTerminalOutput(ws, data, seq = 0, compress = true) {
+  if (!data || data.length === 0) {
     return;
   }
-  return ws.send(encodeTerminalOutput(value, seq, compress));
+  return ws.send(encodeTerminalOutput(data, seq, compress));
 }
 
 // ---- /terminal/tabs : client -> server ----------------------------------

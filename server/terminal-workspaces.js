@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { readTerminalWorkspace, saveTerminalWorkspace, deleteTerminalWorkspace } from './terminal-state.js';
+import * as terminalState from './terminal-state.js';
 import { encodeTabsServerMessage } from './wire.js';
 import { UUID_V4_PATTERN, cleanTerminalTitle, readString } from './terminal-validation.js';
 import { WS_OPEN, websocketWritable } from './terminal-output.js';
 
-export function createTerminalWorkspaces({ sessions, persistentPty, closeSession }) {
+// `store` persists tab state; it defaults to the SQLite-backed terminal state.
+export function createTerminalWorkspaces({ sessions, persistentPty, closeSession, store = terminalState }) {
   const workspaces = new Map();
 
   function createTab(index) {
@@ -26,15 +27,19 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
   function workspaceFor(userId) {
     let workspace = workspaces.get(userId);
     if (!workspace) {
-      const saved = readTerminalWorkspace(userId);
+      const saved = store.readTerminalWorkspace(userId);
+      const tabsState = saved?.tabsState?.tabs?.length ? saved.tabsState : createInitialTabsState();
+      if (!tabsState.tabs.some((tab) => tab.id === tabsState.activeId)) {
+        tabsState.activeId = tabsState.tabs[0].id;
+      }
       workspace = {
         userId,
-        tabsState: saved?.tabsState ?? createInitialTabsState(),
+        tabsState,
         exitedTabs: new Set(saved?.exitedTabs ?? []),
         tabSubscribers: new Set(),
       };
       workspaces.set(userId, workspace);
-      saveTerminalWorkspace(workspace);
+      store.saveTerminalWorkspace(workspace);
     }
     return workspace;
   }
@@ -43,16 +48,21 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
     const workspace = workspaces.get(userId) || workspaceFor(userId);
     for (const ws of workspace.tabSubscribers) ws.close(4001, 'User removed');
     for (const tab of workspace.tabsState.tabs) closeSession(tab.id, false);
-    deleteTerminalWorkspace(userId);
+    store.deleteTerminalWorkspace(userId);
     workspaces.delete(userId);
   }
 
+  // Tab order, titles, the active tab and exited tabs are persisted when they change;
+  // attach/detach broadcasts only change the derived connection status.
+  function persistWorkspace(workspace) {
+    store.saveTerminalWorkspace(workspace);
+  }
 
-
-  function getTabStatus(workspace, tabId, persistentSessionIds = null) {
+  function getTabStatus(workspace, tabId) {
     const session = sessions.get(tabId);
     if (!session || session.workspace !== workspace) {
-      if (persistentSessionIds?.has(tabId)) {
+      // The persistent service's live ids are cached from its push notifications.
+      if (persistentPty.enabled && persistentPty.sessionIds.has(tabId)) {
         return tabId === workspace.tabsState.activeId ? 'disconnected' : 'background';
       }
       return workspace.exitedTabs.has(tabId) ? 'exited' : 'disconnected';
@@ -74,24 +84,11 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
 
   function serializeTabsState(workspace) {
     const { tabsState } = workspace;
-    // Read persistent session IDs once per broadcast.
-    const persistentSessionIds = persistentPty.enabled ? new Set(persistentPty.listSessionIds()) : null;
-    if (tabsState.tabs.length === 0) {
-      const firstTab = createTab(1);
-      tabsState.tabs.push(firstTab);
-      tabsState.activeId = firstTab.id;
-      tabsState.nextIndex = 2;
-    }
-
-    if (!tabsState.tabs.some((tab) => tab.id === tabsState.activeId)) {
-      tabsState.activeId = tabsState.tabs[0].id;
-    }
-
     return {
       tabs: tabsState.tabs.map((tab) => ({
         ...tab,
         title: cleanTerminalTitle(tab.title) || tab.title,
-        status: getTabStatus(workspace, tab.id, persistentSessionIds),
+        status: getTabStatus(workspace, tab.id),
       })),
       activeId: tabsState.activeId,
     };
@@ -106,7 +103,6 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
   }
 
   function broadcastTabsState(workspace) {
-    saveTerminalWorkspace(workspace);
     const payload = encodeTabsServerMessage({ type: 'tabs', state: serializeTabsState(workspace) });
     for (const ws of workspace.tabSubscribers) {
       if (websocketWritable(ws)) {
@@ -118,13 +114,18 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
     }
   }
 
+  function commitTabsState(workspace) {
+    persistWorkspace(workspace);
+    broadcastTabsState(workspace);
+  }
+
   function addTab(workspace) {
     const { tabsState } = workspace;
     const tab = createTab(tabsState.nextIndex);
     tabsState.tabs.push(tab);
     tabsState.activeId = tab.id;
     tabsState.nextIndex += 1;
-    broadcastTabsState(workspace);
+    commitTabsState(workspace);
   }
 
   function setActiveTab(workspace, activeId) {
@@ -133,8 +134,12 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
       return false;
     }
 
-    tabsState.activeId = activeId;
-    broadcastTabsState(workspace);
+    if (tabsState.activeId !== activeId) {
+      tabsState.activeId = activeId;
+      commitTabsState(workspace);
+    } else {
+      broadcastTabsState(workspace);
+    }
     return true;
   }
 
@@ -156,7 +161,7 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
 
     if (tab.title !== title) {
       tab.title = title;
-      broadcastTabsState(workspace);
+      commitTabsState(workspace);
     }
 
     return true;
@@ -180,7 +185,7 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
 
     workspace.exitedTabs.delete(tabId);
     closeSession(tabId, false);
-    broadcastTabsState(workspace);
+    commitTabsState(workspace);
     return true;
   }
 
@@ -203,7 +208,7 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
       const [tab] = tabsState.tabs.splice(from, 1);
       const insertion = tabsState.tabs.findIndex((item) => item.id === message.targetId);
       tabsState.tabs.splice(insertion + (message.after === true ? 1 : 0), 0, tab);
-      broadcastTabsState(workspace);
+      commitTabsState(workspace);
       return;
     }
     if (message?.type === 'ping') {
@@ -243,5 +248,7 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
     sendTabsError(ws, 'Unknown tabs command');
   }
 
-  return { workspaceFor, closeUserWorkspace, sendTabsState, broadcastTabsState, handleTabsCommand };
+  return {
+    workspaceFor, closeUserWorkspace, sendTabsState, broadcastTabsState, persistWorkspace, handleTabsCommand,
+  };
 }

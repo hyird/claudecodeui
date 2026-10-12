@@ -3,17 +3,29 @@ import net from 'node:net';
 // Private JSON stream over a mode-0600 Unix socket. JSON escapes terminal
 // newlines; the stream decoder preserves UTF-8 split across network chunks.
 export function readPtyMessages(socket, onMessage, onError = () => socket.destroy()) {
-  let buffer = '';
+  // Parts of an unfinished line; joined once when its newline arrives.
+  const partial = [];
+  let partialLength = 0;
   socket.setEncoding('utf8');
   socket.on('data', (chunk) => {
-    buffer += chunk;
+    let start = 0;
     let end;
-    while ((end = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, end);
-      buffer = buffer.slice(end + 1);
+    while ((end = chunk.indexOf('\n', start)) >= 0) {
+      let line = chunk.slice(start, end);
+      if (partialLength > 0) {
+        partial.push(line);
+        line = partial.join('');
+        partial.length = 0;
+        partialLength = 0;
+      }
+      start = end + 1;
       try { onMessage(JSON.parse(line)); } catch (error) { onError(error); return; }
     }
-    if (buffer.length > 64 * 1024 * 1024) onError(new Error('PTY message too large'));
+    if (start < chunk.length) {
+      partial.push(start === 0 ? chunk : chunk.slice(start));
+      partialLength += chunk.length - start;
+      if (partialLength > 64 * 1024 * 1024) onError(new Error('PTY message too large'));
+    }
   });
 }
 

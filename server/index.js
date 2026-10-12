@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hono } from 'hono';
+import { spawn as spawnPty } from 'bun-pty';
 import { initializeAuthStore } from './auth-store.js';
 import { createPersistentPtyBackend } from './persistent-pty.js';
 import { registerAuthRoutes } from './auth-http.js';
@@ -18,12 +19,14 @@ const distDir = fs.existsSync(bundledDist) ? bundledDist : path.join(directory, 
 await initializeAuthStore();
 const app = new Hono();
 const sessions = new Map();
-const persistentPty = createPersistentPtyBackend();
+// Connects to the persistent PTY service (when enabled) before serving, so a missing
+// service still stops startup instead of silently creating temporary shells.
+const persistentPty = await createPersistentPtyBackend();
 const workspaces = createTerminalWorkspaces({
   sessions, persistentPty,
   closeSession: (...args) => terminals.closeSession(...args),
 });
-const terminals = createTerminalSessions({ sessions, persistentPty, workspaces });
+const terminals = createTerminalSessions({ sessions, persistentPty, workspaces, spawnPty });
 const authSessions = createAuthSocketSessions();
 
 app.get('/api/health', (c) => c.json({

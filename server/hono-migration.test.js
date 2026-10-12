@@ -280,6 +280,8 @@ before(async () => {
       ...process.env,
       PORT: String(port),
       CLOUDCLI_DB_PATH: testDbPath,
+      // This suite drives ordinary PTYs even from a shell configured for the service.
+      CLOUDCLI_PERSIST_TERMINALS: '0',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -817,6 +819,16 @@ test('SPA fallback serves the built index for client routes when dist exists', a
   assert.match(await response.text(), /<div id="root"><\/div>/);
 });
 
+test('missing files, unknown API routes and malformed paths are 404s rather than the SPA', async () => {
+  for (const pathname of ['/assets/missing.js', '/fonts/missing.woff2', '/api/not-a-route', '/api']) {
+    const response = await fetch(`${baseUrl}${pathname}`);
+    assert.equal(response.status, 404, pathname);
+    assert.doesNotMatch(await response.text(), /<div id="root">/, pathname);
+  }
+  const malformed = await rawGet('/%E0%A4%A');
+  assert.equal(malformed.status, 404);
+});
+
 test('websocket auth accepts the token as a subprotocol so it stays out of the URL', async () => {
   const socket = new WebSocket(`${wsBaseUrl}/terminal/tabs`, ['cloudcli.v1', `auth.${authToken}`]);
   // The server pushes the tabs state as soon as the socket opens, so the listener has
@@ -863,11 +875,17 @@ test('the built frontend is served compressed and revalidates with an ETag', asy
   const revalidated = await rawGet('/', { 'If-None-Match': etag });
   assert.equal(revalidated.status, 304);
   assert.equal(revalidated.bodyLength, 0);
+  // Proxies may weaken the validator or send several of them.
+  for (const header of [`W/${etag}`, `"stale", ${etag}`, '*']) {
+    assert.equal((await rawGet('/', { 'If-None-Match': header })).status, 304, header);
+  }
+  assert.equal((await rawGet('/', { 'If-None-Match': '"stale"' })).status, 200);
 });
 
 test('bundled Nerd Font and Chinese fonts are cached WOFF2 assets without double compression', async () => {
   for (const style of ['Regular', 'Bold']) {
-    const response = await fetch(`${baseUrl}/fonts/MapleMonoNFCN-${style}-v7.9.woff2`, {
+    const fontUrl = `${baseUrl}/fonts/MapleMonoNFCN-${style}-v7.9-base.woff2`;
+    const response = await fetch(fontUrl, {
       headers: { 'Accept-Encoding': 'br, gzip' },
     });
     assert.equal(response.status, 200);
@@ -876,7 +894,7 @@ test('bundled Nerd Font and Chinese fonts are cached WOFF2 assets without double
     assert.equal(response.headers.get('content-encoding'), null);
     const bytes = new Uint8Array(await response.arrayBuffer());
     assert.equal(Buffer.from(bytes.subarray(0, 4)).toString(), 'wOF2');
-    const cached = await fetch(`${baseUrl}/fonts/MapleMonoNFCN-${style}-v7.9.woff2`, {
+    const cached = await fetch(fontUrl, {
       headers: { 'If-None-Match': response.headers.get('etag') },
     });
     assert.equal(cached.status, 304);

@@ -62,8 +62,8 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
       const bytes = new Uint8Array(event.data as ArrayBuffer);
       const message = pathname.endsWith('/tabs') ? cloudcli.TabsServerMessage.decode(bytes) : cloudcli.TerminalServerMessage.decode(bytes);
       messages.push(message);
-      if ('output' in message && message.output) terminal.write(message.output.compressed
-        ? inflateSync(message.output.data) : message.output.data);
+      const output = 'output' in message ? message.output : null;
+      if (output?.data) terminal.write(output.compressed ? inflateSync(output.data) : output.data);
       if ('ready' in message && message.ready?.reset) terminal.reset();
     });
     await new Promise<void>((resolve, reject) => { ws.addEventListener('open', () => resolve(), { once: true }); ws.addEventListener('error', reject, { once: true }); });

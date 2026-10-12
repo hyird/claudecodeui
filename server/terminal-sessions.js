@@ -2,13 +2,11 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn as ptySpawn } from 'bun-pty';
 import { createTerminalEventLog, getTerminalReplayPlan } from './terminal-stream.js';
-import { readTerminalInputStream, saveTerminalInputStream, deleteTerminalInputStream } from './terminal-state.js';
 import { decodeTerminalClientMessage, encodeTerminalServerMessage } from './wire.js';
 import { UUID_V4_PATTERN, readString, readNumber } from './terminal-validation.js';
 import {
-  WS_OPEN, createTerminalSnapshot, writeTerminalSnapshot, cancelTerminalOutputFlush,
+  WS_OPEN, createTerminalSnapshot, writeTerminalOutput, whenTerminalParsed, cancelTerminalOutputFlush,
   flushTerminalOutput, queueTerminalOutput, sendTerminalSnapshot, websocketWritable,
   readTerminalSnapshot, resizeSession, recordAndSendTerminalEvent,
   sendTerminalEvent,
@@ -44,27 +42,38 @@ function resolveCwd(requestedCwd) {
   return fallback;
 }
 
-export function createTerminalSessions({ sessions, persistentPty, workspaces }) {
-  const { broadcastTabsState } = workspaces;
-
-  function createSession(sessionId, options, workspace) {
-    let cwd = resolveCwd(options.cwd);
-    const shell = resolveShell();
-    const env = {
+function launchOptions(options) {
+  return {
+    cwd: resolveCwd(options.cwd),
+    cols: options.cols,
+    rows: options.rows,
+    shell: resolveShell(),
+    env: {
       ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', FORCE_COLOR: '3',
       SSH_CLIENT: process.env.SSH_CLIENT || '127.0.0.1 0 0',
-    };
-    const persistent = persistentPty.prepare(sessionId, { cwd, cols: options.cols, rows: options.rows, shell, env });
-    if (persistent) cwd = persistent.cwd;
-    const terminalSnapshot = createTerminalSnapshot(persistent?.cols ?? options.cols, persistent?.rows ?? options.rows);
-    const shellProcess = persistent?.pty ?? ptySpawn(shell.command, shell.args, {
+    },
+  };
+}
+
+// `spawnPty` is bun-pty's spawn in production; it is injected so this module stays
+// importable (and testable) without the native PTY runtime.
+export function createTerminalSessions({ sessions, persistentPty, workspaces, spawnPty }) {
+  const { broadcastTabsState, persistWorkspace } = workspaces;
+  // Persistent sessions whose broker preparation is in flight. Concurrent viewers
+  // share one preparation; closing the tab meanwhile invalidates it.
+  const preparing = new Map();
+
+  function createSession(sessionId, launch, workspace, persistent = null) {
+    const cwd = persistent?.cwd ?? launch.cwd;
+    const terminalSnapshot = createTerminalSnapshot(persistent?.cols ?? launch.cols, persistent?.rows ?? launch.rows);
+    const shellProcess = persistent?.pty ?? spawnPty(launch.shell.command, launch.shell.args, {
       name: 'xterm-256color',
-      cols: options.cols,
-      rows: options.rows,
+      cols: launch.cols,
+      rows: launch.rows,
       cwd,
-      env,
+      env: launch.env,
     });
-    workspace.exitedTabs.delete(sessionId);
+    if (workspace.exitedTabs.delete(sessionId)) persistWorkspace(workspace);
 
     const session = {
       id: sessionId,
@@ -90,6 +99,11 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
       pendingOutputBytes: 0,
       outputFlushTask: null,
       nextOutputFlushAt: 0,
+      // Headless parser flow control; see writeTerminalOutput.
+      parseBacklogBytes: 0,
+      parseOverflow: false,
+      bypassedWrites: 0,
+      unparsedFromSeq: 0,
     };
 
     shellProcess.onData((chunk) => {
@@ -117,23 +131,50 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
       // closeSession may already have removed this PTY because the tab was closed or
       // force-restarted. Ignore that stale process's later onExit callback so it cannot
       // overwrite the replacement session's state.
-      writeTerminalSnapshot(session, message, () => {
-        recordAndSendTerminalEvent(session, { type: 'output', data: message });
+      writeTerminalOutput(session, message, Buffer.byteLength(message), () => {
+        const output = recordAndSendTerminalEvent(session, { type: 'output', data: message });
         recordAndSendTerminalEvent(session, { type: 'exit', exitCode, signal });
         session.socket = null;
         session.socketReady = false;
         if (sessions.get(sessionId) === session) {
           workspace.exitedTabs.add(sessionId);
           sessions.delete(sessionId);
+          persistWorkspace(workspace);
           broadcastTabsState(workspace);
         }
+        // Nothing restores from an exited session; release its scrollback now.
+        session.disposed = true;
+        session.terminal.dispose();
+        return output;
       });
     });
 
-    const savedInput = readTerminalInputStream(sessionId, session.generation);
-    if (savedInput) session.inputStreams.set(savedInput.streamId, savedInput.lastSeq);
     sessions.set(sessionId, session);
     return session;
+  }
+
+  // Returns the new session, or a Promise of it (null if the tab was closed while
+  // the persistent service prepared it).
+  function openSession(sessionId, options, workspace) {
+    const launch = launchOptions(options);
+    if (!persistentPty.enabled) return createSession(sessionId, launch, workspace);
+    const inFlight = preparing.get(sessionId);
+    if (inFlight) return inFlight.promise;
+
+    const entry = { promise: null };
+    preparing.set(sessionId, entry);
+    entry.promise = persistentPty.prepare(sessionId, launch).then((prepared) => {
+      if (preparing.get(sessionId) !== entry) {
+        prepared.pty.kill();
+        return null;
+      }
+      preparing.delete(sessionId);
+      return createSession(sessionId, launch, workspace, prepared);
+    }, (error) => {
+      if (preparing.get(sessionId) === entry) preparing.delete(sessionId);
+      throw error;
+    });
+    return entry.promise;
   }
 
   function attachSocket(ws, session, lastSeq = 0) {
@@ -152,8 +193,8 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
 
     // Snapshot, replay boundary and ready are produced in the same parser callback.
     // Writes queued after this barrier cannot overtake the snapshot on the socket.
-    session.terminal.write('', () => {
-      if (session.disposed || session.socket !== ws || ws.readyState !== WS_OPEN) return;
+    whenTerminalParsed(session, () => {
+      if (session.socket !== ws || ws.readyState !== WS_OPEN) return;
       // A new web process has a new replay sequence, even when the PTY generation
       // survives. Its first viewer must receive the broker's complete snapshot.
       const replayPlan = getTerminalReplayPlan(session.terminalEvents, session.forceSnapshot ? 0 : lastSeq);
@@ -197,14 +238,20 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
   }
 
   function closeSession(sessionId, broadcast = true) {
-    persistentPty.close(sessionId);
-    deleteTerminalInputStream(sessionId);
+    if (persistentPty.enabled) {
+      // Requests share one ordered broker connection, so a following prepare for
+      // this id (force restart) always runs after the close.
+      preparing.delete(sessionId);
+      persistentPty.close(sessionId).catch((error) => {
+        console.error(`Failed to close persistent PTY ${sessionId}: ${error.message}`);
+      });
+    }
     const session = sessions.get(sessionId);
     if (!session) {
       return false;
     }
 
-    session.workspace.exitedTabs.delete(sessionId);
+    const exitedChanged = session.workspace.exitedTabs.delete(sessionId);
 
     // The session is going away and its socket with it, so buffered output has nowhere
     // left to land — drop it instead of letting a queued flush revive a dead session.
@@ -219,38 +266,65 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
     session.inputSocket = null;
     session.pty.kill();
     sessions.delete(sessionId);
+    session.terminal.dispose();
+    if (exitedChanged) {
+      persistWorkspace(session.workspace);
+    }
     if (broadcast) {
       broadcastTabsState(session.workspace);
     }
     return true;
   }
 
+  function sendError(ws, message) {
+    ws.send(encodeTerminalServerMessage({ type: 'error', message }));
+  }
+
+  function joinSession(ws, session, workspace, { cols, rows, inputStreamId, lastSeq, knownGeneration }) {
+    if (session.workspace !== workspace || session.disposed || sessions.get(session.id) !== session) {
+      sendError(ws, 'Terminal is not available');
+      return;
+    }
+
+    resizeSession(session, cols, rows);
+    if (!session.inputStreams.has(inputStreamId)) {
+      // A new browser input stream replaces the previous one for this PTY. Keep
+      // sequence history only for the stream that can currently send input.
+      session.inputStreams.clear();
+      session.inputStreams.set(inputStreamId, 0);
+    }
+    ws.data.inputStreamId = inputStreamId;
+    ws.data.activeSession = session;
+    attachSocket(ws, session, knownGeneration && knownGeneration !== session.generation ? 0 : lastSeq);
+  }
+
   function handleInit(ws, message) {
     const workspace = ws.data.workspace;
     const sessionId = readString(message.sessionId);
     if (!sessionId || !UUID_V4_PATTERN.test(sessionId)) {
-      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid session id' }));
-      return null;
+      sendError(ws, 'Invalid session id');
+      return;
     }
     if (!workspace.tabsState.tabs.some((tab) => tab.id === sessionId)) {
-      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not available' }));
-      return null;
+      sendError(ws, 'Terminal is not available');
+      return;
     }
     const inputStreamId = readString(message.inputStreamId);
     if (!inputStreamId || !UUID_V4_PATTERN.test(inputStreamId)) {
-      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid input stream id' }));
-      return null;
+      sendError(ws, 'Invalid input stream id');
+      return;
     }
 
     const cols = readNumber(message.cols, 100);
     const rows = readNumber(message.rows, 30);
     const forceRestart = message.forceRestart === true;
     const lastSeq = readNumber(message.lastSeq, 0);
+    const knownGeneration = readString(message.sessionGeneration);
 
     const existingSession = sessions.get(sessionId);
     if (existingSession && existingSession.workspace !== workspace) {
-      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not available' }));
-      return null;
+      sendError(ws, 'Terminal is not available');
+      return;
     }
     if (ws.data.kind === 'terminal-input') {
       // The output connection owns session creation and replay. An input connection
@@ -260,70 +334,77 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
         || existingSession.socket?.readyState !== WS_OPEN
         || existingSession.socket?.data.kind !== 'terminal-output'
         || existingSession.socket.data.inputStreamId !== inputStreamId
-        || existingSession.generation !== readString(message.sessionGeneration)) {
-        ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal output connection is not ready' }));
+        || existingSession.generation !== knownGeneration) {
+        sendError(ws, 'Terminal output connection is not ready');
         ws.close(1008, 'Invalid terminal input attachment');
-        return null;
+        return;
       }
       const oldInputSocket = existingSession.inputSocket;
       // Receipt and parsing of the complete snapshot precede input attachment.
       existingSession.socket.data.snapshotBufferAllowance = 0;
       existingSession.inputSocket = ws;
       ws.data.inputStreamId = inputStreamId;
+      ws.data.activeSession = existingSession;
       oldInputSocket?.close(1000, 'Replaced by newer terminal input');
       ws.send(encodeTerminalServerMessage({
         type: 'ready', sessionId, cwd: existingSession.cwd,
         sessionGeneration: existingSession.generation,
       }));
-      return existingSession;
+      return;
     }
     if (forceRestart || existingSession?.closed) {
       closeSession(sessionId, false);
     }
 
-    const session = sessions.get(sessionId) || createSession(sessionId, {
-      cwd: message.cwd,
-      cols,
-      rows,
-    }, workspace);
-    if (session.workspace !== workspace) {
-      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not available' }));
-      return null;
+    const join = { cols, rows, inputStreamId, lastSeq, knownGeneration };
+    const session = sessions.get(sessionId) ?? openSession(sessionId, { cwd: message.cwd, cols, rows }, workspace);
+    if (!(session instanceof Promise)) {
+      joinSession(ws, session, workspace, join);
+      return;
     }
 
-    resizeSession(session, cols, rows);
-    if (!session.inputStreams.has(inputStreamId)) {
-      // A new browser input stream replaces the previous one for this PTY. Keep
-      // sequence history only for the stream that can currently send input.
-      session.inputStreams.clear();
-      session.inputStreams.set(inputStreamId, 0);
-      saveTerminalInputStream(session.id, session.generation, inputStreamId, 0);
-    }
-    ws.data.inputStreamId = inputStreamId;
-    const knownGeneration = readString(message.sessionGeneration);
-    attachSocket(ws, session, knownGeneration && knownGeneration !== session.generation ? 0 : lastSeq);
-    return session;
+    // The persistent service is preparing the shell; other connections keep running.
+    ws.data.initializing = true;
+    session.then((opened) => {
+      ws.data.initializing = false;
+      if (ws.readyState !== WS_OPEN) return;
+      if (!opened) {
+        sendError(ws, 'Terminal is not available');
+        return;
+      }
+      joinSession(ws, opened, workspace, join);
+    }, (error) => {
+      ws.data.initializing = false;
+      console.error(`Persistent PTY prepare failed for ${sessionId}: ${error.message}`);
+      if (ws.readyState !== WS_OPEN) return;
+      sendError(ws, 'Terminal service unavailable');
+      ws.close(1011, 'PTY service unavailable');
+    });
   }
 
   function handleTerminalMessage(ws, raw) {
     const message = decodeTerminalClientMessage(raw);
     if (!message || typeof message.type !== 'string') {
-      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid message' }));
+      sendError(ws, 'Invalid message');
       return;
     }
 
     if (message.type === 'init') {
-      if (ws.data.activeSession) {
+      if (ws.data.activeSession || ws.data.initializing) {
         ws.close(1008, 'Terminal is already initialized');
         return;
       }
-      ws.data.activeSession = handleInit(ws, message);
+      handleInit(ws, message);
       return;
     }
 
     const activeSession = ws.data.activeSession;
     if (!activeSession) {
-      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal is not initialized' }));
+      if (ws.data.initializing) {
+        if (message.type === 'ping') ws.send(encodeTerminalServerMessage({ type: 'pong' }));
+        return;
+      }
+      sendError(ws, 'Terminal is not initialized');
       return;
     }
 
@@ -336,7 +417,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
     }
 
     if (ws.data.kind === 'terminal-output' && message.type !== 'ping') {
-      ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Use the terminal input connection' }));
+      sendError(ws, 'Use the terminal input connection');
       return;
     }
 
@@ -348,15 +429,13 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
         // between delivery and acknowledgement must never lose or repeat a command.
         activeSession.pty.writeInput(readString(message.data), inputStreamId, inputSeq).then((ack) => {
           if (activeSession.disposed) return;
-          activeSession.inputStreams.set(inputStreamId, ack);
-          saveTerminalInputStream(activeSession.id, activeSession.generation, inputStreamId, ack);
           if (websocketWritable(ws)) ws.send(encodeTerminalServerMessage({ type: 'input-ack', inputSeq: ack }));
         }).catch(() => ws.close(1011, 'PTY input disconnected'));
         return;
       }
       const lastInputSeq = activeSession.inputStreams.get(inputStreamId);
       if (!inputStreamId || lastInputSeq === undefined || inputSeq <= 0) {
-        ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Invalid terminal input' }));
+        sendError(ws, 'Invalid terminal input');
         return;
       }
 
@@ -366,14 +445,13 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces }) 
       }
 
       if (inputSeq !== lastInputSeq + 1) {
-        ws.send(encodeTerminalServerMessage({ type: 'error', message: 'Terminal input sequence gap' }));
+        sendError(ws, 'Terminal input sequence gap');
         ws.close(1011, 'Terminal input sequence gap');
         return;
       }
 
       activeSession.pty.write(readString(message.data));
       activeSession.inputStreams.set(inputStreamId, inputSeq);
-      saveTerminalInputStream(activeSession.id, activeSession.generation, inputStreamId, inputSeq);
       ws.send(encodeTerminalServerMessage({ type: 'input-ack', inputSeq }));
       return;
     }

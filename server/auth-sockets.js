@@ -1,4 +1,4 @@
-import { authenticateToken, hashSessionToken, onSessionInvalidated, readBearerToken } from './auth-store.js';
+import { authenticateToken, hashToken, onSessionInvalidated, readBearerToken } from './auth-store.js';
 import { encodeAuthServerMessage } from './wire.js';
 import { readString } from './terminal-validation.js';
 import { WS_OPEN } from './terminal-output.js';
@@ -36,7 +36,7 @@ export async function authenticateUpgrade(request, offered) {
     return { rejectStatus: 403, rejectMessage: 'Forbidden' };
   }
 
-  return { url, user, token, tokenHash: hashSessionToken(token) };
+  return { url, user, token, tokenHash: hashToken(token) };
 }
 
 export function createAuthSocketSessions() {

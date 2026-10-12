@@ -1,32 +1,118 @@
 import net from 'node:net';
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { readPtyMessages, sendPtyMessage } from './pty-channel.js';
 
-export function createPersistentPtyBackend({
+const CONTROL_TIMEOUT_MS = 10000;
+const INPUT_TIMEOUT_MS = 5000;
+
+const disabledBackend = Object.freeze({
+  enabled: false,
+  sessionIds: new Set(),
+  count: () => 0,
+  prepare: async () => null,
+  close: async () => {},
+});
+
+// Talks to the separate PTY service over one long-lived control connection. Requests
+// are asynchronous and ordered; the service pushes its live session ids, so tab
+// status and health checks read a local cache instead of doing I/O. Resolves once
+// the service answered, so a missing service still stops the web process at boot.
+export async function createPersistentPtyBackend({
   enabled = process.env.CLOUDCLI_PERSIST_TERMINALS === '1',
   socketPath = process.env.CLOUDCLI_PTY_SOCKET || '/run/cloud-terminal/pty.sock',
-  brokerPath = fileURLToPath(new URL('./pty-broker.js', import.meta.url)),
-  command = process.execPath,
-  run = spawnSync,
+  createConnection = net.createConnection,
 } = {}) {
-  const request = (message) => {
-    const result = run(command, [brokerPath, '--request'], { input: JSON.stringify(message), encoding: 'utf8',
-      timeout: 10000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, CLOUDCLI_PTY_SOCKET: socketPath } });
-    if (result.status !== 0) throw new Error(`Persistent PTY service unavailable: ${result.stderr || result.error?.message || 'start the separate PTY service first'}`);
-    return JSON.parse(result.stdout);
+  if (!enabled) return disabledBackend;
+
+  const sessionIds = new Set();
+  // Prepares in flight per id: a close must reach the service even before the
+  // prepared id shows up in the cache.
+  const preparing = new Map();
+  const pending = new Map();
+  let requestId = 0;
+  let control = null;
+
+  const replaceSessionIds = (ids) => {
+    sessionIds.clear();
+    for (const id of ids) sessionIds.add(id);
   };
-  if (enabled) request({ type: 'ping' });
+
+  function send(connection, message) {
+    const { socket } = connection;
+    if (socket.destroyed) return Promise.reject(new Error('PTY service disconnected'));
+    return new Promise((resolve, reject) => {
+      const id = ++requestId;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error('PTY service timed out'));
+        socket.destroy();
+      }, CONTROL_TIMEOUT_MS);
+      pending.set(id, { socket, resolve, reject, timer });
+      sendPtyMessage(socket, { ...message, requestId: id });
+    });
+  }
+
+  function connectControl() {
+    const socket = createConnection(socketPath);
+    const connection = { socket, ready: null };
+    control = connection;
+    let failure = null;
+    socket.on('error', (error) => { failure = error; });
+    socket.on('close', () => {
+      if (control === connection) {
+        control = null;
+        // The service owns every shell: without it the cache would only be stale.
+        sessionIds.clear();
+      }
+      for (const [id, entry] of pending) {
+        if (entry.socket !== socket) continue;
+        clearTimeout(entry.timer);
+        pending.delete(id);
+        entry.reject(new Error('PTY service disconnected'));
+      }
+    });
+    readPtyMessages(socket, (message) => {
+      if (message.type === 'sessions') {
+        replaceSessionIds(message.ids);
+        return;
+      }
+      const entry = pending.get(message.requestId);
+      if (!entry) return;
+      clearTimeout(entry.timer);
+      pending.delete(message.requestId);
+      if (message.error) entry.reject(new Error(message.error)); else entry.resolve(message);
+    });
+    connection.ready = new Promise((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('close', () => reject(failure ?? new Error('PTY service disconnected')));
+    }).then(() => send(connection, { type: 'subscribe' })).then((reply) => replaceSessionIds(reply.ids));
+    // Failures surface through request(); a dropped connection is reopened lazily.
+    connection.ready.catch(() => {});
+    return connection;
+  }
+
+  async function request(message) {
+    const connection = control ?? connectControl();
+    await connection.ready;
+    return send(connection, message);
+  }
+
+  try {
+    await (control ?? connectControl()).ready;
+  } catch (error) {
+    control?.socket.destroy();
+    throw new Error(`Persistent PTY service unavailable: ${error.message || 'start the separate PTY service first'}`);
+  }
+
   function connect(sessionId, prepared) {
-    const socket = net.createConnection(socketPath);
-    let requestId = 0;
+    const socket = createConnection(socketPath);
+    let inputRequestId = 0;
     let ended = false;
     let onData = () => {};
     let onExit = () => {};
     let onDisconnect = () => {};
-    const pending = new Map();
+    const inputs = new Map();
     const queued = [];
-    const send = (message) => {
+    const sendToSession = (message) => {
       const payload = { sessionId, ...message };
       if (socket.connecting) queued.push(payload); else sendPtyMessage(socket, payload);
     };
@@ -36,18 +122,18 @@ export function createPersistentPtyBackend({
     });
     socket.on('error', () => {});
     socket.on('close', () => {
-      for (const { reject, timer } of pending.values()) { clearTimeout(timer); reject(new Error('PTY service disconnected')); }
-      pending.clear();
+      for (const { reject, timer } of inputs.values()) { clearTimeout(timer); reject(new Error('PTY service disconnected')); }
+      inputs.clear();
       if (!ended) onDisconnect();
     });
     readPtyMessages(socket, (message) => {
       if (message.type === 'output') onData(message.data);
       else if (message.type === 'snapshot') onData(`\x1bc${message.data}`);
       else if (message.type === 'exit') { ended = true; onExit(message); }
-      else if (pending.has(message.requestId)) {
-        const { resolve, reject, timer } = pending.get(message.requestId);
+      else if (inputs.has(message.requestId)) {
+        const { resolve, reject, timer } = inputs.get(message.requestId);
         clearTimeout(timer);
-        pending.delete(message.requestId);
+        inputs.delete(message.requestId);
         if (message.error) reject(new Error(message.error)); else resolve(message.inputSeq);
       } else if (message.error) socket.destroy();
     });
@@ -55,30 +141,40 @@ export function createPersistentPtyBackend({
       onData(callback) { onData = callback; },
       onExit(callback) { onExit = callback; },
       onDisconnect(callback) { onDisconnect = callback; },
-      write(data) { send({ type: 'write', data }); },
+      write(data) { sendToSession({ type: 'write', data }); },
       writeInput(data, streamId, inputSeq) {
         if (socket.destroyed) return Promise.reject(new Error('PTY service disconnected'));
         return new Promise((resolve, reject) => {
-          const id = ++requestId;
-          const timer = setTimeout(() => socket.destroy(), 5000);
-          pending.set(id, { resolve, reject, timer });
-          send({ type: 'input', data, streamId, inputSeq, requestId: id });
+          const id = ++inputRequestId;
+          const timer = setTimeout(() => socket.destroy(), INPUT_TIMEOUT_MS);
+          inputs.set(id, { resolve, reject, timer });
+          sendToSession({ type: 'input', data, streamId, inputSeq, requestId: id });
         });
       },
-      resize(cols, rows) { send({ type: 'resize', cols, rows }); },
+      resize(cols, rows) { sendToSession({ type: 'resize', cols, rows }); },
       kill() { ended = true; socket.destroy(); },
     };
   }
-  const listSessionIds = () => enabled ? request({ type: 'list' }).ids : [];
+
   return {
-    enabled,
-    prepare(sessionId, options) {
-      if (!enabled) return null;
-      const prepared = request({ type: 'prepare', sessionId, options });
-      return { ...prepared, generation: `pty:${prepared.generation}`, pty: connect(sessionId, prepared) };
+    enabled: true,
+    // Live ids, kept current by the service; read without I/O.
+    sessionIds,
+    count() { return sessionIds.size; },
+    async prepare(sessionId, options) {
+      preparing.set(sessionId, (preparing.get(sessionId) ?? 0) + 1);
+      try {
+        const prepared = await request({ type: 'prepare', sessionId, options });
+        return { ...prepared, generation: `pty:${prepared.generation}`, pty: connect(sessionId, prepared) };
+      } finally {
+        const remaining = preparing.get(sessionId) - 1;
+        if (remaining > 0) preparing.set(sessionId, remaining); else preparing.delete(sessionId);
+      }
     },
-    close(sessionId) { if (enabled) request({ type: 'close', sessionId }); },
-    count() { return listSessionIds().length; },
-    listSessionIds,
+    // The service pushes the updated ids before replying on the same connection.
+    async close(sessionId) {
+      if (!sessionIds.has(sessionId) && !preparing.has(sessionId)) return;
+      await request({ type: 'close', sessionId });
+    },
   };
 }

@@ -105,7 +105,7 @@ function verifyPassword(password, user) {
   return stored.length === candidate.length && crypto.timingSafeEqual(stored, candidate);
 }
 
-function hashToken(token) {
+export function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
@@ -135,14 +135,6 @@ function createSessionForUser(user) {
   }
 
   return token;
-}
-
-export function getDatabasePath() {
-  return DB_PATH;
-}
-
-export function hashSessionToken(token) {
-  return hashToken(token);
 }
 
 export function onSessionInvalidated(listener) {
@@ -297,20 +289,22 @@ export async function authenticateToken(token) {
     return null;
   }
 
+  // One indexed read per authenticated request or socket upgrade; nothing reads a
+  // last-seen time, so authentication performs no write.
   const database = requireDb();
-  const session = database.query('SELECT * FROM auth_sessions WHERE token_hash = ?').get(hashToken(token));
-  if (!session) {
+  const row = database.query(`SELECT auth_sessions.id AS sessionId, users.id, users.username, users.role
+    FROM auth_sessions LEFT JOIN users ON users.id = auth_sessions.user_id
+    WHERE auth_sessions.token_hash = ?`).get(hashToken(token));
+  if (!row) {
     return null;
   }
 
-  const user = mapUser(database.query('SELECT * FROM users WHERE id = ?').get(session.user_id));
-  if (!user) {
-    database.query('DELETE FROM auth_sessions WHERE id = ?').run(session.id);
+  if (row.id === null) {
+    database.query('DELETE FROM auth_sessions WHERE id = ?').run(row.sessionId);
     return null;
   }
 
-  database.query('UPDATE auth_sessions SET last_seen_at = ? WHERE id = ?').run(nowIso(), session.id);
-  return toPublicUser(user);
+  return { id: row.id, username: row.username, role: row.role };
 }
 
 export async function logoutToken(token) {

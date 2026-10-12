@@ -38,6 +38,16 @@ function buildStaticAssets(directory) {
   return assets;
 }
 
+// If-None-Match may list several validators, `*`, or weak (W/) forms added by
+// proxies; GET revalidation uses the weak comparison (RFC 9110 §13.1.2).
+function etagMatches(header, etag) {
+  if (!header) return false;
+  return header.split(',').some((candidate) => {
+    const value = candidate.trim();
+    return value === '*' || (value.startsWith('W/') ? value.slice(2) : value) === etag;
+  });
+}
+
 function sendStaticAsset(c, asset) {
   const headers = {
     'content-type': asset.type,
@@ -48,7 +58,7 @@ function sendStaticAsset(c, asset) {
     vary: 'Accept-Encoding',
   };
 
-  if (c.req.header('if-none-match') === asset.etag) {
+  if (etagMatches(c.req.header('if-none-match'), asset.etag)) {
     return new Response(null, { status: 304, headers });
   }
 
@@ -70,11 +80,22 @@ export function registerStaticRoutes(app, distDir) {
     // single-file index so the SPA can route it. Lookups hit the map, never the disk,
     // so a crafted path cannot escape the dist directory.
     app.get('*', (c) => {
-      const asset = staticAssets.get(decodeURIComponent(c.req.path)) ?? indexAsset;
-      if (!asset) {
+      let pathname;
+      try {
+        pathname = decodeURIComponent(c.req.path);
+      } catch {
         return c.text('Not found', 404);
       }
-      return sendStaticAsset(c, asset);
+      const asset = staticAssets.get(pathname);
+      if (asset) {
+        return sendStaticAsset(c, asset);
+      }
+      // Missing files and API routes get a real 404 rather than HTML that the
+      // caller would try to parse as a script, font or JSON.
+      if (!indexAsset || pathname === '/api' || pathname.startsWith('/api/') || path.posix.extname(pathname)) {
+        return c.text('Not found', 404);
+      }
+      return sendStaticAsset(c, indexAsset);
     });
   }
 }

@@ -13,10 +13,10 @@ const EVENT_OVERHEAD_BYTES = 64;
 // array, which keeps trimming O(1) amortized instead of O(n) per recorded event.
 const COMPACT_MIN_DROPPED = 1024;
 
+// Output events carry their UTF-8 payload size, measured once when recorded (or
+// supplied by the producer, which already knows it), so trimming never rescans data.
 function eventBytes(event) {
-  return typeof event.data === 'string'
-    ? Buffer.byteLength(event.data, 'utf8') + EVENT_OVERHEAD_BYTES
-    : EVENT_OVERHEAD_BYTES;
+  return (event.bytes ?? 0) + EVENT_OVERHEAD_BYTES;
 }
 
 export function createTerminalEventLog(
@@ -50,6 +50,9 @@ export function recordTerminalEvent(log, event) {
     ...event,
     seq: log.lastSeq,
   };
+  if (typeof event.data === 'string' && event.bytes === undefined) {
+    sequencedEvent.bytes = Buffer.byteLength(event.data, 'utf8');
+  }
   log.buffer.push(sequencedEvent);
   log.bytes += eventBytes(sequencedEvent);
 
@@ -66,6 +69,13 @@ export function recordTerminalEvent(log, event) {
   }
 
   return sequencedEvent;
+}
+
+// Visit retained events newer than `seq`, oldest first, without copying the window.
+export function forEachTerminalEventAfter(log, seq, callback) {
+  for (let index = log.start; index < log.buffer.length; index += 1) {
+    if (log.buffer[index].seq > seq) callback(log.buffer[index]);
+  }
 }
 
 export function getTerminalReplayPlan(log, lastSeq) {

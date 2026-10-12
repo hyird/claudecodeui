@@ -1,9 +1,9 @@
 import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { UnicodeGraphemesAddon } from './unicode.js';
-import { recordTerminalEvent } from './terminal-stream.js';
-import { encodeTerminalOutput, encodeTerminalServerMessage, sendTerminalOutput } from './wire.js';
-import { TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
+import { forEachTerminalEventAfter, recordTerminalEvent } from './terminal-stream.js';
+import { encodeTerminalServerMessage, encodeTerminalSnapshot, sendTerminalOutput } from './wire.js';
+import { TERMINAL_PARSE_BACKLOG_LIMIT, TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
 import terminalPolicy from '../shared/terminal-policy.json' with { type: 'json' };
 
 export const WS_OPEN = 1;
@@ -47,12 +47,78 @@ export function createTerminalSnapshot(cols, rows) {
   };
 }
 
-export function writeTerminalSnapshot(session, chunk, onParsed) {
-  session.terminal.write(chunk, () => {
+function invalidateTerminalSnapshot(session) {
+  session.snapshotDirty = true;
+  session.terminalSnapshot = '';
+}
+
+// Feed output that was committed without parsing (see writeTerminalOutput) to the
+// headless copy. Only the retained replay window is available, so a flood longer
+// than that window leaves the restore snapshot approximate; sequence numbers and
+// live delivery are unaffected.
+function resyncTerminalParser(session) {
+  const from = session.unparsedFromSeq;
+  if (!from) return;
+  session.unparsedFromSeq = 0;
+  forEachTerminalEventAfter(session.terminalEvents, from - 1, (event) => {
+    if (event.type !== 'output') return;
+    const { data, bytes } = event;
+    session.parseBacklogBytes += bytes;
+    session.terminal.write(data, () => {
+      session.parseBacklogBytes -= bytes;
+      if (session.disposed) return;
+      invalidateTerminalSnapshot(session);
+      settleTerminalParser(session);
+    });
+  });
+}
+
+function settleTerminalParser(session) {
+  if (session.parseOverflow && session.parseBacklogBytes === 0 && session.bypassedWrites === 0) {
+    session.parseOverflow = false;
+    resyncTerminalParser(session);
+  }
+}
+
+// Parse output in the headless copy, then run `commit` (which records the event and
+// returns it) in output order. xterm throws away writes once its parse backlog nears
+// 50 MB, so above TERMINAL_PARSE_BACKLOG_LIMIT output is still committed in order
+// through empty parser writes, but parsing pauses until the backlog drains and the
+// copy then catches up from the replay log.
+export function writeTerminalOutput(session, data, bytes, commit) {
+  const parse = !session.parseOverflow
+    && session.parseBacklogBytes + bytes <= TERMINAL_PARSE_BACKLOG_LIMIT;
+  if (parse) {
+    session.parseBacklogBytes += bytes;
+  } else {
+    session.parseOverflow = true;
+    session.bypassedWrites += 1;
+  }
+  session.terminal.write(parse ? data : '', () => {
+    if (parse) session.parseBacklogBytes -= bytes;
+    else session.bypassedWrites -= 1;
     if (session.disposed) return;
-    session.snapshotDirty = true;
-    session.terminalSnapshot = '';
-    onParsed?.();
+    const event = commit();
+    if (session.disposed) return;
+    if (parse) invalidateTerminalSnapshot(session);
+    else if (!session.unparsedFromSeq) session.unparsedFromSeq = event.seq;
+    settleTerminalParser(session);
+  });
+}
+
+// Parser barrier: `callback` runs once all earlier output is reflected in the
+// headless copy, including output committed unparsed during a flood.
+export function whenTerminalParsed(session, callback) {
+  session.terminal.write('', () => {
+    if (session.disposed) return;
+    if (!session.unparsedFromSeq) {
+      callback();
+      return;
+    }
+    resyncTerminalParser(session);
+    session.terminal.write('', () => {
+      if (!session.disposed) callback();
+    });
   });
 }
 
@@ -63,24 +129,27 @@ const TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 * 1024;
 const TERMINAL_OUTPUT_BATCH_BYTES = 256 * 1024;
 const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 1000 / terminalPolicy.outputBatchesPerSecond;
 
-function forEachTerminalOutputFrame(chunk, callback) {
-  const bytes = Buffer.from(chunk);
-  let offset = 0;
-
-  while (offset < bytes.length) {
-    let end = Math.min(offset + TERMINAL_OUTPUT_MAX_FRAME_BYTES, bytes.length);
-    while (end < bytes.length && end > offset && (bytes[end] & 0xc0) === 0x80) {
-      end -= 1;
-    }
-
-    callback(bytes.toString('utf8', offset, end), end - offset);
-    offset = end;
-  }
-}
-
 export function cancelTerminalOutputFlush(session) {
   if (session.outputFlushTask?.timer) clearTimeout(session.outputFlushTask.timer);
   session.outputFlushTask = null;
+}
+
+// Forward live output immediately, without waiting for the headless parser.
+// Reserve its sequence, but commit replay only after parsing so reconnect
+// snapshots still advertise exactly the bytes they contain. `encoded` is the
+// frame's UTF-8 bytes when the batch was already encoded for splitting.
+function emitOutputFrame(session, frame, bytes, encoded, forwardedSocket) {
+  session.pendingOutputEvents += 1;
+  if (forwardedSocket) {
+    sendTerminalEvent(forwardedSocket, {
+      type: 'output', data: frame,
+      seq: session.terminalEvents.lastSeq + session.pendingOutputEvents,
+    }, encoded);
+  }
+  writeTerminalOutput(session, frame, bytes, () => {
+    session.pendingOutputEvents -= 1;
+    return recordAndSendTerminalEvent(session, { type: 'output', data: frame, bytes }, forwardedSocket);
+  });
 }
 
 export function flushTerminalOutput(session) {
@@ -89,33 +158,37 @@ export function flushTerminalOutput(session) {
     return;
   }
 
-  const chunk = session.pendingOutput.length === 1
+  const text = session.pendingOutput.length === 1
     ? session.pendingOutput[0]
     : session.pendingOutput.join('');
+  const textBytes = session.pendingOutputBytes;
   session.pendingOutput.length = 0;
   session.pendingOutputBytes = 0;
   session.nextOutputFlushAt = Date.now() + TERMINAL_OUTPUT_FLUSH_INTERVAL_MS;
 
-  // Forward live output immediately, without waiting for the headless parser.
-  // Reserve its sequence, but commit replay only after parsing so reconnect
-  // snapshots still advertise exactly the bytes they contain.
   const forwardedSocket = session.socketReady ? session.socket : null;
-  forEachTerminalOutputFrame(chunk, (frame) => {
-    session.pendingOutputEvents += 1;
-    if (forwardedSocket) {
-      sendTerminalEvent(forwardedSocket, {
-        type: 'output', data: frame,
-        seq: session.terminalEvents.lastSeq + session.pendingOutputEvents,
-      });
+  if (textBytes <= TERMINAL_OUTPUT_MAX_FRAME_BYTES) {
+    emitOutputFrame(session, text, textBytes, null, forwardedSocket);
+    return;
+  }
+
+  // Encode once: the wire takes byte slices, the parser and replay log the decoded frame.
+  const bytes = Buffer.from(text, 'utf8');
+  let offset = 0;
+  while (offset < bytes.length) {
+    let end = Math.min(offset + TERMINAL_OUTPUT_MAX_FRAME_BYTES, bytes.length);
+    while (end < bytes.length && end > offset && (bytes[end] & 0xc0) === 0x80) {
+      end -= 1;
     }
-    writeTerminalSnapshot(session, frame, () => {
-      session.pendingOutputEvents -= 1;
-      recordAndSendTerminalEvent(session, { type: 'output', data: frame }, forwardedSocket);
-    });
-  });
+    const encoded = bytes.subarray(offset, end);
+    emitOutputFrame(session, encoded.toString('utf8'), end - offset, encoded, forwardedSocket);
+    offset = end;
+  }
 }
 
-function queueTerminalOutputPiece(session, chunk, chunkBytes) {
+export function queueTerminalOutput(session, chunk) {
+  if (session.disposed || session.closed || chunk.length === 0) return;
+  const chunkBytes = Buffer.byteLength(chunk, 'utf8');
   if (
     session.pendingOutputBytes > 0
     && session.pendingOutputBytes + chunkBytes > TERMINAL_OUTPUT_BATCH_BYTES
@@ -144,22 +217,30 @@ function queueTerminalOutputPiece(session, chunk, chunkBytes) {
   }
 }
 
-export function queueTerminalOutput(session, chunk) {
-  if (session.disposed || session.closed) return;
-  forEachTerminalOutputFrame(chunk, (frame, frameBytes) => {
-    queueTerminalOutputPiece(session, frame, frameBytes);
-  });
-}
-
+// A restore is one compressed message, unlike latency-sensitive live output. It is
+// compressed off the event loop; events for this viewer wait behind it so the
+// stream order on the socket is unchanged. Resolves once the restore was handed
+// to the socket (or abandoned).
 export function sendTerminalSnapshot(ws, snapshot) {
-  if (!websocketWritable(ws)) return;
-  // A restore is one compressed message, unlike latency-sensitive live output.
+  if (!websocketWritable(ws)) return Promise.resolve();
+  const queue = [];
+  ws.data.snapshotQueue = queue;
   // Empty screens still need a frame so the client can finish its restore.
-  const data = snapshot || '\x1b[0m';
-  const payload = encodeTerminalOutput(data, undefined, true);
-  ws.data.snapshotBufferAllowance = payload.byteLength ?? Buffer.byteLength(data) + 64;
-  if (ws.send(payload) === 0) ws.close(1013, 'Terminal snapshot dropped');
-  if (ws.getBufferedAmount?.() === 0) ws.data.snapshotBufferAllowance = 0;
+  return encodeTerminalSnapshot(snapshot || '\x1b[0m').then((payload) => {
+    if (ws.data.snapshotQueue !== queue) return;
+    ws.data.snapshotQueue = null;
+    if (ws.readyState !== WS_OPEN) return;
+    ws.data.snapshotBufferAllowance = payload.byteLength;
+    if (ws.send(payload) === 0) {
+      ws.close(1013, 'Terminal snapshot dropped');
+      return;
+    }
+    if (ws.getBufferedAmount?.() === 0) ws.data.snapshotBufferAllowance = 0;
+    for (const [event, encoded] of queue) sendTerminalEvent(ws, event, encoded);
+  }, () => {
+    ws.data.snapshotQueue = null;
+    ws.close(1011, 'Terminal snapshot failed');
+  });
 }
 
 export function websocketWritable(ws) {
@@ -192,18 +273,21 @@ export function resizeSession(session, cols, rows) {
     if (session.terminal.cols === cols && session.terminal.rows === rows) return;
     session.terminal.resize(cols, rows);
     if (!session.closed) session.pty.resize(cols, rows);
-    session.snapshotDirty = true;
-    session.terminalSnapshot = '';
+    invalidateTerminalSnapshot(session);
   });
 }
 
-export function sendTerminalEvent(ws, event) {
+export function sendTerminalEvent(ws, event, encoded = null) {
+  if (ws.data?.snapshotQueue) {
+    ws.data.snapshotQueue.push([event, encoded]);
+    return;
+  }
   if (!websocketWritable(ws)) {
     return;
   }
 
   if (event.type === 'output') {
-    if (sendTerminalOutput(ws, event.data, event.seq, ws.data.kind !== 'terminal-output') === 0) {
+    if (sendTerminalOutput(ws, encoded ?? event.data, event.seq, ws.data.kind !== 'terminal-output') === 0) {
       ws.close(1013, 'Terminal output dropped');
     }
     return;
