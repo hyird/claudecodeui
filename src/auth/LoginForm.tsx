@@ -9,6 +9,8 @@ import AuthScreenLayout from './AuthScreenLayout';
 
 type LoginFormProps = {
   onLogin: (username: string, password: string) => Promise<AuthActionResult>;
+  // Why this page was logged out; a login error replaces it.
+  notice?: string;
 };
 
 type LoginFormState = {
@@ -21,7 +23,7 @@ const initialState: LoginFormState = {
   password: '',
 };
 
-export default function LoginForm({ onLogin }: LoginFormProps) {
+export default function LoginForm({ onLogin, notice = '' }: LoginFormProps) {
   const [formState, setFormState] = useState<LoginFormState>(initialState);
   const [errorMessage, setErrorMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -80,7 +82,7 @@ export default function LoginForm({ onLogin }: LoginFormProps) {
           icon={Lock}
         />
 
-        <AuthErrorAlert errorMessage={errorMessage} />
+        <AuthErrorAlert errorMessage={errorMessage || notice} />
 
         <button type="submit" className="auth-submit" disabled={isSubmitting}>
           {isSubmitting ? (

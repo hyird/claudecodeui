@@ -1,6 +1,6 @@
 import {
   authenticateToken, createCollaborator, hasUsers, listUsers, loginUser, logoutToken,
-  readBearerToken, registerUser, removeCollaborator, toAuthErrorResponse,
+  readBearerToken, registerUser, removeCollaborator, renewSession, toAuthErrorResponse,
 } from './auth-store.js';
 import { readString } from './terminal-validation.js';
 
@@ -70,6 +70,15 @@ export function registerAuthRoutes(app, { closeUserWorkspace }) {
   app.get('/api/auth/user', requireAuth, (c) => c.json({
     user: c.get('user'),
   }));
+
+  app.post('/api/auth/session', async (c) => {
+    const token = readRequestToken(c);
+    if (!token) {
+      return c.json({ error: 'Access denied. No token provided.' }, 401);
+    }
+    const session = await renewSession(token);
+    return session ? c.json(session) : c.json({ error: 'Invalid token' }, 403);
+  });
 
   app.post('/api/auth/logout', requireAuth, async (c) => {
     await logoutToken(c.get('authToken'));

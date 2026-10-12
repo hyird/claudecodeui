@@ -159,6 +159,20 @@ export async function login(username: string, password: string) {
   return readAuthSession(payload, 'Login failed');
 }
 
+// Exchanges a stored token for a new session. The server keeps one session per
+// account, so this logs out any other page that still holds the old token.
+export async function renewSession(token: string) {
+  const response = await fetchWithTimeout('/api/auth/session', {
+    method: 'POST',
+    headers: authHeaders(token),
+  });
+  const payload = await parseJsonSafely<AuthResponsePayload>(response);
+  if (!response.ok) {
+    throw new AuthApiError(response.status, resolveApiErrorMessage(payload, 'Session renewal failed'));
+  }
+  return readAuthSession(payload, 'Session renewal failed');
+}
+
 export async function logout(token: string) {
   await fetchWithTimeout('/api/auth/logout', {
     method: 'POST',

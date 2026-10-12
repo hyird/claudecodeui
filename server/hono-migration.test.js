@@ -414,6 +414,47 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
   assert.equal(activeUser.status, 200);
 });
 
+test('a page opened in another browser tab renews the session and logs out the previous page', async () => {
+  const previousToken = authToken;
+  const previousPage = new WebSocket(`${wsBaseUrl}/auth/session`, ['cloudcli.v1', `auth.${previousToken}`]);
+  const invalidated = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timed out waiting for the previous page to be logged out')), 5000);
+    previousPage.on('message', (raw) => {
+      if (decodeAuthServerMessage(raw)?.type === 'session-invalidated') {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    previousPage.once('error', reject);
+  });
+  await new Promise((resolve, reject) => {
+    previousPage.once('open', resolve);
+    previousPage.once('error', reject);
+  });
+
+  const renewal = await fetch(`${baseUrl}/api/auth/session`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${previousToken}` },
+  });
+  assert.equal(renewal.status, 200);
+  const renewed = await renewal.json();
+  assert.equal(renewed.user.username, TEST_USERNAME);
+  assert.notEqual(renewed.token, previousToken);
+  authToken = renewed.token;
+  await invalidated;
+  previousPage.close();
+
+  const replayed = await fetch(`${baseUrl}/api/auth/session`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${previousToken}` },
+  });
+  assert.equal(replayed.status, 403);
+  assert.equal((await fetch(`${baseUrl}/api/auth/session`, { method: 'POST' })).status, 401);
+  assert.equal((await fetch(`${baseUrl}/api/auth/user`, {
+    headers: { authorization: `Bearer ${authToken}` },
+  })).status, 200);
+});
+
 test('collaborator accounts have isolated tabs and cannot open another user terminal', async () => {
   const ownerHeaders = { authorization: `Bearer ${authToken}` };
   const created = await fetch(`${baseUrl}/api/auth/users`, {

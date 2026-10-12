@@ -284,6 +284,21 @@ export async function loginUser(usernameInput, password) {
   };
 }
 
+// Every page load trades its stored token for a fresh session. Because an account
+// holds one session at a time, this displaces any other open page of the same
+// browser exactly like a new login does.
+export async function renewSession(token) {
+  const user = await authenticateToken(token);
+  if (!user) {
+    return null;
+  }
+  return {
+    success: true,
+    user,
+    token: createSessionForUser(user),
+  };
+}
+
 export async function authenticateToken(token) {
   if (!token) {
     return null;

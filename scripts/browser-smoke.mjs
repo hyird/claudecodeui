@@ -340,7 +340,8 @@ await call('Page.enable');
 await call('Runtime.enable');
 await call('Page.addScriptToEvaluateOnNewDocument', {
   source: `
-    try { localStorage.setItem('auth-token', ${JSON.stringify(authToken)}); } catch {}
+    // Seed only the first load: every page load renews the session and stores the new token.
+    try { if (!localStorage.getItem('auth-token')) localStorage.setItem('auth-token', ${JSON.stringify(authToken)}); } catch {}
     ${authFailureMode ? `(() => {
       const nativeFetch = window.fetch.bind(window);
       const failureMode = ${JSON.stringify(authFailureMode)};
@@ -355,7 +356,7 @@ await call('Page.addScriptToEvaluateOnNewDocument', {
         const marker = 'qa-auth-failure-count';
         const failureCount = Number(sessionStorage.getItem(marker) ?? 0);
         if (
-          url.pathname === '/api/auth/user'
+          url.pathname === '/api/auth/session'
           && (failureMode === 'persistent' || failureCount === 0)
         ) {
           sessionStorage.setItem(marker, String(failureCount + 1));

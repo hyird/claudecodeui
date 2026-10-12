@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   clearStoredToken,
@@ -9,11 +9,13 @@ import {
   logout,
   readStoredToken,
   register,
+  renewSession,
   storeToken,
 } from './api';
 import AuthLoadingScreen from './AuthLoadingScreen';
 import LoginForm from './LoginForm';
 import SetupForm from './SetupForm';
+import { announceSessionTakeover, subscribeSessionTakeover } from './session-channel';
 import type { AuthActionResult, AuthGateProps, AuthSession, AuthUser } from './types';
 import { decodeAuthServerMessage } from '../terminal/wsCodec';
 import { openAuthenticatedSocket } from '../wsHost';
@@ -32,6 +34,9 @@ const loadingState: AuthState = {
   user: null,
 };
 const AUTH_BOOTSTRAP_RETRY_DELAYS_MS = [250, 750, 2000] as const;
+// Bounds how often a loading page follows a token another page renewed meanwhile.
+const MAX_SESSION_RENEWALS = 3;
+const TAKEN_OVER_NOTICE = '此账户已在另一个浏览器标签页中打开，本页面已退出登录。';
 
 function authenticatedState(session: AuthSession): AuthState {
   return {
@@ -53,6 +58,18 @@ function createAuthSessionSocket(token: string) {
 
 export default function AuthGate({ children }: AuthGateProps) {
   const [state, setState] = useState<AuthState>(loadingState);
+  const [loginNotice, setLoginNotice] = useState('');
+  // Tokens other pages of this browser announced they are taking over, and the token
+  // this page was last logged out with; either may be learned first.
+  const takenOverTokensRef = useRef(new Set<string>());
+  const invalidatedTokenRef = useRef('');
+
+  useEffect(() => subscribeSessionTakeover((token) => {
+    takenOverTokensRef.current.add(token);
+    if (invalidatedTokenRef.current === token) {
+      setLoginNotice(TAKEN_OVER_NOTICE);
+    }
+  }), []);
 
   useEffect(() => {
     let disposed = false;
@@ -61,21 +78,30 @@ export default function AuthGate({ children }: AuthGateProps) {
     const loadAuthState = async (attempt = 0) => {
       try {
         const status = await fetchAuthStatus();
-        const storedToken = readStoredToken();
+        let storedToken = readStoredToken();
 
-        if (storedToken) {
+        for (let renewal = 0; storedToken && renewal < MAX_SESSION_RENEWALS; renewal += 1) {
           try {
-            const user = await fetchCurrentUser(storedToken);
+            announceSessionTakeover(storedToken);
+            const session = await renewSession(storedToken);
+            // Store even if this page went away: the old token is already revoked.
+            storeToken(session.token);
             if (!disposed) {
-              setState(authenticatedState({ token: storedToken, user }));
+              setState(authenticatedState(session));
             }
             return;
           } catch (error) {
-            if (isAuthExpiredError(error)) {
-              clearStoredTokenIfCurrent(storedToken);
-            } else {
+            if (!isAuthExpiredError(error)) {
               throw error;
             }
+            // Another page renewed first and stored its own token; take that one over.
+            const latestToken = readStoredToken();
+            if (latestToken && latestToken !== storedToken) {
+              storedToken = latestToken;
+              continue;
+            }
+            clearStoredTokenIfCurrent(storedToken);
+            break;
           }
         }
 
@@ -111,11 +137,21 @@ export default function AuthGate({ children }: AuthGateProps) {
 
   const completeAuth = useCallback((session: AuthSession) => {
     storeToken(session.token);
+    setLoginNotice('');
     setState(authenticatedState(session));
   }, []);
 
   const handleAuthInvalidated = useCallback((invalidToken = '') => {
-    clearStoredTokenIfCurrent(invalidToken);
+    invalidatedTokenRef.current = invalidToken;
+    const storedToken = readStoredToken();
+    const takenOver = Boolean(invalidToken) && (
+      takenOverTokensRef.current.has(invalidToken) || Boolean(storedToken && storedToken !== invalidToken)
+    );
+    setLoginNotice(takenOver ? TAKEN_OVER_NOTICE : '');
+    // Leave the stored token alone: localStorage is only eventually consistent across
+    // tabs, so this page may still read its own token after the tab that displaced it
+    // stored a new one, and removing it would log that tab out too. A dead token is
+    // dropped by the next page load when its renewal is refused.
     setState({ mode: 'login', token: '', user: null });
   }, []);
 
@@ -248,7 +284,7 @@ export default function AuthGate({ children }: AuthGateProps) {
   }
 
   if (state.mode === 'login' || !state.user) {
-    return <LoginForm onLogin={handleLogin} />;
+    return <LoginForm onLogin={handleLogin} notice={loginNotice} />;
   }
 
   return (
