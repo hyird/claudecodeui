@@ -2,6 +2,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import type { Terminal } from '@xterm/xterm';
 import terminalPolicy from '../../shared/terminal-policy.json';
 import { limitTerminalFrameRate } from './frame-rate';
+import { repairWebglCanvasResize } from './webgl-geometry';
 
 export const TERMINAL_FONT_FAMILY = '"Maple Mono NF CN", "CaskaydiaMono Nerd Font", "JetBrainsMono Nerd Font", "Symbols Nerd Font Mono", Consolas, monospace';
 // Width of the scrollback scrollbar to reserve so the rightmost column is never
@@ -74,6 +75,7 @@ export function configureTerminalRenderer(
       const loaded = addon;
       webglContextLoss = addon.onContextLoss(() => handleContextLoss(loaded));
       terminal.loadAddon(addon);
+      repairWebglCanvasResize(addon);
       webglCreatedAt = performance.now();
     } catch {
       // Keep the DOM renderer usable when hardware rendering is unavailable.
