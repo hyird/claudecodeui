@@ -143,7 +143,7 @@ describe('runtime socket recovery', () => {
 });
 
 describe('terminal renderer recovery', () => {
-  test('a changed grid returns to live output while an unchanged fit preserves manual scrolling', () => {
+  test('an acknowledged grid returns to live output while a pending fit preserves the old parser grid', async () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);
     const terminal = harness.terminalInstances[0];
@@ -155,6 +155,9 @@ describe('terminal renderer recovery', () => {
     harness.container.clientWidth = 640;
     // The open handler runs the same fit used by ResizeObserver before init.
     harness.sockets[0].open();
+    expect(terminal.buffer.active.viewportY).toBe(50);
+    emitServerMessage(harness, harness.sockets[0], { type: 'resize', cols: 63, rows: 23, seq: 1 });
+    await flushMicrotasks();
     expect(terminal.buffer.active.viewportY).toBe(200);
     cleanup();
   });
@@ -365,6 +368,31 @@ describe('terminal renderer recovery', () => {
 });
 
 describe('terminal client snapshot recovery', () => {
+  test('a reset parses the snapshot at its saved grid while retaining a pending fit for the input handshake', async () => {
+    const harness = createHarness();
+    const { cleanup } = loadLoop('terminal', harness);
+    const output = harness.sockets[0];
+    const terminal = harness.terminalInstances[0];
+    output.open();
+    emitServerMessage(harness, output, { type: 'ready', reset: true, lastSeq: 12,
+      sessionGeneration: 'snapshot-size', cols: 40, rows: 10 });
+    await flushMicrotasks();
+    expect([terminal.cols, terminal.rows]).toEqual([80, 24]);
+    terminal.deferWrites = true;
+    emitServerMessage(harness, output, { type: 'output', data: 'saved screen' });
+    await flushMicrotasks();
+    expect([terminal.cols, terminal.rows]).toEqual([80, 24]);
+    expect(terminal.writeCallbacks).toHaveLength(1);
+    terminal.deferWrites = false;
+    terminal.writeCallbacks.shift()!();
+    const input = await readyInputConnection(harness, 'snapshot-size');
+    expect([terminal.cols, terminal.rows]).toEqual([40, 10]);
+    expect(sentMessagesOfType(input, 'resize')).toEqual([{ type: 'resize', cols: 79, rows: 23 }]);
+    emitServerMessage(harness, output, { type: 'resize', cols: 79, rows: 23, seq: 13 });
+    await flushMicrotasks();
+    expect([terminal.cols, terminal.rows]).toEqual([79, 23]);
+    cleanup();
+  });
   test('a full restore is one synchronized update and input waits for the parser to finish', async () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);

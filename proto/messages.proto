@@ -44,6 +44,8 @@ message TerminalReady {
   bool gap = 4;
   uint32 last_seq = 5;
   string session_generation = 6;
+  uint32 cols = 7;
+  uint32 rows = 8;
 }
 // data holds the terminal bytes; when compressed is true it is raw DEFLATE.
 message TerminalOutput { bytes data = 1; bool compressed = 2; }
@@ -58,6 +60,7 @@ message TerminalServerMessage {
     ErrorMessage error = 4;
     Pong pong = 5;
     TerminalInputAck input_ack = 6;
+    TerminalResize resize = 8;
   }
   reserved 7;
   uint32 seq = 100;

@@ -43,6 +43,7 @@ export function connectTerminal({
   let currentInputSocket: WebSocket | null = null;
   let inputReady = false;
   let disposed = false;
+  let desiredSize = { cols: terminal.cols, rows: terminal.rows };
   const inputState = getTerminalInputState(tabId);
 
   function sendInput(data: string) {
@@ -76,6 +77,7 @@ export function connectTerminal({
   const pendingTerminalMessages = new Map<number, TerminalServerMessage>();
   let terminalResyncTimer = 0;
   let awaitingSnapshot: WebSocket | null = null;
+  let snapshotGeometry: { cols: number; rows: number } | null = null;
 
   function clearTerminalResyncTimer() {
     if (terminalResyncTimer) {
@@ -120,11 +122,22 @@ export function connectTerminal({
         lastAppliedTerminalSeq = typeof message.lastSeq === 'number' ? message.lastSeq : 0;
         // Retain the existing display until the complete snapshot arrives.
         awaitingSnapshot = socket;
+        if (typeof message.cols === 'number' && typeof message.rows === 'number'
+          && message.cols > 0 && message.rows > 0) {
+          snapshotGeometry = { cols: message.cols, rows: message.rows };
+        } else {
+          snapshotGeometry = null;
+        }
         return;
       }
       awaitingSnapshot = null;
       connectInputSocket(socket);
       onReady();
+      return;
+    }
+
+    if (message.type === 'resize' && typeof message.cols === 'number' && typeof message.rows === 'number') {
+      await applyGeometry(socket, message.cols, message.rows);
       return;
     }
 
@@ -135,18 +148,30 @@ export function connectTerminal({
           // xterm parses queued writes in order. DEC 2026 holds rendering from the
           // reset through the last snapshot byte, so no intermediate history row
           // paints, without copying the snapshot into one prefixed string.
-          terminal.write('\x1bc\x1b[?2026h');
-          terminal.write(data);
-          terminal.write('\x1b[?2026l', () => {
-            if (!disposed && currentOutputSocket === socket && awaitingSnapshot === socket
-              && socket.readyState === WebSocket.OPEN) {
-              awaitingSnapshot = null;
-              terminal.scrollToBottom();
-              onReady();
-              connectInputSocket(socket);
+          const restore = () => {
+            if (disposed || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) {
+              resolve();
+              return;
             }
-            resolve();
-          });
+            if (snapshotGeometry) terminal.resize(snapshotGeometry.cols, snapshotGeometry.rows);
+            terminal.write(data);
+            terminal.write('\x1b[?2026l', () => {
+              if (!disposed && currentOutputSocket === socket && awaitingSnapshot === socket
+                && socket.readyState === WebSocket.OPEN) {
+                awaitingSnapshot = null;
+                terminal.scrollToBottom();
+                onReady();
+                connectInputSocket(socket);
+              }
+              resolve();
+            });
+          };
+          if (snapshotGeometry && (terminal.cols !== snapshotGeometry.cols || terminal.rows !== snapshotGeometry.rows)) {
+            terminal.write('\x1bc\x1b[?2026h', restore);
+          } else {
+            terminal.write('\x1bc\x1b[?2026h');
+            restore();
+          }
         });
         return;
       }
@@ -180,6 +205,16 @@ export function connectTerminal({
     }
   };
 
+  function applyGeometry(socket: WebSocket, cols: number, rows: number) {
+    return new Promise<void>((resolve) => terminal.write('', () => {
+      if (!disposed && currentOutputSocket === socket) {
+        terminal.resize(cols, rows);
+        terminal.scrollToBottom();
+      }
+      resolve();
+    }));
+  }
+
   const applyOrderedTerminalServerMessage = async (socket: WebSocket, message: TerminalServerMessage) => {
     if (typeof message.seq !== 'number' || message.seq <= 0 || message.type === 'ready') {
       await applyTerminalServerMessage(socket, message);
@@ -197,6 +232,7 @@ export function connectTerminal({
     }
 
     await applyTerminalServerMessage(socket, message);
+    if (disposed || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) return;
     lastAppliedTerminalSeq = message.seq;
 
     while (pendingTerminalMessages.has(lastAppliedTerminalSeq + 1)) {
@@ -204,6 +240,7 @@ export function connectTerminal({
       const nextMessage = pendingTerminalMessages.get(nextSeq)!;
       pendingTerminalMessages.delete(nextSeq);
       await applyTerminalServerMessage(socket, nextMessage);
+      if (disposed || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) return;
       lastAppliedTerminalSeq = nextSeq;
     }
 
@@ -265,7 +302,7 @@ export function connectTerminal({
       try {
         inputSocket.send(encodeTerminalClientMessage({
           type: 'init', sessionId: tabId,
-          cols: terminal.cols, rows: terminal.rows,
+          cols: desiredSize.cols, rows: desiredSize.rows,
           inputStreamId: inputState.streamId,
           sessionGeneration: inputState.generation,
         }));
@@ -290,7 +327,7 @@ export function connectTerminal({
             inputSocket.send(encodeTerminalClientMessage({ type: 'input', data, inputSeq }));
           }
           inputSocket.send(encodeTerminalClientMessage({
-            type: 'resize', cols: terminal.cols, rows: terminal.rows,
+            type: 'resize', cols: desiredSize.cols, rows: desiredSize.rows,
           }));
           reconnectAttempts = 0;
           onStatusChange(tabId, 'connected');
@@ -370,6 +407,7 @@ export function connectTerminal({
     clearPongTimer();
     closeInputSocket();
     awaitingSnapshot = null;
+    snapshotGeometry = null;
     terminalMessageQueue = Promise.resolve();
 
     const socket = createTerminalSocket(authToken);
@@ -406,8 +444,8 @@ export function connectTerminal({
       socket.send(encodeTerminalClientMessage({
         type: 'init',
         sessionId: tabId,
-        cols: terminal.cols,
-        rows: terminal.rows,
+        cols: desiredSize.cols,
+        rows: desiredSize.rows,
         lastSeq: lastAppliedTerminalSeq,
         inputStreamId: inputState.streamId,
         sessionGeneration: inputState.generation,
@@ -559,9 +597,12 @@ export function connectTerminal({
   return {
     sendInput, dispose,
     resize(cols: number, rows: number) {
+      if (disposed) return false;
+      desiredSize = { cols, rows };
       if (inputReady && currentInputSocket?.readyState === WebSocket.OPEN) {
         currentInputSocket.send(encodeTerminalClientMessage({ type: 'resize', cols, rows }));
       }
+      return true;
     },
   };
 }

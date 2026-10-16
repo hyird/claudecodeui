@@ -1433,6 +1433,8 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {boolean|null} [gap] TerminalReady gap
          * @property {number|null} [lastSeq] TerminalReady lastSeq
          * @property {string|null} [sessionGeneration] TerminalReady sessionGeneration
+         * @property {number|null} [cols] TerminalReady cols
+         * @property {number|null} [rows] TerminalReady rows
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -1513,6 +1515,22 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalReady.prototype.sessionGeneration = "";
 
         /**
+         * TerminalReady cols.
+         * @member {number} cols
+         * @memberof cloudcli.TerminalReady
+         * @instance
+         */
+        TerminalReady.prototype.cols = 0;
+
+        /**
+         * TerminalReady rows.
+         * @member {number} rows
+         * @memberof cloudcli.TerminalReady
+         * @instance
+         */
+        TerminalReady.prototype.rows = 0;
+
+        /**
          * Encodes the specified TerminalReady message. Does not implicitly {@link cloudcli.TerminalReady.verify|verify} messages.
          * @function encode
          * @memberof cloudcli.TerminalReady
@@ -1540,6 +1558,10 @@ export const cloudcli = $root.cloudcli = (() => {
                 writer.uint32(/* id 5, wireType 0 =*/40).uint32(message.lastSeq);
             if (message.sessionGeneration != null && $Object.hasOwnProperty.call(message, "sessionGeneration") && message.sessionGeneration !== "")
                 writer.uint32(/* id 6, wireType 2 =*/50).string(message.sessionGeneration);
+            if (message.cols != null && $Object.hasOwnProperty.call(message, "cols") && message.cols !== 0)
+                writer.uint32(/* id 7, wireType 0 =*/56).uint32(message.cols);
+            if (message.rows != null && $Object.hasOwnProperty.call(message, "rows") && message.rows !== 0)
+                writer.uint32(/* id 8, wireType 0 =*/64).uint32(message.rows);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -1636,6 +1658,24 @@ export const cloudcli = $root.cloudcli = (() => {
                             message.sessionGeneration = value;
                         else
                             delete message.sessionGeneration;
+                        continue;
+                    }
+                case 7: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.cols = value;
+                        else
+                            delete message.cols;
+                        continue;
+                    }
+                case 8: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.rows = value;
+                        else
+                            delete message.rows;
                         continue;
                     }
                 }
@@ -2173,8 +2213,9 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {cloudcli.ErrorMessage.$Properties|null} [error] TerminalServerMessage error
          * @property {cloudcli.Pong.$Properties|null} [pong] TerminalServerMessage pong
          * @property {cloudcli.TerminalInputAck.$Properties|null} [inputAck] TerminalServerMessage inputAck
+         * @property {cloudcli.TerminalResize.$Properties|null} [resize] TerminalServerMessage resize
          * @property {number|null} [seq] TerminalServerMessage seq
-         * @property {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"} [body] TerminalServerMessage body
+         * @property {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"|"resize"} [body] TerminalServerMessage body
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -2195,10 +2236,11 @@ export const cloudcli = $root.cloudcli = (() => {
          *   error?: cloudcli.ErrorMessage.$Shape|null;
          *   pong?: cloudcli.Pong.$Shape|null;
          *   inputAck?: cloudcli.TerminalInputAck.$Shape|null;
+         *   resize?: cloudcli.TerminalResize.$Shape|null;
          *   seq?: number|null;
          *   $unknowns?: Array.<Uint8Array>;
          * } & (
-         *   ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape })
+         *   ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; resize?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; resize?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null; resize?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null; resize?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null; resize?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null; resize?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape; resize?: null }|{ body?: "resize"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; resize: cloudcli.TerminalResize.$Shape })
          * )} cloudcli.TerminalServerMessage.$Shape
          */
 
@@ -2266,6 +2308,14 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalServerMessage.prototype.inputAck = null;
 
         /**
+         * TerminalServerMessage resize.
+         * @member {cloudcli.TerminalResize.$Properties|null|undefined} resize
+         * @memberof cloudcli.TerminalServerMessage
+         * @instance
+         */
+        TerminalServerMessage.prototype.resize = null;
+
+        /**
          * TerminalServerMessage seq.
          * @member {number} seq
          * @memberof cloudcli.TerminalServerMessage
@@ -2278,12 +2328,12 @@ export const cloudcli = $root.cloudcli = (() => {
 
         /**
          * TerminalServerMessage body.
-         * @member {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"|undefined} body
+         * @member {"ready"|"output"|"exit"|"error"|"pong"|"inputAck"|"resize"|undefined} body
          * @memberof cloudcli.TerminalServerMessage
          * @instance
          */
         $Object.defineProperty(TerminalServerMessage.prototype, "body", {
-            get: $util.oneOfGetter($oneOfFields = ["ready", "output", "exit", "error", "pong", "inputAck"]),
+            get: $util.oneOfGetter($oneOfFields = ["ready", "output", "exit", "error", "pong", "inputAck", "resize"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -2315,6 +2365,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 $root.cloudcli.Pong.encode(message.pong, writer.uint32(/* id 5, wireType 2 =*/42).fork(), _depth + 1).ldelim();
             if (message.inputAck != null && $Object.hasOwnProperty.call(message, "inputAck"))
                 $root.cloudcli.TerminalInputAck.encode(message.inputAck, writer.uint32(/* id 6, wireType 2 =*/50).fork(), _depth + 1).ldelim();
+            if (message.resize != null && $Object.hasOwnProperty.call(message, "resize"))
+                $root.cloudcli.TerminalResize.encode(message.resize, writer.uint32(/* id 8, wireType 2 =*/66).fork(), _depth + 1).ldelim();
             if (message.seq != null && $Object.hasOwnProperty.call(message, "seq") && message.seq !== 0)
                 writer.uint32(/* id 100, wireType 0 =*/800).uint32(message.seq);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
@@ -2401,6 +2453,13 @@ export const cloudcli = $root.cloudcli = (() => {
                             break;
                         message.inputAck = $root.cloudcli.TerminalInputAck.decode(reader, reader.uint32(), $undefined, _depth + 1, message.inputAck);
                         message.body = "inputAck";
+                        continue;
+                    }
+                case 8: {
+                        if (wireType !== 2)
+                            break;
+                        message.resize = $root.cloudcli.TerminalResize.decode(reader, reader.uint32(), $undefined, _depth + 1, message.resize);
+                        message.body = "resize";
                         continue;
                     }
                 case 100: {

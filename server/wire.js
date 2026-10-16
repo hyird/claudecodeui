@@ -78,6 +78,8 @@ export function encodeTerminalServerMessage(message) {
           gap: message.gap === true,
           lastSeq: message.lastSeq ?? 0,
           sessionGeneration: message.sessionGeneration ?? '',
+          cols: message.cols ?? 0,
+          rows: message.rows ?? 0,
         },
       };
       break;
@@ -97,6 +99,9 @@ export function encodeTerminalServerMessage(message) {
       break;
     case 'input-ack':
       payload = { inputAck: { inputSeq: message.inputSeq ?? 0 } };
+      break;
+    case 'resize':
+      payload = { resize: { cols: message.cols, rows: message.rows } };
       break;
     default:
       throw new Error(`Unknown terminal server message: ${message.type}`);

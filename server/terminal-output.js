@@ -61,6 +61,10 @@ function resyncTerminalParser(session) {
   if (!from) return;
   session.unparsedFromSeq = 0;
   forEachTerminalEventAfter(session.terminalEvents, from - 1, (event) => {
+    if (event.type === 'resize') {
+      session.terminal.write('', () => session.terminal.resize(event.cols, event.rows));
+      return;
+    }
     if (event.type !== 'output') return;
     const { data, bytes } = event;
     session.parseBacklogBytes += bytes;
@@ -263,17 +267,43 @@ export function readTerminalSnapshot(session) {
 }
 
 export function resizeSession(session, cols, rows) {
-  // Reflow the buffered bytes at the old width before resizing, so they are not
-  // re-wrapped to a geometry they were never written for.
+  cols = Number.isInteger(cols) && cols > 0 ? Math.min(cols, 500) : 100;
+  rows = Number.isInteger(rows) && rows > 0 ? Math.min(rows, 300) : 30;
+  const requested = session.requestedSize ?? { cols: session.terminal.cols, rows: session.terminal.rows };
+  if (requested.cols === cols && requested.rows === rows) return;
+  session.requestedSize = { cols, rows };
+  // The persistent owner acknowledges the geometry on its output connection.
+  // Until that fence arrives, both mirrors must keep parsing at the old size.
+  if (session.pty.onResize) {
+    if (!session.closed) session.pty.resize(cols, rows);
+    return;
+  }
+  applyTerminalResize(session, cols, rows, () => {
+    if (!session.closed) session.pty.resize(cols, rows);
+  });
+}
+
+export function applyTerminalResize(session, cols, rows, resizePty = () => {}) {
+  if (session.disposed) return;
   flushTerminalOutput(session);
-  // An empty write is a parser barrier, not a separate timer or Promise per
-  // output frame. Earlier output uses the old geometry; later output the new one.
+  // Reserve and forward the fence in exactly the same order as live output.
+  // The browser waits for its earlier writes before applying the geometry, and
+  // the headless mirror commits the same fence only after its parser catches up.
+  session.pendingOutputEvents += 1;
+  const forwardedSocket = session.socketReady ? session.socket : null;
+  const event = { type: 'resize', cols, rows };
+  if (forwardedSocket) sendTerminalEvent(forwardedSocket, {
+    ...event, seq: session.terminalEvents.lastSeq + session.pendingOutputEvents,
+  });
   session.terminal.write('', () => {
     if (session.disposed) return;
-    if (session.terminal.cols === cols && session.terminal.rows === rows) return;
-    session.terminal.resize(cols, rows);
-    if (!session.closed) session.pty.resize(cols, rows);
+    if (session.terminal.cols !== cols || session.terminal.rows !== rows) {
+      session.terminal.resize(cols, rows);
+      resizePty();
+    }
     invalidateTerminalSnapshot(session);
+    session.pendingOutputEvents -= 1;
+    recordAndSendTerminalEvent(session, event, forwardedSocket);
   });
 }
 

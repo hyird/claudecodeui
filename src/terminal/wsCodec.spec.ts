@@ -87,6 +87,14 @@ describe('terminal client -> server', () => {
 });
 
 describe('terminal server -> client', () => {
+  test('snapshot dimensions and sequenced resize boundaries round-trip', async () => {
+    expect(await decodeTerminalServerMessage(encodeTerminalServerMessage({
+      type: 'ready', reset: true, cols: 207, rows: 41,
+    }))).toMatchObject({ type: 'ready', reset: true, cols: 207, rows: 41 });
+    expect(await decodeTerminalServerMessage(encodeTerminalServerMessage({
+      type: 'resize', cols: 120, rows: 32, seq: 99,
+    }))).toEqual({ type: 'resize', cols: 120, rows: 32, seq: 99 });
+  });
   test('ready reflects the resume fields and seq', async () => {
     const frame = encodeTerminalServerMessage({
       type: 'ready', cwd: '/root', sessionId: 's1', sessionGeneration: 'generation-1',

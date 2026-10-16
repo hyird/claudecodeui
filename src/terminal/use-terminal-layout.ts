@@ -18,7 +18,7 @@ type LayoutOptions = {
   terminalRef: MutableRefObject<Terminal | null>;
   fitAddonRef: MutableRefObject<FitAddon | null>;
   containerRef: MutableRefObject<HTMLDivElement | null>;
-  onResize: (cols: number, rows: number) => void;
+  onResize: (cols: number, rows: number) => boolean | undefined;
 };
 
 export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onResize }: LayoutOptions) {
@@ -148,6 +148,10 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     }
     lastSizeRef.current = { cols: dims.cols, rows: dims.rows };
 
+    // Once a connection owns this terminal, fit requests a size. The ordered
+    // output stream applies it after all old-size bytes have been parsed.
+    if (onResize(dims.cols, dims.rows)) return;
+
     if (terminal.cols !== dims.cols || terminal.rows !== dims.rows) {
       terminal.resize(dims.cols, dims.rows);
       // Reflow can keep a historical viewport anchor. A changed grid should
@@ -156,8 +160,6 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     }
 
     followResizedViewport();
-
-    onResize(dims.cols, dims.rows);
   }, [proposeFrameDimensions, onResize]);
 
   const clearScreenTransform = useCallback(() => {

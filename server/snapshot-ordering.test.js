@@ -8,9 +8,10 @@ import { cloudcli } from '../proto/messages.js';
 import { createTerminalSessions } from './terminal-sessions.js';
 import { createTerminalWorkspaces } from './terminal-workspaces.js';
 import {
-  cancelTerminalOutputFlush, flushTerminalOutput, queueTerminalOutput, readTerminalSnapshot, resizeSession,
+  cancelTerminalOutputFlush, flushTerminalOutput, queueTerminalOutput, readTerminalSnapshot, resizeSession, applyTerminalResize,
 } from './terminal-output.js';
 import { TERMINAL_PARSE_BACKLOG_LIMIT } from './terminal-snapshot.js';
+import { resizeFixture, bufferRows } from './test-support/resize-fixture.js';
 
 // Exercise the real session and workspace factories with a real xterm parser, a
 // fake PTY and in-memory tab storage. Importing the server entry would start Bun's
@@ -37,6 +38,8 @@ function decodeServerMessage(bytes) {
       return { type: 'error', message: message.error.message };
     case 'inputAck':
       return { type: 'input-ack', inputSeq: message.inputAck.inputSeq };
+    case 'resize':
+      return { type: 'resize', cols: message.resize.cols, rows: message.resize.rows, seq };
     case 'pong':
       return { type: 'pong' };
     default:
@@ -295,6 +298,43 @@ test('new output and resize release an obsolete serialized snapshot', async (t) 
   await drain(session.terminal);
   assert.equal(session.terminalSnapshot, '');
   assert.ok(readTerminalSnapshot(session).includes('first second'));
+});
+
+test('resize is committed and replayed between the exact old-size and new-size output frames', async t => {
+  const { cols, oldRows, newRows, initial, oldPaint, newPaint } = resizeFixture;
+  const { session, attach } = setup(t, { cols, rows: oldRows });
+  const ws = socket(session.workspace);
+  attach(ws);
+  await settled(session, ws);
+  queueTerminalOutput(session, initial);
+  flushTerminalOutput(session);
+  await drain(session.terminal);
+  const lastSeq = session.terminalEvents.lastSeq;
+  ws.messages.length = 0;
+  queueTerminalOutput(session, oldPaint);
+  applyTerminalResize(session, cols, newRows);
+  queueTerminalOutput(session, newPaint);
+  flushTerminalOutput(session);
+  await drain(session.terminal);
+  assert.deepEqual(ws.messages.map(message => [message.type, message.seq]),
+    [['output', lastSeq + 1], ['resize', lastSeq + 2], ['output', lastSeq + 3]]);
+  const reference = new headlessXterm.Terminal({ allowProposedApi: true, cols, rows: oldRows, scrollback: 1000 });
+  const replay = new headlessXterm.Terminal({ allowProposedApi: true, cols, rows: oldRows, scrollback: 1000 });
+  t.after(() => { reference.dispose(); replay.dispose(); });
+  await new Promise(resolve => reference.write(initial + oldPaint, resolve));
+  reference.resize(cols, newRows);
+  await new Promise(resolve => reference.write(newPaint, resolve));
+  assert.deepEqual(bufferRows(session.terminal), bufferRows(reference));
+  await new Promise(resolve => replay.write(initial, resolve));
+  const reconnected = socket(session.workspace);
+  attach(reconnected, lastSeq, { cols, rows: newRows });
+  await settled(session, reconnected);
+  assert.equal(reconnected.messages[0].reset, false);
+  for (const event of reconnected.messages.slice(1)) {
+    if (event.type === 'resize') replay.resize(event.cols, event.rows);
+    else if (event.type === 'output') await new Promise(resolve => replay.write(event.data, resolve));
+  }
+  assert.deepEqual(bufferRows(replay), bufferRows(reference));
 });
 
 test('newer attachments and closed sessions cancel obsolete parser callbacks', async (t) => {

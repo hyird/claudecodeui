@@ -22,7 +22,8 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
   await new Promise<void>((resolve) => host.close(() => resolve()));
   const baseUrl = `http://127.0.0.1:${port}`;
   const env = { ...process.env, CLOUDCLI_PTY_SOCKET: socketPath };
-  const broker = spawn(process.execPath, ['server/pty-broker.js'], { cwd: projectDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const brokerEntry = process.env.CLOUDCLI_TEST_BROKER_ENTRY || 'server/pty-broker.js';
+  const broker = spawn(process.execPath, [brokerEntry], { cwd: projectDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let application: ReturnType<typeof spawn> | undefined;
   let logs = '';
   let tabId = '';
@@ -64,7 +65,14 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
       messages.push(message);
       const output = 'output' in message ? message.output : null;
       if (output?.data) terminal.write(output.compressed ? inflateSync(output.data) : output.data);
-      if ('ready' in message && message.ready?.reset) terminal.reset();
+      if ('ready' in message && message.ready?.reset) {
+        terminal.reset();
+        if (message.ready.cols && message.ready.rows) terminal.resize(message.ready.cols, message.ready.rows);
+      }
+      if ('resize' in message && message.resize) {
+        const { cols, rows } = message.resize;
+        if (cols && rows) terminal.write('', () => terminal.resize(cols, rows));
+      }
     });
     await new Promise<void>((resolve, reject) => { ws.addEventListener('open', () => resolve(), { once: true }); ws.addEventListener('error', reject, { once: true }); });
     if (init) ws.send(cloudcli.TerminalClientMessage.encode({ init }).finish());
@@ -84,6 +92,12 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     const input = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
     const original = await inspect();
     expect(original.pid).toBeGreaterThan(0);
+    input.ws.send(cloudcli.TerminalClientMessage.encode({ resize: { cols: 100, rows: 30 } }).finish());
+    await waitFor(() => output.messages.some(m => m.resize?.cols === 100 && m.resize?.rows === 30));
+    expect(await inspect()).toMatchObject({ pid: original.pid, cols: 100, rows: 30 });
+    input.ws.send(cloudcli.TerminalClientMessage.encode({ resize: { cols: 200, rows: 24 } }).finish());
+    await waitFor(() => output.messages.some(m => m.resize?.cols === 200 && m.resize?.rows === 24));
+    expect(await inspect()).toMatchObject({ pid: original.pid, cols: 200, rows: 24 });
     // Produce more history than the cap, then restore only the newest rows.
     const command = 'export CT_COUNT=$(( ${CT_COUNT:-0} + 1 )); printf "history-%0180d\\n" {1..'
       + (terminalPolicy.scrollbackLines + 5000) + '}; printf "CT_READY_%s\\n" "$CT_COUNT"\r';

@@ -628,6 +628,12 @@ export namespace cloudcli {
         /** TerminalReady sessionGeneration. */
         sessionGeneration: string;
 
+        /** TerminalReady cols. */
+        cols: number;
+
+        /** TerminalReady rows. */
+        rows: number;
+
         /**
          * Encodes the specified TerminalReady message. Does not implicitly {@link cloudcli.TerminalReady.verify|verify} messages.
          * @param message TerminalReady message or plain object to encode
@@ -676,6 +682,12 @@ export namespace cloudcli {
 
             /** TerminalReady sessionGeneration */
             sessionGeneration?: (string|null);
+
+            /** TerminalReady cols */
+            cols?: (number|null);
+
+            /** TerminalReady rows */
+            rows?: (number|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -926,11 +938,14 @@ export namespace cloudcli {
         /** TerminalServerMessage inputAck. */
         inputAck?: (cloudcli.TerminalInputAck.$Properties|null);
 
+        /** TerminalServerMessage resize. */
+        resize?: (cloudcli.TerminalResize.$Properties|null);
+
         /** TerminalServerMessage seq. */
         seq: number;
 
         /** TerminalServerMessage body. */
-        body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck");
+        body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck"|"resize");
 
         /**
          * Encodes the specified TerminalServerMessage message. Does not implicitly {@link cloudcli.TerminalServerMessage.verify|verify} messages.
@@ -981,11 +996,14 @@ export namespace cloudcli {
             /** TerminalServerMessage inputAck */
             inputAck?: (cloudcli.TerminalInputAck.$Properties|null);
 
+            /** TerminalServerMessage resize */
+            resize?: (cloudcli.TerminalResize.$Properties|null);
+
             /** TerminalServerMessage seq */
             seq?: (number|null);
 
             /** TerminalServerMessage body */
-            body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck");
+            body?: ("ready"|"output"|"exit"|"error"|"pong"|"inputAck"|"resize");
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -999,10 +1017,11 @@ export namespace cloudcli {
           error?: cloudcli.ErrorMessage.$Shape|null;
           pong?: cloudcli.Pong.$Shape|null;
           inputAck?: cloudcli.TerminalInputAck.$Shape|null;
+          resize?: cloudcli.TerminalResize.$Shape|null;
           seq?: number|null;
           $unknowns?: Uint8Array[];
         } & (
-          ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape })
+          ({ body?: undefined; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; resize?: null }|{ body?: "ready"; ready: cloudcli.TerminalReady.$Shape; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; resize?: null }|{ body?: "output"; ready?: null; output: cloudcli.TerminalOutput.$Shape; exit?: null; error?: null; pong?: null; inputAck?: null; resize?: null }|{ body?: "exit"; ready?: null; output?: null; exit: cloudcli.TerminalExit.$Shape; error?: null; pong?: null; inputAck?: null; resize?: null }|{ body?: "error"; ready?: null; output?: null; exit?: null; error: cloudcli.ErrorMessage.$Shape; pong?: null; inputAck?: null; resize?: null }|{ body?: "pong"; ready?: null; output?: null; exit?: null; error?: null; pong: cloudcli.Pong.$Shape; inputAck?: null; resize?: null }|{ body?: "inputAck"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck: cloudcli.TerminalInputAck.$Shape; resize?: null }|{ body?: "resize"; ready?: null; output?: null; exit?: null; error?: null; pong?: null; inputAck?: null; resize: cloudcli.TerminalResize.$Shape })
         );
     }
 

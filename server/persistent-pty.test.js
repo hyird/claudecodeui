@@ -17,7 +17,7 @@ function socketPath() {
     : path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-pty-')), 'pty.sock');
 }
 
-async function fakeBroker(t) {
+async function fakeBroker(t, { resizeOutput = false } = {}) {
   const received = [];
   const ids = new Set();
   const subscribers = new Set();
@@ -39,6 +39,12 @@ async function fakeBroker(t) {
       }
       if (message.type === 'close') { ids.delete(message.sessionId); push(); reply({ ok: true }); return; }
       if (message.type === 'attach') { reply({ ok: true }); sendPtyMessage(socket, { type: 'output', data: 'live', seq: 6 }); }
+      if (message.type === 'resize' && resizeOutput) sendPtyMessage(socket, { type: 'output', data: 'old-size', seq: 7 });
+      if (message.type === 'ping') {
+        // Reply and following output deliberately share one transport chunk.
+        socket.write(JSON.stringify({ requestId: message.requestId, ok: true }) + '\n'
+          + (resizeOutput ? JSON.stringify({ type: 'output', data: 'new-size', seq: 8 }) + '\n' : ''));
+      }
     });
   });
   const listenPath = socketPath();
@@ -62,6 +68,25 @@ const until = async (predicate) => {
 test('a missing persistent service fails startup instead of creating temporary shells', async () => {
   await assert.rejects(createPersistentPtyBackend({ enabled: true, socketPath: socketPath() }),
     /Persistent PTY service unavailable/);
+});
+
+test('persistent resize fences old and new output on the existing viewer without replacing the broker', async t => {
+  const broker = await fakeBroker(t, { resizeOutput: true });
+  const backend = await createPersistentPtyBackend({ enabled: true, socketPath: broker.path });
+  const { pty } = await backend.prepare(randomUUID(), { cols: 80, rows: 24 });
+  const events = [];
+  pty.onData(data => events.push(data));
+  pty.onResize((cols, rows) => events.push(`resize:${cols}x${rows}`));
+  await until(() => events.includes('live'));
+  events.length = 0;
+  pty.resize(90, 30);
+  pty.resize(90, 30);
+  await until(() => events.includes('new-size'));
+  assert.deepEqual(events, ['old-size', 'resize:90x30', 'new-size']);
+  assert.equal(broker.ofType('resize').length, 1);
+  assert.equal(broker.ofType('attach').length, 1);
+  assert.equal(broker.ofType('close').length, 0);
+  pty.kill();
 });
 
 test('ordinary development does not contact the persistent service', async () => {

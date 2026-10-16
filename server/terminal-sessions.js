@@ -8,7 +8,7 @@ import { UUID_V4_PATTERN, readString, readNumber } from './terminal-validation.j
 import {
   WS_OPEN, createTerminalSnapshot, writeTerminalOutput, whenTerminalParsed, cancelTerminalOutputFlush,
   flushTerminalOutput, queueTerminalOutput, sendTerminalSnapshot, websocketWritable,
-  readTerminalSnapshot, resizeSession, recordAndSendTerminalEvent,
+  readTerminalSnapshot, resizeSession, applyTerminalResize, recordAndSendTerminalEvent,
   sendTerminalEvent,
 } from './terminal-output.js';
 
@@ -109,6 +109,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
     shellProcess.onData((chunk) => {
       queueTerminalOutput(session, chunk);
     });
+    shellProcess.onResize?.((cols, rows) => applyTerminalResize(session, cols, rows));
     if (persistent?.data) queueTerminalOutput(session, persistent.data);
     shellProcess.onDisconnect?.(() => {
       if (session.disposed) return;
@@ -210,6 +211,8 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
         reset: replayPlan.mode === 'reset',
         gap: replayPlan.gap,
         lastSeq: replayPlan.lastSeq,
+        cols: session.terminal.cols,
+        rows: session.terminal.rows,
       }));
 
       if (replayPlan.mode === 'replay') {

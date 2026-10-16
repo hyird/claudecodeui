@@ -66,6 +66,10 @@ PTY 使用官方 `bun-pty` 包，依赖安装以 `bun.lock` 为准。
 线程池压缩，不阻塞事件循环。
 尺寸变化后自动回到底部，等待滚动条更新高度后继续跟随。
 
+尺寸变更与输出共用有序下行：浏览器只请求新尺寸，等旧尺寸输出解析完成后再切换网格。
+持久模式利用原有 PTY 连接的命令顺序确认尺寸边界，无需重启 PTY 服务；
+恢复快照带上实际网格尺寸，增量重连也按原顺序重放尺寸变更。
+
 测试分三部分：服务端用例跑在 node:test 上（Bun 的 runner 无法承载 node:test 文件），
 所以还需要 Node；前端组件行为用例是 `src/**/*.spec.ts`，基于
 `src/terminal/test-support/component-harness.ts` 由 Bun 运行；`tsconfig.spec.json` 对 spec 做类型检查。

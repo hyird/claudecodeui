@@ -110,6 +110,8 @@ export async function createPersistentPtyBackend({
     let onData = () => {};
     let onExit = () => {};
     let onDisconnect = () => {};
+    let onResize = () => {};
+    let requestedSize = { cols: prepared.cols, rows: prepared.rows };
     const inputs = new Map();
     const queued = [];
     const sendToSession = (message) => {
@@ -134,13 +136,14 @@ export async function createPersistentPtyBackend({
         const { resolve, reject, timer } = inputs.get(message.requestId);
         clearTimeout(timer);
         inputs.delete(message.requestId);
-        if (message.error) reject(new Error(message.error)); else resolve(message.inputSeq);
+        if (message.error) reject(new Error(message.error)); else resolve(message);
       } else if (message.error) socket.destroy();
     });
     return {
       onData(callback) { onData = callback; },
       onExit(callback) { onExit = callback; },
       onDisconnect(callback) { onDisconnect = callback; },
+      onResize(callback) { onResize = callback; },
       write(data) { sendToSession({ type: 'write', data }); },
       writeInput(data, streamId, inputSeq) {
         if (socket.destroyed) return Promise.reject(new Error('PTY service disconnected'));
@@ -149,9 +152,24 @@ export async function createPersistentPtyBackend({
           const timer = setTimeout(() => socket.destroy(), INPUT_TIMEOUT_MS);
           inputs.set(id, { resolve, reject, timer });
           sendToSession({ type: 'input', data, streamId, inputSeq, requestId: id });
-        });
+        }).then((message) => message.inputSeq);
       },
-      resize(cols, rows) { sendToSession({ type: 'resize', cols, rows }); },
+      resize(cols, rows) {
+        if (requestedSize.cols === cols && requestedSize.rows === rows) return;
+        requestedSize = { cols, rows };
+        sendToSession({ type: 'resize', cols, rows });
+        // Existing brokers serialize commands per session. A ping on the SAME
+        // viewer connection follows the resize barrier and precedes new-size
+        // output. This works without replacing the broker that owns live PTYs.
+        const id = ++inputRequestId;
+        const timer = setTimeout(() => socket.destroy(), INPUT_TIMEOUT_MS);
+        inputs.set(id, {
+          timer,
+          resolve() { onResize(cols, rows); },
+          reject() { socket.destroy(); },
+        });
+        sendToSession({ type: 'ping', requestId: id });
+      },
       kill() { ended = true; socket.destroy(); },
     };
   }

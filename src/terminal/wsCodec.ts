@@ -128,6 +128,8 @@ export async function decodeTerminalServerMessage(
         gap: message.ready!.gap,
         lastSeq: message.ready!.lastSeq,
         seq: message.seq,
+        ...((message.ready!.cols ?? 0) > 0 && (message.ready!.rows ?? 0) > 0
+          ? { cols: message.ready!.cols, rows: message.ready!.rows } : {}),
       };
     case 'output': {
       const output = message.output!;
@@ -148,6 +150,8 @@ export async function decodeTerminalServerMessage(
       return { type: 'pong', seq: message.seq };
     case 'inputAck':
       return { type: 'input-ack', inputSeq: message.inputAck!.inputSeq };
+    case 'resize':
+      return { type: 'resize', cols: message.resize!.cols, rows: message.resize!.rows, seq: message.seq };
     default:
       return null;
   }

@@ -104,17 +104,23 @@ describe('terminal pane layout', () => {
     cleanup();
   });
 
-  test('a remounted pane fits its replacement terminal instead of keeping the default grid', () => {
+  test('a remounted pane requests a fresh fit and waits for each replacement grid acknowledgement', async () => {
     // React StrictMode (and an auth token change) tears the terminal down and
     // builds a new one in the same pane.
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);
     harness.sockets[0].open();
+    emitServerMessage(harness, harness.sockets[0], { type: 'resize', cols: 79, rows: 23, seq: 1 });
+    await flushMicrotasks();
     expect([harness.terminalInstances[0].cols, harness.terminalInstances[0].rows]).toEqual([79, 23]);
     cleanup();
 
     const cleanupRemount = runEffect(harness, 'connectTerminal');
     harness.sockets.at(-1)!.open();
+    const replacementSocket = harness.sockets.at(-1)!;
+    replacementSocket.open();
+    emitServerMessage(harness, replacementSocket, { type: 'resize', cols: 79, rows: 23, seq: 1 });
+    await flushMicrotasks();
     expect([harness.terminalInstances[1].cols, harness.terminalInstances[1].rows]).toEqual([79, 23]);
     cleanupRemount();
   });
