@@ -15,13 +15,13 @@ export function initializeTerminalStateStore(db) {
 }
 
 export function readTerminalWorkspace(userId) {
-  const row = database.query('SELECT state FROM terminal_workspaces WHERE user_id = ?').get(userId);
+  const row = database.prepare('SELECT state FROM terminal_workspaces WHERE user_id = ?').get(userId);
   if (!row) return null;
   try { return JSON.parse(row.state); } catch { return null; }
 }
 
 export function saveTerminalWorkspace(workspace) {
-  database.query(`INSERT INTO terminal_workspaces (user_id, state) VALUES (?, ?)
+  database.prepare(`INSERT INTO terminal_workspaces (user_id, state) VALUES (?, ?)
     ON CONFLICT(user_id) DO UPDATE SET state = excluded.state`).run(workspace.userId, JSON.stringify({
     tabsState: workspace.tabsState,
     exitedTabs: [...workspace.exitedTabs],
@@ -29,5 +29,5 @@ export function saveTerminalWorkspace(workspace) {
 }
 
 export function deleteTerminalWorkspace(userId) {
-  database.query('DELETE FROM terminal_workspaces WHERE user_id = ?').run(userId);
+  database.prepare('DELETE FROM terminal_workspaces WHERE user_id = ?').run(userId);
 }

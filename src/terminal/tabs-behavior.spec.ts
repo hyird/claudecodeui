@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import {
   createHarness, emitServerMessage, findElements, flushMicrotasks, loadLoop, loadModule, runEffect,
   sentMessagesOfType, type Harness, type VNode,
@@ -34,7 +34,7 @@ function renderTabStrip(tabs: TerminalTab[], activeId: string) {
   } as unknown as TerminalTabsController; // stub: only the members TerminalTabs reads
   const tree = TerminalTabs({ controller });
   const buttons = findElements(tree, (element) => element.props.role === 'tab');
-  return { tree, buttons, calls, controller };
+  return { tree, buttons, calls, controller, harness };
 }
 
 function pressKey(button: VNode, key: string, modifiers: { altKey?: boolean; shiftKey?: boolean } = {}) {
@@ -51,6 +51,15 @@ const threeTabs: TerminalTab[] = [
 ];
 
 describe('terminal tab strip', () => {
+  test('touch swipes do not start tab sorting or intercept the native scroller', () => {
+    const { tree, controller, harness, calls } = renderTabStrip(threeTabs, TAB_A);
+    const [tab] = findElements(tree, (element) => element.props['data-tab-id'] === TAB_A);
+    const onPointerDown = tab.props.onPointerDown as (event: unknown) => void;
+    onPointerDown({ pointerType: 'touch', button: 0 });
+    expect(harness.window.listenerCount('pointermove')).toBe(0);
+    expect(controller.draggedTabRef.current).toBe(null);
+    expect(calls).toEqual([]);
+  });
   test('exposes tablist semantics with one focusable selected tab', () => {
     const { tree, buttons } = renderTabStrip(threeTabs, TAB_B);
     const [tablist] = findElements(tree, (element) => element.props.role === 'tablist');

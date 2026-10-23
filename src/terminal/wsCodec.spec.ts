@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 
 import {
   decodeTabsClientMessage,
@@ -125,8 +125,12 @@ describe('terminal server -> client', () => {
 
   // Output stays UTF-8 bytes end to end; xterm decodes them itself.
   test('a small payload travels uncompressed and decodes to its UTF-8 bytes', async () => {
-    expect(await decodeTerminalServerMessage(encodeTerminalOutput('hello 世界', 5)))
-      .toEqual({ type: 'output', data: new TextEncoder().encode('hello 世界'), seq: 5 });
+    // Node's protobuf reader returns Buffer (a Uint8Array subclass), while the
+    // browser returns Uint8Array. The wire bytes must match in either runtime.
+    const decoded = await decodeTerminalServerMessage(encodeTerminalOutput('hello 世界', 5));
+    expect(decoded).toMatchObject({ type: 'output', seq: 5 });
+    if (decoded?.type !== 'output' || !(decoded.data instanceof Uint8Array)) throw new Error('Expected terminal output bytes');
+    expect(Array.from(decoded.data)).toEqual(Array.from(new TextEncoder().encode('hello 世界')));
   });
 
   test('a large payload is deflated by the server and inflated by the client', async () => {

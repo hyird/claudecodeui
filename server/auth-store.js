@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Database } from 'bun:sqlite';
+import Database from 'better-sqlite3';
 import { initializeTerminalStateStore } from './terminal-state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,7 +42,7 @@ function ensureSchema(database) {
   `);
   // Existing installations have no role column. Promote only the oldest user
   // when upgrading, so an unexpected extra account never gains admin rights.
-  const userColumns = database.query('PRAGMA table_info(users)').all();
+  const userColumns = database.prepare('PRAGMA table_info(users)').all();
   if (!userColumns.some((column) => column.name === 'role')) {
     database.exec("ALTER TABLE users ADD COLUMN role VARCHAR(16) NOT NULL DEFAULT 'member'");
     database.exec("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users)");
@@ -120,12 +120,12 @@ function createSessionForUser(user) {
   const token = crypto.randomBytes(TOKEN_BYTES).toString('base64url');
   const timestamp = nowIso();
   const existingSessions = database
-    .query('SELECT token_hash FROM auth_sessions WHERE user_id = ?')
+    .prepare('SELECT token_hash FROM auth_sessions WHERE user_id = ?')
     .all(user.id);
 
-  database.query('DELETE FROM auth_sessions WHERE user_id = ?').run(user.id);
+  database.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(user.id);
   database
-    .query(
+    .prepare(
       'INSERT INTO auth_sessions (token_hash, user_id, created_at, last_seen_at) VALUES (?, ?, ?, ?)',
     )
     .run(hashToken(token), user.id, timestamp, timestamp);
@@ -151,17 +151,17 @@ export async function initializeAuthStore() {
   }
 
   if (!db) {
-    db = new Database(DB_PATH, { create: true });
+    db = new Database(DB_PATH);
     db.exec('PRAGMA journal_mode = WAL;');
     ensureSchema(db);
-    const terminalDb = DB_PATH === ':memory:' ? db : new Database(DB_PATH, { create: true });
+    const terminalDb = DB_PATH === ':memory:' ? db : new Database(DB_PATH);
     terminalDb.exec('PRAGMA synchronous = NORMAL;');
     initializeTerminalStateStore(terminalDb);
   }
 }
 
 export async function hasUsers() {
-  const row = requireDb().query('SELECT COUNT(*) AS count FROM users').get();
+  const row = requireDb().prepare('SELECT COUNT(*) AS count FROM users').get();
   return (row?.count ?? 0) > 0;
 }
 
@@ -173,7 +173,7 @@ function requireAdmin(actor) {
 
 export async function listUsers(actor) {
   requireAdmin(actor);
-  return requireDb().query('SELECT id, username, role FROM users ORDER BY id').all();
+  return requireDb().prepare('SELECT id, username, role FROM users ORDER BY id').all();
 }
 
 export async function createCollaborator(actor, usernameInput, password) {
@@ -190,12 +190,12 @@ export async function createCollaborator(actor, usernameInput, password) {
   }
 
   const database = requireDb();
-  if (database.query('SELECT id FROM users WHERE username = ?').get(username)) {
+  if (database.prepare('SELECT id FROM users WHERE username = ?').get(username)) {
     throw createHttpError(409, 'Username already exists');
   }
   const { hash, salt } = hashPassword(password);
   const timestamp = nowIso();
-  const inserted = database.query(
+  const inserted = database.prepare(
     `INSERT INTO users (username, password_hash, password_salt, role, created_at, updated_at)
      VALUES (?, ?, ?, 'member', ?, ?) RETURNING id`,
   ).get(username, hash, salt, timestamp, timestamp);
@@ -205,14 +205,14 @@ export async function createCollaborator(actor, usernameInput, password) {
 export async function removeCollaborator(actor, userId) {
   requireAdmin(actor);
   const database = requireDb();
-  const user = database.query('SELECT id, role FROM users WHERE id = ?').get(userId);
+  const user = database.prepare('SELECT id, role FROM users WHERE id = ?').get(userId);
   if (!user || user.role !== 'member') {
     throw createHttpError(404, 'Collaborator not found');
   }
-  const sessions = database.query('SELECT token_hash FROM auth_sessions WHERE user_id = ?').all(userId);
+  const sessions = database.prepare('SELECT token_hash FROM auth_sessions WHERE user_id = ?').all(userId);
   const remove = database.transaction(() => {
-    database.query('DELETE FROM auth_sessions WHERE user_id = ?').run(userId);
-    database.query('DELETE FROM users WHERE id = ?').run(userId);
+    database.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(userId);
+    database.prepare('DELETE FROM users WHERE id = ?').run(userId);
   });
   remove();
   for (const session of sessions) notifySessionInvalidated(session.token_hash);
@@ -234,7 +234,7 @@ export async function registerUser(usernameInput, password) {
 
   const database = requireDb();
   const register = database.transaction(() => {
-    const { count } = database.query('SELECT COUNT(*) AS count FROM users').get();
+    const { count } = database.prepare('SELECT COUNT(*) AS count FROM users').get();
     if (count > 0) {
       throw createHttpError(403, 'Initial administrator already exists');
     }
@@ -242,7 +242,7 @@ export async function registerUser(usernameInput, password) {
     const timestamp = nowIso();
     const passwordParts = hashPassword(password);
     const inserted = database
-      .query(
+      .prepare(
         `INSERT INTO users (username, password_hash, password_salt, role, created_at, updated_at, last_login_at)
          VALUES (?, ?, ?, 'admin', ?, ?, ?) RETURNING id`,
       )
@@ -268,13 +268,13 @@ export async function loginUser(usernameInput, password) {
   }
 
   const database = requireDb();
-  const user = mapUser(database.query('SELECT * FROM users WHERE username = ?').get(username));
+  const user = mapUser(database.prepare('SELECT * FROM users WHERE username = ?').get(username));
   if (!user || !verifyPassword(password, user)) {
     throw createHttpError(401, 'Invalid username or password');
   }
 
   const timestamp = nowIso();
-  database.query('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?')
+  database.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?')
     .run(timestamp, timestamp, user.id);
 
   return {
@@ -307,7 +307,7 @@ export async function authenticateToken(token) {
   // One indexed read per authenticated request or socket upgrade; nothing reads a
   // last-seen time, so authentication performs no write.
   const database = requireDb();
-  const row = database.query(`SELECT auth_sessions.id AS sessionId, users.id, users.username, users.role
+  const row = database.prepare(`SELECT auth_sessions.id AS sessionId, users.id, users.username, users.role
     FROM auth_sessions LEFT JOIN users ON users.id = auth_sessions.user_id
     WHERE auth_sessions.token_hash = ?`).get(hashToken(token));
   if (!row) {
@@ -315,7 +315,7 @@ export async function authenticateToken(token) {
   }
 
   if (row.id === null) {
-    database.query('DELETE FROM auth_sessions WHERE id = ?').run(row.sessionId);
+    database.prepare('DELETE FROM auth_sessions WHERE id = ?').run(row.sessionId);
     return null;
   }
 
@@ -328,7 +328,7 @@ export async function logoutToken(token) {
   }
 
   const tokenHash = hashToken(token);
-  const result = requireDb().query('DELETE FROM auth_sessions WHERE token_hash = ?').run(tokenHash);
+  const result = requireDb().prepare('DELETE FROM auth_sessions WHERE token_hash = ?').run(tokenHash);
   if (result.changes > 0) {
     notifySessionInvalidated(tokenHash);
   }

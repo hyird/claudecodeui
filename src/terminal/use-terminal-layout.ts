@@ -2,17 +2,11 @@ import { useCallback, useRef } from 'react';
 import type { MutableRefObject } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
-import { TERMINAL_SCROLLBAR_GUTTER } from './renderer';
 
 type TerminalDimensions = {
   cols: number;
   rows: number;
 };
-
-const MIN_TERMINAL_COLS = 2;
-const MIN_TERMINAL_ROWS = 1;
-
-const FIT_EDGE_GUARD_PX = 1;
 
 type LayoutOptions = {
   terminalRef: MutableRefObject<Terminal | null>;
@@ -26,24 +20,9 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
   const resizeFrameRef = useRef(0);
   const lastSizeRef = useRef({ cols: 0, rows: 0 });
   const followResizeRef = useRef(false);
-  const screenElementRef = useRef<HTMLElement | null>(null);
   const viewportElementRef = useRef<HTMLElement | null>(null);
   const hasScrollbackRef = useRef(false);
-
-
-  // xterm builds .xterm-screen and .xterm-viewport once in terminal.open() and keeps
-  // them for the terminal's lifetime, but the scrollback affordance runs off every
-  // parsed write and every scroll — re-querying the DOM there costs a tree walk per
-  // frame of output. Resolve each once and reuse it; isConnected re-resolves if xterm
-  // ever rebuilds its DOM.
-  const readScreenElement = useCallback(() => {
-    if (!screenElementRef.current?.isConnected) {
-      screenElementRef.current = terminalRef.current?.element
-        ?.querySelector<HTMLElement>('.xterm-screen') ?? null;
-    }
-    return screenElementRef.current;
-  }, []);
-
+  // Cache the viewport used by the scrollback affordance on every parsed write.
   const readViewportElement = useCallback(() => {
     if (!viewportElementRef.current?.isConnected) {
       viewportElementRef.current = terminalRef.current?.element
@@ -61,9 +40,10 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     }
   }, []);
 
-  const readFitDimensions = useCallback((): TerminalDimensions | undefined => {
+  const proposeFrameDimensions = useCallback((): TerminalDimensions | undefined => {
     const fitAddon = fitAddonRef.current;
-    if (!fitAddon) {
+    const container = containerRef.current;
+    if (!fitAddon || !container || container.clientWidth <= 0 || container.clientHeight <= 0) {
       return undefined;
     }
 
@@ -79,53 +59,8 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     return undefined;
   }, []);
 
-  // Whole cells that fit the frame, measured from xterm's rendered screen.
-  // Undefined until the screen has a measurable size.
-  const measureCellCapacity = useCallback((): TerminalDimensions | undefined => {
-    const terminal = terminalRef.current;
-    const container = containerRef.current;
-    const screen = readScreenElement();
-    if (!terminal || !container || !screen) {
-      return undefined;
-    }
-
-    const baseCols = terminal.cols || lastSizeRef.current.cols;
-    const baseRows = terminal.rows || lastSizeRef.current.rows;
-    if (baseCols <= 0 || baseRows <= 0 || screen.offsetWidth <= 0 || screen.offsetHeight <= 0) {
-      return undefined;
-    }
-
-    const cellWidth = screen.offsetWidth / baseCols;
-    const cellHeight = screen.offsetHeight / baseRows;
-    if (!Number.isFinite(cellWidth) || !Number.isFinite(cellHeight) || cellWidth <= 0 || cellHeight <= 0) {
-      return undefined;
-    }
-
-    const style = window.getComputedStyle(container);
-    // Reserve the scrollbar's gutter (as xterm's FitAddon does) so the rightmost
-    // column is never clipped beneath the scrollback scrollbar once it appears.
-    const scrollbarGutter = terminal.options.scrollback ? TERMINAL_SCROLLBAR_GUTTER : 0;
-    const availWidth = container.clientWidth
-      - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
-      - scrollbarGutter - FIT_EDGE_GUARD_PX;
-    const availHeight = container.clientHeight
-      - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)
-      - FIT_EDGE_GUARD_PX;
-
-    return {
-      cols: Math.max(MIN_TERMINAL_COLS, Math.floor(availWidth / cellWidth)),
-      rows: Math.max(MIN_TERMINAL_ROWS, Math.floor(availHeight / cellHeight)),
-    };
-  }, [readScreenElement]);
-
-  // FitAddon's proposal forces its own style reads, so ask it only when the
-  // rendered screen cannot be measured yet.
-  const proposeFrameDimensions = useCallback(() => (
-    measureCellCapacity() ?? readFitDimensions()
-  ), [measureCellCapacity, readFitDimensions]);
-
-  // Fit to the largest whole-cell grid the current frame can contain. Any
-  // leftover pixels stay blank instead of clipping the right edge/bottom row.
+  // Use the renderer's cell metrics through FitAddon, like ttyd. Inferring cell
+  // height from screen.offsetHeight / rows loses precision at fractional DPI.
   const fitAndResize = useCallback(() => {
     const terminal = terminalRef.current;
     const dims = proposeFrameDimensions();
@@ -162,17 +97,6 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     followResizedViewport();
   }, [proposeFrameDimensions, onResize]);
 
-  const clearScreenTransform = useCallback(() => {
-    const screen = readScreenElement();
-    if (!screen) {
-      return;
-    }
-
-    screen.style.transform = '';
-    screen.style.transformOrigin = '';
-    screen.style.willChange = '';
-  }, [readScreenElement]);
-
   const updateScrollbackAffordance = useCallback(() => {
     const terminal = terminalRef.current;
     const viewport = readViewportElement();
@@ -189,11 +113,8 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     viewport.classList.toggle('has-scrollback', hasScrollback);
   }, [readViewportElement]);
 
-  // A scroll or an in-place TUI repaint changes what each viewport row should
-  // show. Full-screen TUIs hit paths where xterm may not issue a full viewport
-  // refresh on its own: alt-screen mouse scrolling, in-place updates, and streaming
-  // while the buffer moves under a fixed viewport. Force a full-range
-  // refresh synchronously so it unions into xterm's current render frame.
+  // Explicit invalidations (font arrival, renderer replacement, showing a tab)
+  // need one full refresh. Normal output and scrolling use xterm's dirty rows.
   const forceFullRefresh = useCallback(() => {
     const terminal = terminalRef.current;
     if (!terminal) {
@@ -206,7 +127,6 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
   // Resize only on whole-cell boundaries. Any sub-cell remainder stays blank.
   const resizeAfterLayoutSettles = useCallback(() => {
     fitAndResize();
-    clearScreenTransform();
 
     // Coalesce a burst of ResizeObserver ticks into at most one fit per frame
     // so a live drag stays responsive without thrashing layout.
@@ -216,7 +136,6 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     resizeFrameRef.current = window.requestAnimationFrame(() => {
       resizeFrameRef.current = 0;
       fitAndResize();
-      clearScreenTransform();
     });
 
     // One trailing pass after the layout settles (drag end, tab switch,
@@ -224,9 +143,8 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
     resizeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     resizeTimersRef.current = [window.setTimeout(() => {
       fitAndResize();
-      clearScreenTransform();
     }, 120)];
-  }, [clearScreenTransform, fitAndResize]);
+  }, [fitAndResize]);
 
   // During a window drag, keep fitting to whole cells. Any sub-cell remainder
   // stays as blank space instead of scaling or clipping the character grid.
@@ -235,21 +153,17 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
   // animation-frame pass would only re-measure the same layout a frame late.
   const resizeDuringDrag = useCallback(() => {
     fitAndResize();
-    clearScreenTransform();
 
     resizeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     resizeTimersRef.current = [
       window.setTimeout(() => {
         fitAndResize();
-        clearScreenTransform();
       }, 180),
-      window.setTimeout(clearScreenTransform, 320),
     ];
-  }, [clearScreenTransform, fitAndResize]);
+  }, [fitAndResize]);
 
 
   const resetLayout = useCallback(() => {
-    screenElementRef.current = null;
     viewportElementRef.current = null;
     hasScrollbackRef.current = false;
     followResizeRef.current = false;
@@ -259,7 +173,7 @@ export function useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onRe
   }, []);
 
   return {
-    clearResizeTimers, clearScreenTransform, fitAndResize, proposeFrameDimensions,
+    clearResizeTimers, fitAndResize,
     resizeAfterLayoutSettles, resizeDuringDrag, forceFullRefresh, updateScrollbackAffordance,
     reset: resetLayout,
   };

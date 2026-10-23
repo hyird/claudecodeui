@@ -1,5 +1,5 @@
-import { expect, test } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import { expect, test } from 'vitest';
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,7 +24,7 @@ test('reopening the database preserves tab order and exited tabs across applicat
     db = new Database(dbPath);
     initializeTerminalStateStore(db);
     expect(readTerminalWorkspace(7)).toEqual({ tabsState: workspace.tabsState, exitedTabs: ['tab-b'] });
-    expect(db.query("SELECT name FROM sqlite_master WHERE name = 'terminal_input_streams'").get()).toBeNull();
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'terminal_input_streams'").get()).toBeUndefined();
     deleteTerminalWorkspace(7);
     expect(readTerminalWorkspace(7)).toBeNull();
   } finally {

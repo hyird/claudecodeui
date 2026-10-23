@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import {
-  createHarness, emitServerMessage, flushMicrotasks, loadLoop, readyInputConnection, runEffect,
+  createHarness, emitServerMessage, findElements, flushMicrotasks, loadLoop, readyInputConnection, runEffect,
   sentMessagesOfType, TEST_TAB_ID, type FakeKeyEvent, type Harness,
 } from './test-support/component-harness';
 import { terminalTheme } from './themes';
@@ -21,6 +21,22 @@ async function connectedPane(harness: Harness, props: Record<string, unknown> = 
 }
 
 describe('terminal pane keyboard and clipboard', () => {
+  test('touch shortcut keys use the terminal input connection and application cursor mode', async () => {
+    const harness = createHarness();
+    const { cleanup, input, terminal, rendered } = await connectedPane(harness);
+    const click = (label: string) => {
+      const [button] = findElements(rendered, (node) => node.type === 'button' && node.props['aria-label'] === label);
+      (button.props.onClick as () => void)();
+    };
+    click('Escape');
+    click('Tab');
+    click('中断命令');
+    click('向上');
+    Object.assign(terminal.modes, { applicationCursorKeysMode: true });
+    click('向左');
+    expect(sentMessagesOfType(input, 'input').map((message) => message.data)).toEqual(['\x1b', '\t', '\x03', '\x1b[A', '\x1bOD']);
+    cleanup();
+  });
   test('Ctrl/Cmd+V stays on the browser paste path that xterm handles natively', async () => {
     const harness = createHarness();
     const { cleanup, input, terminal } = await connectedPane(harness);
@@ -132,7 +148,7 @@ describe('background terminal panes', () => {
     preferences: { fontSize: 14 }, onStatusChange() {}, onTitleChange() {},
   });
 
-  test('a hidden pane keeps parsing output without painting and repaints the whole viewport when shown', async () => {
+  test('a hidden pane keeps its output connection and repaints the whole viewport when shown', async () => {
     const harness = createHarness();
     const { cleanup, component, output, terminal } = await connectedPane(harness, { active: false });
     for (let seq = 1; seq <= 5; seq++) {
@@ -141,15 +157,16 @@ describe('background terminal panes', () => {
     }
     harness.clock.advance(1000);
     expect(terminal.writes).toHaveLength(5);
-    expect(terminal.paints).toEqual([]);
+    const beforeShowing = terminal.paints.length;
 
     harness.hooks.beginRender();
     component(paneProps(true));
     runEffect(harness, 'setActive(active)');
     harness.clock.advance(100);
-    expect(terminal.paints).toEqual([[0, terminal.rows - 1]]);
+    expect(terminal.paints.slice(beforeShowing)).toEqual([[0, terminal.rows - 1]]);
 
-    // Hidden again: later output is parsed but not painted.
+    // Hiding the pane again keeps parsing on the same connection. The browser's
+    // IntersectionObserver controls painting; the component does not patch it.
     harness.hooks.beginRender();
     component(paneProps(false));
     runEffect(harness, 'setActive(active)');
@@ -157,11 +174,11 @@ describe('background terminal panes', () => {
     await flushMicrotasks();
     harness.clock.advance(1000);
     expect(terminal.writes).toHaveLength(6);
-    expect(terminal.paints).toHaveLength(1);
+    expect(harness.terminalInstances).toHaveLength(1);
     cleanup();
   });
 
-  test('a visible pane paints streamed output at most at the 25 FPS pace', async () => {
+  test('a visible pane uses xterm animation frames without an extra render-rate cap', async () => {
     const harness = createHarness();
     const { cleanup, output, terminal } = await connectedPane(harness);
     harness.clock.advance(1000);
@@ -171,10 +188,10 @@ describe('background terminal panes', () => {
       await flushMicrotasks();
       harness.clock.advance(10);
     }
-    // 50 frames over 500 ms: every frame is painted, but no faster than one per 40 ms.
+    // Fifty writes over 500 ms are coalesced by the native 16 ms frame scheduler.
     const painted = terminal.paints.length - before;
-    expect(painted).toBeGreaterThanOrEqual(11);
-    expect(painted).toBeLessThanOrEqual(13);
+    expect(painted).toBeGreaterThanOrEqual(24);
+    expect(painted).toBeLessThanOrEqual(26);
     cleanup();
   });
 });

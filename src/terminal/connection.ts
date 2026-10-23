@@ -3,6 +3,7 @@ import type { TerminalServerMessage, TerminalStatus } from './types';
 import { decodeTerminalServerMessage, encodeTerminalClientMessage } from './wsCodec';
 import { openAuthenticatedSocket } from '../wsHost';
 import { getTerminalInputState, splitTerminalInput } from './input-state';
+import terminalPolicy from '../../shared/terminal-policy.json';
 
 // Reconnect backoff: the base delay doubles each consecutive failure up to the cap,
 // so a flaky network is retried gently instead of hammered every second. Reset to the
@@ -43,8 +44,34 @@ export function connectTerminal({
   let currentInputSocket: WebSocket | null = null;
   let inputReady = false;
   let disposed = false;
+  let outputAckSeq: number | null = null;
+  let outputAckBytes = 0;
+  let outputAckTimer = 0;
   let desiredSize = { cols: terminal.cols, rows: terminal.rows };
   const inputState = getTerminalInputState(tabId);
+
+  function flushOutputAck() {
+    window.clearTimeout(outputAckTimer);
+    outputAckTimer = 0;
+    const socket = currentInputSocket;
+    if (outputAckSeq === null || !inputReady || socket?.readyState !== WebSocket.OPEN) return;
+    try {
+      socket.send(encodeTerminalClientMessage({ type: 'output-ack', seq: outputAckSeq }));
+      outputAckSeq = null;
+      outputAckBytes = 0;
+    } catch {
+      socket.close();
+      currentOutputSocket?.close();
+    }
+  }
+
+  function outputParsed(socket: WebSocket, seq: number, bytes: number) {
+    if (disposed || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) return;
+    outputAckSeq = Math.max(outputAckSeq ?? 0, seq);
+    outputAckBytes += bytes;
+    if (outputAckBytes >= terminalPolicy.outputAckBatchBytes) flushOutputAck();
+    else if (!outputAckTimer) outputAckTimer = window.setTimeout(flushOutputAck, 50);
+  }
 
   function sendInput(data: string) {
     if (!data) {
@@ -158,6 +185,7 @@ export function connectTerminal({
             terminal.write('\x1b[?2026l', () => {
               if (!disposed && currentOutputSocket === socket && awaitingSnapshot === socket
                 && socket.readyState === WebSocket.OPEN) {
+                outputParsed(socket, lastAppliedTerminalSeq, data.byteLength);
                 awaitingSnapshot = null;
                 terminal.scrollToBottom();
                 onReady();
@@ -175,7 +203,8 @@ export function connectTerminal({
         });
         return;
       }
-      terminal.write(data);
+      const seq = typeof message.seq === 'number' ? message.seq : lastAppliedTerminalSeq;
+      terminal.write(data, () => outputParsed(socket, seq, data.byteLength));
       return;
     }
 
@@ -323,6 +352,7 @@ export function connectTerminal({
           window.clearTimeout(inputConnectionTimer);
           inputConnectionTimer = 0;
           inputReady = true;
+          flushOutputAck();
           for (const [inputSeq, data] of inputState.pending) {
             inputSocket.send(encodeTerminalClientMessage({ type: 'input', data, inputSeq }));
           }
@@ -408,6 +438,10 @@ export function connectTerminal({
     closeInputSocket();
     awaitingSnapshot = null;
     snapshotGeometry = null;
+    window.clearTimeout(outputAckTimer);
+    outputAckTimer = 0;
+    outputAckSeq = null;
+    outputAckBytes = 0;
     terminalMessageQueue = Promise.resolve();
 
     const socket = createTerminalSocket(authToken);
@@ -579,6 +613,8 @@ export function connectTerminal({
 
   function dispose() {
     disposed = true;
+    window.clearTimeout(outputAckTimer);
+    outputAckTimer = 0;
     awaitingSnapshot = null;
     inputReady = false;
     closeInputSocket();

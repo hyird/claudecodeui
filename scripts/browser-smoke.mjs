@@ -139,7 +139,8 @@ async function readPageState() {
         return rect ? { width: rect.width, height: rect.height } : null;
       })(),
       controlSizes: (() => {
-        const measure = (selector) => [...document.querySelectorAll(selector)].map((node) => {
+        const measure = (selector) => [...document.querySelectorAll(selector)]
+          .filter((node) => node.getClientRects().length > 0).map((node) => {
           const rect = node.getBoundingClientRect();
           const style = getComputedStyle(node);
           const hitTarget = document.elementFromPoint(
@@ -160,6 +161,7 @@ async function readPageState() {
         });
         return {
           toolbar: measure('.toolbar .icon-button'),
+          tabs: measure('.tab-main'),
           tabClose: measure('.tab-close'),
           fontStepper: measure('.step-button'),
         };
@@ -524,20 +526,20 @@ const navigatedDesktopState = await waitForState(
 );
 assertHealthyTerminal('desktop after keyboard navigation', navigatedDesktopState);
 
-// Emit two OSC titles inside the 500ms sync window, then refresh immediately.
-// The second value exercises the trailing pagehide flush rather than only the
-// leading send. Keep the shell busy so its next prompt cannot replace the title.
+// Changing directories updates both titles, while an application OSC title must
+// not replace the path. Reload below verifies the path survives a reconnect.
 await enterTerminalCommand(
-  `printf '\\033]0;Refresh Base\\007'; sleep 0.05; printf '\\033]0;Refresh Check\\007'; sleep 30`,
+  `cd /tmp; printf '\\033]0;Building project...\\007'; sleep 30`,
 );
 const desktopState = await waitForState(
   (state) => (
-    state.tabs[0] === 'Refresh Check'
+    state.tabs[0] === '/tmp'
+    && state.title === '/tmp'
     && state.selectedIndex === 0
     && state.statuses[0] === 'status-dot connected'
     && state.statuses[1] === 'status-dot background'
   ),
-  'terminal title did not reach the trailing value',
+  'terminal title did not follow the current directory',
 );
 assertHealthyTerminal('desktop after terminal title update', desktopState);
 await capture(desktopOutput);
@@ -569,7 +571,8 @@ await delay(2000);
 const mobileState = await waitForState(
   (state) => (
     state.tabs.length === 2
-    && state.tabs[0] === 'Refresh Check'
+    && state.tabs[0] === '/tmp'
+    && state.title === '/tmp'
     && state.selectedIndex === 0
     && state.statuses[0] === 'status-dot connected'
     && state.statuses[1] === 'status-dot background'
@@ -578,8 +581,10 @@ const mobileState = await waitForState(
 );
 assertHealthyTerminal('mobile', mobileState);
 if (
-  mobileState.controlSizes.toolbar.some((target) => target.width < 40 || target.height < 40)
-  || mobileState.controlSizes.tabClose.some((target) => target.width < 32 || target.height < 32)
+  mobileState.controlSizes.toolbar.length !== 1
+  || mobileState.controlSizes.toolbar.some((target) => target.width < 44 || target.height < 44)
+  || mobileState.controlSizes.tabs.some((target) => target.width < 40 || target.height < 40)
+  || mobileState.controlSizes.tabClose.length !== 0
   || !mobileState.inputCapabilities.touchCoarse
 ) {
   throw new Error(`mobile terminal controls are too small: ${JSON.stringify(mobileState.controlSizes)}`);
@@ -592,7 +597,7 @@ await call('Runtime.evaluate', {
 });
 const touchTargetState = await waitForState(
   (state) => {
-    const target = state.controlSizes.tabClose.find((control) => !control.activeTab);
+    const target = state.controlSizes.tabs.find((control) => !control.activeTab);
     return Boolean(
       target
       && state.tabStrip
@@ -600,19 +605,17 @@ const touchTargetState = await waitForState(
       && target.centerX <= state.tabStrip.right
     );
   },
-  'inactive terminal close area could not be revealed for touch testing',
+  'inactive terminal icon could not be revealed for touch testing',
 );
-const inactiveCloseIndex = touchTargetState.controlSizes.tabClose
+const inactiveCloseIndex = touchTargetState.controlSizes.tabs
   .findIndex((target) => !target.activeTab);
-const inactiveCloseTarget = touchTargetState.controlSizes.tabClose[inactiveCloseIndex];
+const inactiveCloseTarget = touchTargetState.controlSizes.tabs[inactiveCloseIndex];
 if (
   !inactiveCloseTarget
-  || inactiveCloseTarget.opacity !== 0
-  || inactiveCloseTarget.pointerEvents !== 'none'
   || inactiveCloseTarget.hitTargetLabel !== touchTargetState.tabSemantics[inactiveCloseIndex].label
 ) {
   throw new Error(
-    `inactive mobile close control still intercepts taps: ${JSON.stringify(inactiveCloseTarget)}`,
+    `mobile terminal icon cannot be selected: ${JSON.stringify(inactiveCloseTarget)}`,
   );
 }
 await dispatchTap(inactiveCloseTarget.centerX, inactiveCloseTarget.centerY);
@@ -623,9 +626,9 @@ const touchSelectedState = await waitForState(
     && state.statuses[0] === 'status-dot background'
     && state.statuses[1] === 'status-dot connected'
   ),
-  'tapping an inactive hidden close area did not select the terminal tab safely',
+  'tapping an inactive terminal icon did not select the terminal tab safely',
 );
-assertHealthyTerminal('mobile after tapping an inactive close area', touchSelectedState);
+assertHealthyTerminal('mobile after tapping an inactive terminal icon', touchSelectedState);
 await capture(mobileOutput);
 
 await call('Runtime.evaluate', {
@@ -663,11 +666,20 @@ assertHealthyTerminal('mobile after deleting a tab', afterDeleteState);
 
 // Fill the compact tab strip past its visible width. Newly activated tabs must
 // follow the user into view instead of becoming selected off-screen.
-const overflowTabCount = 6;
-for (let expectedCount = 2; expectedCount <= overflowTabCount; expectedCount += 1) {
+async function mobileSettingsAction(label) {
   await call('Runtime.evaluate', {
-    expression: `document.querySelector('button[aria-label="新增终端"]')?.click()`,
+    expression: `document.querySelector('button[aria-label="终端设置"]')?.click()`,
   });
+  await waitForState((state) => state.settings.open, 'mobile settings did not expand');
+  await call('Runtime.evaluate', {
+    expression: `[...document.querySelectorAll('.mobile-settings-actions button')].find((button) => button.textContent === ${JSON.stringify(label)})?.click()`,
+  });
+  await waitForState((state) => !state.settings.open, 'mobile settings did not collapse after action');
+}
+
+const overflowTabCount = 9;
+for (let expectedCount = 2; expectedCount <= overflowTabCount; expectedCount += 1) {
+  await mobileSettingsAction('新增终端');
   await waitForState(
     (state) => (
       state.tabs.length === expectedCount
@@ -689,9 +701,7 @@ const overflowTabsState = await waitForState(
 assertHealthyTerminal('mobile with overflowing tabs', overflowTabsState);
 
 for (let expectedCount = overflowTabCount - 1; expectedCount >= 1; expectedCount -= 1) {
-  await call('Runtime.evaluate', {
-    expression: `document.querySelector('.tab.active .tab-close')?.click()`,
-  });
+  await mobileSettingsAction('关闭当前终端');
   await waitForState(
     (state) => (
       state.tabs.length === expectedCount

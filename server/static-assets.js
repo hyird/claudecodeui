@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { brotliCompressSync, constants as zlibConstants, gzipSync } from 'node:zlib';
+import { getMimeType } from 'hono/utils/mime';
 
 function buildStaticAssets(directory) {
   const assets = new Map();
@@ -28,7 +29,7 @@ function buildStaticAssets(directory) {
           },
         }),
         etag: `"${createHash('sha1').update(body).digest('base64url')}"`,
-        type: Bun.file(fullPath).type,
+        type: getMimeType(fullPath) || 'application/octet-stream',
         cacheControl: precompressed ? 'public, max-age=31536000, immutable' : 'no-cache',
       });
     }

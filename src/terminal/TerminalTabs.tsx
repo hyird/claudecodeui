@@ -1,4 +1,4 @@
-import { X } from 'lucide-react';
+import { Terminal as TerminalIcon, X } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { TerminalTabsController } from './use-terminal-tabs';
@@ -127,7 +127,8 @@ export default function TerminalTabs({ controller }: { controller: TerminalTabsC
   }, []);
 
   const handleTabPointerDown = useCallback((event: ReactPointerEvent<HTMLElement>, tabId: string) => {
-    if (event.button !== 0 || tabsStateRef.current.tabs.length < 2) {
+    // Touch drags belong to the native horizontal scroller, not tab sorting.
+    if (event.pointerType === 'touch' || event.button !== 0 || tabsStateRef.current.tabs.length < 2) {
       return;
     }
     if ((event.target as HTMLElement | null)?.closest('.tab-close')) {
@@ -294,9 +295,10 @@ export default function TerminalTabs({ controller }: { controller: TerminalTabsC
                   aria-controls="active-terminal-panel"
                   aria-current={isActive ? 'page' : undefined}
                   tabIndex={isActive ? 0 : -1}
-                  title={`${tab.title} - ${statusLabel(tab.status)} · 拖动排序 / Alt+Shift+方向键`}
+                  title={tab.title}
                 >
                   <span className={`status-dot ${tab.status}`} aria-hidden="true" />
+                  <span className="tab-icon" aria-hidden="true"><TerminalIcon size={18} /></span>
                   <span className="tab-title">{tab.title}</span>
                 </button>
                 {tabs.length > 1 && (

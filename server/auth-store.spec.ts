@@ -1,5 +1,5 @@
-import { expect, test } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import { expect, test } from 'vitest';
+import Database from 'better-sqlite3';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -38,7 +38,7 @@ test('an existing single-user database migrates its owner to administrator', () 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cloudterminal-auth-migration-'));
   const dbPath = path.join(directory, 'auth.sqlite');
   try {
-    const db = new Database(dbPath, { create: true });
+    const db = new Database(dbPath);
     db.exec(`CREATE TABLE users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username VARCHAR(80) NOT NULL UNIQUE,
@@ -48,8 +48,8 @@ test('an existing single-user database migrates its owner to administrator', () 
       updated_at VARCHAR(32) NOT NULL,
       last_login_at VARCHAR(32)
     );`);
-    db.query("INSERT INTO users (username, password_hash, password_salt, created_at, updated_at) VALUES ('owner', 'hash', 'salt', 'now', 'now')").run();
-    db.query("INSERT INTO users (username, password_hash, password_salt, created_at, updated_at) VALUES ('second', 'hash', 'salt', 'now', 'now')").run();
+    db.prepare("INSERT INTO users (username, password_hash, password_salt, created_at, updated_at) VALUES ('owner', 'hash', 'salt', 'now', 'now')").run();
+    db.prepare("INSERT INTO users (username, password_hash, password_salt, created_at, updated_at) VALUES ('second', 'hash', 'salt', 'now', 'now')").run();
     db.close();
 
     const moduleUrl = new URL('./auth-store.js', import.meta.url).href;

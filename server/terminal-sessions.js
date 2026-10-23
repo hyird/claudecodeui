@@ -5,6 +5,8 @@ import path from 'node:path';
 import { createTerminalEventLog, getTerminalReplayPlan } from './terminal-stream.js';
 import { decodeTerminalClientMessage, encodeTerminalServerMessage } from './wire.js';
 import { UUID_V4_PATTERN, readString, readNumber } from './terminal-validation.js';
+import { watchTerminalCwd } from './terminal-cwd.js';
+import { createPtyFlowControl, createViewerFlowControl } from './terminal-flow-control.js';
 import {
   WS_OPEN, createTerminalSnapshot, writeTerminalOutput, whenTerminalParsed, cancelTerminalOutputFlush,
   flushTerminalOutput, queueTerminalOutput, sendTerminalSnapshot, websocketWritable,
@@ -51,14 +53,17 @@ function launchOptions(options) {
     env: {
       ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', FORCE_COLOR: '3',
       SSH_CLIENT: process.env.SSH_CLIENT || '127.0.0.1 0 0',
+      ...(os.platform() === 'win32' && process.env.ComSpec ? {
+        PROMPT: '$E]9;9;$P$E\\' + (process.env.PROMPT || '$P$G'),
+      } : {}),
     },
   };
 }
 
-// `spawnPty` is bun-pty's spawn in production; it is injected so this module stays
+// `spawnPty` is node-pty's spawn in production; it is injected so this module stays
 // importable (and testable) without the native PTY runtime.
 export function createTerminalSessions({ sessions, persistentPty, workspaces, spawnPty }) {
-  const { broadcastTabsState, persistWorkspace } = workspaces;
+  const { broadcastTabsState, persistWorkspace, updateTabTitle } = workspaces;
   // Persistent sessions whose broker preparation is in flight. Concurrent viewers
   // share one preparation; closing the tab meanwhile invalidates it.
   const preparing = new Map();
@@ -82,6 +87,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       forceSnapshot: !!persistent,
       cwd,
       pty: shellProcess,
+      flowControl: createPtyFlowControl(shellProcess),
       terminal: terminalSnapshot.terminal,
       serializer: terminalSnapshot.serializer,
       mouseEncoding: terminalSnapshot.mouseEncoding,
@@ -98,12 +104,8 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       pendingOutput: [],
       pendingOutputBytes: 0,
       outputFlushTask: null,
-      nextOutputFlushAt: 0,
-      // Headless parser flow control; see writeTerminalOutput.
+      // Bytes awaiting the headless parser's write callbacks.
       parseBacklogBytes: 0,
-      parseOverflow: false,
-      bypassedWrites: 0,
-      unparsedFromSeq: 0,
     };
 
     shellProcess.onData((chunk) => {
@@ -114,6 +116,8 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
     shellProcess.onDisconnect?.(() => {
       if (session.disposed) return;
       session.disposed = true;
+      session.flowControl.dispose();
+      session.disposeCwdTracker?.();
       cancelTerminalOutputFlush(session);
       session.socket?.close(1011, 'PTY service disconnected');
       session.inputSocket?.close(1011, 'PTY service disconnected');
@@ -145,12 +149,21 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
         }
         // Nothing restores from an exited session; release its scrollback now.
         session.disposed = true;
+        session.flowControl.dispose();
+        session.disposeCwdTracker?.();
         session.terminal.dispose();
         return output;
       });
     });
 
     sessions.set(sessionId, session);
+    session.disposeCwdTracker = watchTerminalCwd({
+      terminal: session.terminal, pid: shellProcess.pid, initialCwd: cwd,
+      onChange(directory) {
+        session.cwd = directory;
+        updateTabTitle(workspace, sessionId, directory);
+      },
+    });
     return session;
   }
 
@@ -183,10 +196,12 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
     // computed, so a reconnecting client is never handed a view that is missing it.
     flushTerminalOutput(session);
     const oldSocket = session.socket;
+    oldSocket?.data.outputFlow?.dispose();
     const oldInputSocket = session.inputSocket;
     session.inputSocket = null;
     oldInputSocket?.close(1000, 'Replaced by newer terminal view');
     session.socket = ws;
+    ws.data.outputFlow = createViewerFlowControl(session.flowControl);
     session.socketReady = false;
     if (oldSocket && oldSocket !== ws && oldSocket.readyState === WS_OPEN) {
       oldSocket.close(1000, 'Replaced by newer terminal view');
@@ -220,7 +235,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
           sendTerminalEvent(ws, event);
         }
       } else {
-        sendTerminalSnapshot(ws, terminalSnapshot);
+        sendTerminalSnapshot(ws, terminalSnapshot, replayPlan.lastSeq);
       }
       broadcastTabsState(session.workspace);
     });
@@ -231,6 +246,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       session.inputSocket = null;
     }
     if (session.socket === ws) {
+      ws.data.outputFlow?.dispose();
       session.socket = null;
       session.socketReady = false;
       const inputSocket = session.inputSocket;
@@ -260,6 +276,8 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
     // left to land — drop it instead of letting a queued flush revive a dead session.
     cancelTerminalOutputFlush(session);
     session.disposed = true;
+    session.flowControl.dispose();
+    session.disposeCwdTracker?.();
     session.pendingOutput.length = 0;
     session.pendingOutputBytes = 0;
     session.socket?.close(1000, 'Terminal closed');
@@ -421,6 +439,13 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
 
     if (ws.data.kind === 'terminal-output' && message.type !== 'ping') {
       sendError(ws, 'Use the terminal input connection');
+      return;
+    }
+
+    if (message.type === 'output-ack') {
+      if (!activeSession.socket?.data.outputFlow?.acknowledge(message.seq)) {
+        sendError(ws, 'Invalid terminal output acknowledgement');
+      }
       return;
     }
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import {
   createHarness, emitServerMessage, flushMicrotasks, loadModule, runEffect, type Harness,
 } from '../terminal/test-support/component-harness';

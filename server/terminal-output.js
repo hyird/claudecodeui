@@ -1,10 +1,10 @@
 import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { UnicodeGraphemesAddon } from './unicode.js';
-import { forEachTerminalEventAfter, recordTerminalEvent } from './terminal-stream.js';
+import { recordTerminalEvent } from './terminal-stream.js';
 import { encodeTerminalServerMessage, encodeTerminalSnapshot, sendTerminalOutput } from './wire.js';
-import { TERMINAL_PARSE_BACKLOG_LIMIT, TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
-import terminalPolicy from '../shared/terminal-policy.json' with { type: 'json' };
+import { TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
+import { OUTPUT_HIGH_WATER, OUTPUT_LOW_WATER } from './terminal-flow-control.js';
 
 export const WS_OPEN = 1;
 const TERMINAL_SOCKET_BUFFER_LIMIT = 1024 * 1024;
@@ -52,89 +52,36 @@ function invalidateTerminalSnapshot(session) {
   session.terminalSnapshot = '';
 }
 
-// Feed output that was committed without parsing (see writeTerminalOutput) to the
-// headless copy. Only the retained replay window is available, so a flood longer
-// than that window leaves the restore snapshot approximate; sequence numbers and
-// live delivery are unaffected.
-function resyncTerminalParser(session) {
-  const from = session.unparsedFromSeq;
-  if (!from) return;
-  session.unparsedFromSeq = 0;
-  forEachTerminalEventAfter(session.terminalEvents, from - 1, (event) => {
-    if (event.type === 'resize') {
-      session.terminal.write('', () => session.terminal.resize(event.cols, event.rows));
-      return;
-    }
-    if (event.type !== 'output') return;
-    const { data, bytes } = event;
-    session.parseBacklogBytes += bytes;
-    session.terminal.write(data, () => {
-      session.parseBacklogBytes -= bytes;
-      if (session.disposed) return;
-      invalidateTerminalSnapshot(session);
-      settleTerminalParser(session);
-    });
-  });
-}
-
-function settleTerminalParser(session) {
-  if (session.parseOverflow && session.parseBacklogBytes === 0 && session.bypassedWrites === 0) {
-    session.parseOverflow = false;
-    resyncTerminalParser(session);
-  }
-}
-
-// Parse output in the headless copy, then run `commit` (which records the event and
-// returns it) in output order. xterm throws away writes once its parse backlog nears
-// 50 MB, so above TERMINAL_PARSE_BACKLOG_LIMIT output is still committed in order
-// through empty parser writes, but parsing pauses until the backlog drains and the
-// copy then catches up from the replay log.
+// Like xterm's flow-control guide, pause the producer above a high-water mark
+// and resume below a low-water mark. Every byte is still parsed and committed.
 export function writeTerminalOutput(session, data, bytes, commit) {
-  const parse = !session.parseOverflow
-    && session.parseBacklogBytes + bytes <= TERMINAL_PARSE_BACKLOG_LIMIT;
-  if (parse) {
-    session.parseBacklogBytes += bytes;
-  } else {
-    session.parseOverflow = true;
-    session.bypassedWrites += 1;
-  }
-  session.terminal.write(parse ? data : '', () => {
-    if (parse) session.parseBacklogBytes -= bytes;
-    else session.bypassedWrites -= 1;
+  session.parseBacklogBytes += bytes;
+  if (session.parseBacklogBytes >= OUTPUT_HIGH_WATER) session.flowControl.setPaused('parser', true);
+  session.terminal.write(data, () => {
+    session.parseBacklogBytes -= bytes;
     if (session.disposed) return;
-    const event = commit();
+    commit();
     if (session.disposed) return;
-    if (parse) invalidateTerminalSnapshot(session);
-    else if (!session.unparsedFromSeq) session.unparsedFromSeq = event.seq;
-    settleTerminalParser(session);
+    invalidateTerminalSnapshot(session);
+    if (session.parseBacklogBytes <= OUTPUT_LOW_WATER) session.flowControl.setPaused('parser', false);
   });
 }
 
-// Parser barrier: `callback` runs once all earlier output is reflected in the
-// headless copy, including output committed unparsed during a flood.
+// A parser barrier includes all earlier output, without a lossy replay fallback.
 export function whenTerminalParsed(session, callback) {
   session.terminal.write('', () => {
-    if (session.disposed) return;
-    if (!session.unparsedFromSeq) {
-      callback();
-      return;
-    }
-    resyncTerminalParser(session);
-    session.terminal.write('', () => {
-      if (!session.disposed) callback();
-    });
+    if (!session.disposed) callback();
   });
 }
 
 // Keep each decoded terminal frame small enough for xterm to parse without monopolizing
-// the browser thread. Continuous output is paced independently of input and
-// control traffic; an idle terminal's first output is forwarded immediately.
+// the browser thread. Coalesce only within the current event-loop turn; consumer
+// acknowledgements provide pacing without imposing latency on prompt redraws.
 const TERMINAL_OUTPUT_MAX_FRAME_BYTES = 16 * 1024;
 const TERMINAL_OUTPUT_BATCH_BYTES = 256 * 1024;
-const TERMINAL_OUTPUT_FLUSH_INTERVAL_MS = 1000 / terminalPolicy.outputBatchesPerSecond;
 
 export function cancelTerminalOutputFlush(session) {
-  if (session.outputFlushTask?.timer) clearTimeout(session.outputFlushTask.timer);
+  if (session.outputFlushTask?.immediate) clearImmediate(session.outputFlushTask.immediate);
   session.outputFlushTask = null;
 }
 
@@ -168,7 +115,6 @@ export function flushTerminalOutput(session) {
   const textBytes = session.pendingOutputBytes;
   session.pendingOutput.length = 0;
   session.pendingOutputBytes = 0;
-  session.nextOutputFlushAt = Date.now() + TERMINAL_OUTPUT_FLUSH_INTERVAL_MS;
 
   const forwardedSocket = session.socketReady ? session.socket : null;
   if (textBytes <= TERMINAL_OUTPUT_MAX_FRAME_BYTES) {
@@ -209,15 +155,13 @@ export function queueTerminalOutput(session, chunk) {
   }
 
   if (session.outputFlushTask === null) {
-    const task = { timer: null };
+    const task = { immediate: null };
     session.outputFlushTask = task;
     const send = () => {
       if (session.outputFlushTask !== task || session.disposed) return;
       flushTerminalOutput(session);
     };
-    const delay = Math.max(0, session.nextOutputFlushAt - Date.now());
-    if (delay > 0) task.timer = setTimeout(send, delay);
-    else setImmediate(send);
+    task.immediate = setImmediate(send);
   }
 }
 
@@ -225,10 +169,13 @@ export function queueTerminalOutput(session, chunk) {
 // compressed off the event loop; events for this viewer wait behind it so the
 // stream order on the socket is unchanged. Resolves once the restore was handed
 // to the socket (or abandoned).
-export function sendTerminalSnapshot(ws, snapshot) {
+export function sendTerminalSnapshot(ws, snapshot, seq = 0) {
   if (!websocketWritable(ws)) return Promise.resolve();
   const queue = [];
   ws.data.snapshotQueue = queue;
+  // Prevent an unbounded queue of live events while zlib prepares the restore.
+  const producer = ws.data.activeSession?.flowControl;
+  producer?.setPaused(queue, true);
   // Empty screens still need a frame so the client can finish its restore.
   return encodeTerminalSnapshot(snapshot || '\x1b[0m').then((payload) => {
     if (ws.data.snapshotQueue !== queue) return;
@@ -239,12 +186,13 @@ export function sendTerminalSnapshot(ws, snapshot) {
       ws.close(1013, 'Terminal snapshot dropped');
       return;
     }
+    ws.data.outputFlow?.record(seq, Buffer.byteLength(snapshot || '\x1b[0m'));
     if (ws.getBufferedAmount?.() === 0) ws.data.snapshotBufferAllowance = 0;
     for (const [event, encoded] of queue) sendTerminalEvent(ws, event, encoded);
   }, () => {
     ws.data.snapshotQueue = null;
     ws.close(1011, 'Terminal snapshot failed');
-  });
+  }).finally(() => producer?.setPaused(queue, false));
 }
 
 export function websocketWritable(ws) {
@@ -319,6 +267,8 @@ export function sendTerminalEvent(ws, event, encoded = null) {
   if (event.type === 'output') {
     if (sendTerminalOutput(ws, encoded ?? event.data, event.seq, ws.data.kind !== 'terminal-output') === 0) {
       ws.close(1013, 'Terminal output dropped');
+    } else {
+      ws.data.outputFlow?.record(event.seq ?? 0, event.bytes ?? (encoded?.byteLength ?? Buffer.byteLength(event.data)));
     }
     return;
   }

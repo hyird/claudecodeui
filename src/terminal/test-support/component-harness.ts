@@ -2,7 +2,7 @@
 // sources with `typescript` and runs them inside a vm context whose React hooks,
 // timers, sockets and xterm are deterministic fakes, so a component's effects can
 // be driven like a browser would drive them without a DOM.
-import { expect } from 'bun:test';
+import { expect } from 'vitest';
 import fs from 'node:fs';
 import * as vm from 'node:vm';
 import ts from 'typescript';
@@ -86,8 +86,7 @@ export class FakeClock {
   }
 }
 
-// One 60 Hz display frame. Animation frames must advance the fake clock, or the
-// 25 FPS limiter's wait-for-next-frame requeue would never reach its deadline.
+// One display frame, matching xterm's native animation-frame scheduling.
 const FRAME_MS = 16;
 
 type FrameScheduler = {
@@ -95,8 +94,7 @@ type FrameScheduler = {
   cancel(id: number): void;
 };
 
-// xterm's private RenderDebouncer, the hook the frame limiter wraps: dirty rows
-// accumulate and one animation frame paints their union.
+// Model xterm's animation-frame coalescing: dirty rows paint as one union.
 class FakeRenderDebouncer {
   _animationFrame?: number;
   private dirty?: [number, number];
@@ -225,7 +223,7 @@ interface FakeNode {
   style?: Record<string, string>;
 }
 
-export interface FakeElement {
+export interface FakeElement extends FakeEventTarget {
   clientWidth: number;
   clientHeight: number;
   classList: FakeClassList;
@@ -246,13 +244,13 @@ function makeElement(): FakeElement {
     isConnected: true,
     classList: classList(),
   };
-  return {
+  return Object.assign(new FakeEventTarget(), {
     clientWidth: 800,
     clientHeight: 600,
     classList: classList(),
     style: {},
     querySelector: (selector: string) => selector === '.xterm-screen' ? screen : viewport,
-  };
+  });
 }
 
 export type FakeKeyEvent = {
@@ -269,12 +267,6 @@ export class FakeTerminal {
   readonly options: Record<string, unknown>;
   readonly buffer = { active: { baseY: 0, viewportY: 0, type: 'normal' } };
   readonly modes = { mouseTrackingMode: 'none', synchronizedOutputMode: false };
-  readonly modeReportHandlers = new Map<string, (params: number[]) => boolean>();
-  readonly parser = { registerCsiHandler: (id: { prefix?: string }, handler: (params: number[]) => boolean) => {
-    const key = id.prefix ?? '';
-    this.modeReportHandlers.set(key, handler);
-    return { dispose: () => { this.modeReportHandlers.delete(key); } };
-  } };
   readonly element = makeElement();
   readonly writes: string[] = [];
   // Row ranges the renderer actually painted, one entry per animation frame.
@@ -560,7 +552,15 @@ export function loadModule(sourceUrl: URL, harness: Harness, { overrides = {}, e
     clearTerminalInputStates() {},
     discardTerminalInputState() {},
   };
-  const fitRuntime = { FitAddon: class { proposeDimensions() { return { cols: 80, rows: 24 }; } } };
+  const fitRuntime = { FitAddon: class {
+    proposeDimensions() {
+      // A 10x25 cell grid, the host's 1px edge space and xterm's 3px scrollbar.
+      return {
+        cols: Math.max(2, Math.floor((harness.container.clientWidth - 1 - 3) / 10)),
+        rows: Math.max(1, Math.floor((harness.container.clientHeight - 1) / 25)),
+      };
+    }
+  } };
   const emptyAddon = { ClipboardAddon: class {}, WebLinksAddon: class {} };
   const webglRuntime = { WebglAddon: class {
     disposed = false;

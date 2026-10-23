@@ -9,7 +9,7 @@ import { PassThrough } from 'node:stream';
 import { createPersistentPtyBackend } from './persistent-pty.js';
 import { readPtyMessages, sendPtyMessage } from './pty-channel.js';
 
-// The real broker needs bun-pty and a Unix socket; this fake speaks the same JSON
+// The real broker needs node-pty and a Unix socket; this fake speaks the same JSON
 // line protocol over a local socket (a named pipe on Windows).
 function socketPath() {
   return process.platform === 'win32'
@@ -17,7 +17,7 @@ function socketPath() {
     : path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-pty-')), 'pty.sock');
 }
 
-async function fakeBroker(t, { resizeOutput = false } = {}) {
+async function fakeBroker(t, { resizeOutput = false, backend } = {}) {
   const received = [];
   const ids = new Set();
   const subscribers = new Set();
@@ -30,7 +30,7 @@ async function fakeBroker(t, { resizeOutput = false } = {}) {
     readPtyMessages(socket, (message) => {
       received.push(message);
       const reply = (value) => sendPtyMessage(socket, { requestId: message.requestId, ...value });
-      if (message.type === 'subscribe') { subscribers.add(socket); reply({ ids: [...ids] }); return; }
+      if (message.type === 'subscribe') { subscribers.add(socket); reply({ ids: [...ids], backend }); return; }
       if (message.type === 'prepare') {
         ids.add(message.sessionId);
         push();
@@ -70,10 +70,19 @@ test('a missing persistent service fails startup instead of creating temporary s
     /Persistent PTY service unavailable/);
 });
 
+test('health identifies the running broker instead of assuming it was upgraded with the web service', async t => {
+  for (const reported of [undefined, 'node-pty']) {
+    const broker = await fakeBroker(t, { backend: reported });
+    const backend = await createPersistentPtyBackend({ enabled: true, socketPath: broker.path });
+    assert.equal(backend.backend, reported ?? 'legacy-pty');
+  }
+});
+
 test('persistent resize fences old and new output on the existing viewer without replacing the broker', async t => {
   const broker = await fakeBroker(t, { resizeOutput: true });
   const backend = await createPersistentPtyBackend({ enabled: true, socketPath: broker.path });
   const { pty } = await backend.prepare(randomUUID(), { cols: 80, rows: 24 });
+  assert.equal(pty.pid, 42);
   const events = [];
   pty.onData(data => events.push(data));
   pty.onResize((cols, rows) => events.push(`resize:${cols}x${rows}`));
@@ -97,6 +106,26 @@ test('ordinary development does not contact the persistent service', async () =>
   assert.equal(await backend.prepare('session', {}), null);
   assert.equal(backend.count(), 0);
   await backend.close('session');
+});
+
+test('persistent output can be paused while the IPC write direction remains usable', async (t) => {
+  const broker = await fakeBroker(t, { resizeOutput: true });
+  const backend = await createPersistentPtyBackend({ enabled: true, socketPath: broker.path });
+  const sessionId = randomUUID();
+  const { pty } = await backend.prepare(sessionId, { cols: 80, rows: 24 });
+  const output = [];
+  pty.onData((data) => output.push(data));
+  await until(() => output.includes('live'));
+  pty.pause();
+  pty.resize(90, 30);
+  pty.write('\x03');
+  await until(() => broker.ofType('write').length === 1);
+  assert.deepEqual(output, ['live']);
+  assert.equal(broker.ofType('write')[0].data, '\x03');
+  pty.resume();
+  await until(() => output.includes('new-size'));
+  assert.deepEqual(output, ['live', 'old-size', 'new-size']);
+  pty.kill();
 });
 
 test('live session ids are cached from the service, so status reads need no I/O', async (t) => {

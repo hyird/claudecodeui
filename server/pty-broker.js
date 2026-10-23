@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { spawn as ptySpawn } from 'bun-pty';
+import { spawn as ptySpawn } from 'node-pty';
 import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { UnicodeGraphemesAddon } from './unicode.js';
@@ -11,8 +11,9 @@ import {
 } from './terminal-stream.js';
 import { readPtyMessages, sendPtyMessage, requestPtyBroker } from './pty-channel.js';
 import {
-  TERMINAL_PARSE_BACKLOG_LIMIT, TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot,
+  TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot,
 } from './terminal-snapshot.js';
+import { createPtyFlowControl, OUTPUT_HIGH_WATER, OUTPUT_LOW_WATER } from './terminal-flow-control.js';
 
 const socketPath = process.env.CLOUDCLI_PTY_SOCKET || '/run/cloud-terminal/pty.sock';
 const sessions = new Map();
@@ -26,40 +27,22 @@ function notifySessions() {
   for (const socket of subscribers) sendPtyMessage(socket, message);
 }
 
-// The headless copy parses output asynchronously. xterm throws away writes once its
-// backlog nears 50 MB, so past the watermark output is only recorded (and still
-// forwarded); parsing resumes from the retained replay log once the backlog drains,
-// or right away when a snapshot is requested.
+// History parsing is also a consumer: slow it at the PTY instead of dropping
+// parser input and trying to reconstruct state from a truncated replay window.
 function writeParsed(session, { data, bytes }) {
   session.parseBacklogBytes += bytes;
+  if (session.parseBacklogBytes >= OUTPUT_HIGH_WATER) session.flowControl.setPaused('parser', true);
   session.terminal.write(data, () => {
     session.parseBacklogBytes -= bytes;
-    if (session.disposed || !session.parseOverflow || session.parseBacklogBytes > 0) return;
-    session.parseOverflow = false;
-    resyncParser(session);
+    if (!session.disposed && session.parseBacklogBytes <= OUTPUT_LOW_WATER) session.flowControl.setPaused('parser', false);
   });
 }
 
-function resyncParser(session) {
-  const from = session.unparsedFromSeq;
-  if (!from) return;
-  session.unparsedFromSeq = 0;
-  forEachTerminalEventAfter(session.log, from - 1, (event) => {
-    if (event.type === 'output') writeParsed(session, event);
-  });
-}
-
-function parseOutput(session, event) {
-  if (session.parseOverflow || session.parseBacklogBytes + event.bytes > TERMINAL_PARSE_BACKLOG_LIMIT) {
-    session.parseOverflow = true;
-    if (!session.unparsedFromSeq) session.unparsedFromSeq = event.seq;
-    return;
-  }
-  writeParsed(session, event);
+function sendToViewer(session, socket, event) {
+  if (sendPtyMessage(socket, event) === false) session.flowControl.setPaused(socket, true);
 }
 
 function snapshot(session) {
-  resyncParser(session);
   const seq = session.log.lastSeq;
   return new Promise((resolve) => {
     session.terminal.write('', () => resolve({ seq,
@@ -71,6 +54,7 @@ function snapshot(session) {
 function removeSession(session) {
   if (sessions.get(session.id) === session) sessions.delete(session.id);
   session.disposed = true;
+  session.flowControl.dispose();
   session.terminal.dispose();
   notifySessions();
 }
@@ -84,7 +68,7 @@ function createSession(id, options) {
   terminal.loadAddon(serializer);
   const session = { id, generation: randomUUID(), cwd: options.cwd, terminal, serializer,
     mouseEncoding: '', pty: null, viewer: null, log: createTerminalEventLog(), inputs: new Map(),
-    exited: false, disposed: false, parseBacklogBytes: 0, parseOverflow: false, unparsedFromSeq: 0 };
+    exited: false, disposed: false, parseBacklogBytes: 0, flowControl: null };
   for (const [final, enabled] of [['h', true], ['l', false]]) {
     terminal.parser.registerCsiHandler({ prefix: '?', final }, (params) => {
       for (const mode of params) if (mode === 1006 || mode === 1016) session.mouseEncoding = enabled ? `\x1b[?${mode}h` : '';
@@ -94,12 +78,13 @@ function createSession(id, options) {
   terminal.parser.registerEscHandler({ final: 'c' }, () => { session.mouseEncoding = ''; return false; });
   session.pty = ptySpawn(options.shell.command, options.shell.args, { name: 'xterm-256color', cols, rows,
     cwd: options.cwd, env: options.env });
+  session.flowControl = createPtyFlowControl(session.pty);
   session.pty.onData((data) => {
     if (session.exited) return;
     const event = recordTerminalEvent(session.log, { type: 'output', data });
     // Forward first; history maintenance must not delay live terminal output.
-    if (session.viewer) sendPtyMessage(session.viewer, event);
-    parseOutput(session, event);
+    if (session.viewer) sendToViewer(session, session.viewer, event);
+    writeParsed(session, event);
   });
   session.pty.onExit(({ exitCode, signal }) => {
     // A closed session was already removed; its kill must not report an exit.
@@ -123,15 +108,19 @@ const server = net.createServer((socket) => {
   socket.on('error', () => {});
   socket.on('close', () => {
     subscribers.delete(socket);
-    if (attached?.viewer === socket) attached.viewer = null;
+    attached?.flowControl.setPaused(socket, false);
+    if (attached?.viewer === socket) {
+      attached.viewer = null;
+    }
   });
+  socket.on('drain', () => attached?.flowControl.setPaused(socket, false));
 
   async function handle(message) {
     const reply = (value = {}) => sendPtyMessage(socket, { requestId: message.requestId, ...value });
-    if (message.type === 'ping') return reply({ ok: true });
+    if (message.type === 'ping') return reply({ ok: true, backend: 'node-pty' });
     if (message.type === 'subscribe') {
       subscribers.add(socket);
-      return reply({ ids: liveSessionIds() });
+      return reply({ ids: liveSessionIds(), backend: 'node-pty' });
     }
     if (message.type === 'prepare') {
       if (!/^[a-f\d-]{36}$/i.test(message.sessionId)) throw new Error('Invalid PTY session');
@@ -156,12 +145,12 @@ const server = net.createServer((socket) => {
       attached = session;
       const plan = getTerminalReplayPlan(session.log, message.seq);
       if (plan.mode === 'replay') {
-        for (const event of plan.events) sendPtyMessage(socket, event);
+        for (const event of plan.events) sendToViewer(session, socket, event);
       } else {
         const state = await snapshot(session);
         if (session.disposed) throw new Error('PTY session unavailable');
-        sendPtyMessage(socket, { type: 'snapshot', ...state });
-        forEachTerminalEventAfter(session.log, state.seq, (event) => sendPtyMessage(socket, event));
+        sendToViewer(session, socket, { type: 'snapshot', ...state });
+        forEachTerminalEventAfter(session.log, state.seq, (event) => sendToViewer(session, socket, event));
       }
       // No await between replay completion and subscribing to live output.
       session.viewer = socket;

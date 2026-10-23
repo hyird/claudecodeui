@@ -6,7 +6,7 @@
 #   ./scripts/deploy.sh 2ad75e3      # deploy (or roll back to) a commit of origin/main
 #
 # The application is built on the target host from the requested commit: the
-# bundle embeds bun-pty, whose librust_pty.so must match the host, and the
+# native node-pty and SQLite addons must match the host, and the
 # frontend comes from the same checkout so the served HTML always matches the
 # deployed server. The systemd units are rendered from this checkout's
 # deploy/*.service, so rolling the application back keeps the current units.
@@ -35,7 +35,7 @@ SERVICE="${DEPLOY_SERVICE:-cloudcli.service}"
 RUN_AS="${DEPLOY_USER:-cloudcli}"
 RUN_GROUP="${DEPLOY_GROUP:-${RUN_AS}}"
 RUN_HOME="${DEPLOY_HOME:-/home/${RUN_AS}}"
-BUN="${DEPLOY_BUN:-${RUN_HOME}/.bun/bin/bun}"
+NODE="${DEPLOY_NODE:-/usr/bin/node}"
 PORT="${DEPLOY_PORT:-3001}"
 FORCE_RESTART="${DEPLOY_FORCE_RESTART:-0}"
 REF="${1:-${BRANCH}}"
@@ -60,7 +60,7 @@ else
 fi
 
 UNIT_VALUES=(
-  USER="${RUN_AS}" GROUP="${RUN_GROUP}" HOME="${RUN_HOME}" BUN="${BUN}" BUN_DIR="${BUN%/*}"
+  USER="${RUN_AS}" GROUP="${RUN_GROUP}" HOME="${RUN_HOME}" NODE="${NODE}" NODE_DIR="${NODE%/*}"
   BASE="${BASE}" PORT="${PORT}" PTY_SERVICE="${PTY_SERVICE}"
 )
 WEB_UNIT="$(render_unit deploy/cloud-terminal.service "${UNIT_VALUES[@]}")"
@@ -69,7 +69,7 @@ PTY_UNIT="$(render_unit deploy/cloud-terminal-pty.service "${UNIT_VALUES[@]}")"
 say "Deploying ${REF} (${COMMIT:0:12}) to ${HOST}:${BASE}/current"
 
 {
-  declare -p COMMIT BASE REPO SERVICE PTY_SERVICE BUN RUN_AS RUN_GROUP RUN_HOME PORT FORCE_RESTART WEB_UNIT PTY_UNIT
+  declare -p COMMIT BASE REPO SERVICE PTY_SERVICE NODE RUN_AS RUN_GROUP RUN_HOME PORT FORCE_RESTART WEB_UNIT PTY_UNIT
   cat <<'REMOTE'
 set -euo pipefail
 
@@ -85,7 +85,7 @@ BACKUP="${BUILD}/previous-units"
 # Older deployments configured persistent terminals through this drop-in; the
 # rendered unit now carries those settings.
 LEGACY_DROP_IN="${UNIT_DIR}/${SERVICE}.d/20-persistent-terminals.conf"
-export PATH="${BUN%/*}:${PATH}"
+export PATH="${NODE%/*}:${PATH}"
 
 WAS_ACTIVE=0
 STOPPED=0
@@ -104,7 +104,7 @@ check_active_sessions() {
       die 'cannot determine active terminal sessions'
     fi
     if (( BASH_REMATCH[1] > 0 && FORCE_RESTART == 0 )) \
-      && [[ ! "${payload}" =~ \"persistentBackend\":[[:space:]]*\"bun-pty\" ]]; then
+      && [[ ! "${payload}" =~ \"persistentSessions\":[[:space:]]*true ]]; then
       die 'legacy PTYs are still active. Close them once before migrating to persistent terminals.'
     fi
   elif systemctl is-active --quiet "${SERVICE}"; then
@@ -191,7 +191,7 @@ main() {
   [ "$(getent passwd "${RUN_AS}" | cut -d: -f6)" = "${RUN_HOME}" ] \
     || die "${RUN_AS} does not exist or its home is not ${RUN_HOME} (set DEPLOY_HOME)"
   getent group "${RUN_GROUP}" >/dev/null || die "group ${RUN_GROUP} does not exist (set DEPLOY_GROUP)"
-  test -x "${BUN}" || die "${BUN} is not executable (set DEPLOY_BUN)"
+  test -x "${NODE}" || die "${NODE} is not executable (set DEPLOY_NODE)"
   if systemctl is-active --quiet "${SERVICE}"; then WAS_ACTIVE=1; fi
   check_active_sessions
 
@@ -202,23 +202,22 @@ main() {
 
   echo '--- building ---'
   cd "${BUILD}"
-  bun install --frozen-lockfile --silent
-  bun run build
-  bun run test
+  npm ci --no-audit --no-fund
+  npm run build
+  npm run test
   # The server must never come back up without its frontend.
   test -s dist/index.html
   test -s dist-server/server.js
   test -s dist-server/pty-broker.js
-  local pty_lib
-  pty_lib="$(find node_modules/bun-pty -name librust_pty.so -print -quit)"
-  test -n "${pty_lib}"
+  test -s dist-server/package.json
+  test -d dist-server/node_modules/node-pty
+  test -d dist-server/node_modules/better-sqlite3
 
   echo "--- staging ${NEXT} ---"
   rm -rf "${NEXT}"
   mkdir -p "${BASE}"
   install -d -m 0755 "${NEXT}"
-  install -m 0644 dist-server/server.js dist-server/pty-broker.js "${NEXT}/"
-  install -m 0755 "${pty_lib}" "${NEXT}/librust_pty.so"
+  cp -R dist-server/. "${NEXT}/"
   cp -R dist "${NEXT}/dist"
   printf '%s\n' "${COMMIT}" >"${NEXT}/RELEASE.txt"
   chown -R root:root "${NEXT}"

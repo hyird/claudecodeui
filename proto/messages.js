@@ -1178,6 +1178,156 @@ export const cloudcli = $root.cloudcli = (() => {
         return TerminalClose;
     })();
 
+    cloudcli.TerminalOutputAck = (function() {
+
+        /**
+         * Properties of a TerminalOutputAck.
+         * @typedef {Object} cloudcli.TerminalOutputAck.$Properties
+         * @property {number|null} [seq] TerminalOutputAck seq
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+
+        /**
+         * Properties of a TerminalOutputAck.
+         * @memberof cloudcli
+         * @interface ITerminalOutputAck
+         * @augments cloudcli.TerminalOutputAck.$Properties
+         * @deprecated Use cloudcli.TerminalOutputAck.$Properties instead.
+         */
+
+        /**
+         * Shape of a TerminalOutputAck.
+         * @typedef {cloudcli.TerminalOutputAck.$Properties} cloudcli.TerminalOutputAck.$Shape
+         */
+
+        /**
+         * Constructs a new TerminalOutputAck.
+         * @memberof cloudcli
+         * @classdesc Represents a TerminalOutputAck.
+         * @constructor
+         * @param {cloudcli.TerminalOutputAck.$Properties=} [properties] Properties to set
+         * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
+         */
+        const TerminalOutputAck = function (properties) {
+            if (properties)
+                for (let keys = $Object.keys(properties), i = 0; i < keys.length; ++i)
+                    if (properties[keys[i]] != null && keys[i] !== "__proto__")
+                        this[keys[i]] = properties[keys[i]];
+        };
+
+        /**
+         * TerminalOutputAck seq.
+         * @member {number} seq
+         * @memberof cloudcli.TerminalOutputAck
+         * @instance
+         */
+        TerminalOutputAck.prototype.seq = 0;
+
+        /**
+         * Encodes the specified TerminalOutputAck message. Does not implicitly {@link cloudcli.TerminalOutputAck.verify|verify} messages.
+         * @function encode
+         * @memberof cloudcli.TerminalOutputAck
+         * @static
+         * @param {cloudcli.TerminalOutputAck.$Properties} message TerminalOutputAck message or plain object to encode
+         * @param {$protobuf.Writer} [writer] Writer to encode to
+         * @returns {$protobuf.Writer} Writer
+         */
+        TerminalOutputAck.encode = function (message, writer, _depth) {
+            if (!writer)
+                writer = $Writer.create();
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $util.recursionLimit)
+                throw $Error("max depth exceeded");
+            if (message.seq != null && $Object.hasOwnProperty.call(message, "seq") && message.seq !== 0)
+                writer.uint32(/* id 1, wireType 0 =*/8).uint32(message.seq);
+            if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
+                for (let i = 0; i < message.$unknowns.length; ++i)
+                    writer.raw(message.$unknowns[i]);
+            return writer;
+        };
+
+        /**
+         * Decodes a TerminalOutputAck message from the specified reader or buffer.
+         * @function decode
+         * @memberof cloudcli.TerminalOutputAck
+         * @static
+         * @param {$protobuf.Reader|Uint8Array} reader Reader or buffer to decode from
+         * @param {number} [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalOutputAck & cloudcli.TerminalOutputAck.$Shape} TerminalOutputAck
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        TerminalOutputAck.decode = function (reader, length, _end, _depth, _target) {
+            if (!(reader instanceof $Reader))
+                reader = $Reader.create(reader);
+            if (_depth === $undefined)
+                _depth = 0;
+            if (_depth > $Reader.recursionLimit)
+                throw $Error("max depth exceeded");
+            let end, message, value;
+            if (length === $undefined)
+                end = reader.len;
+            else {
+                end = reader.pos + length;
+                if (end > reader.len)
+                    throw $RangeError("index out of range");
+                length = reader.len;
+                reader.len = end;
+            }
+            message = _target || new $root.cloudcli.TerminalOutputAck();
+            while (reader.pos < end) {
+                let start = reader.pos;
+                let tag = reader.tag();
+                if (tag === _end) {
+                    _end = $undefined;
+                    break;
+                }
+                let wireType = tag & 7;
+                switch (tag >>>= 3) {
+                case 1: {
+                        if (wireType !== 0)
+                            break;
+                        if (value = reader.uint32())
+                            message.seq = value;
+                        else
+                            delete message.seq;
+                        continue;
+                    }
+                }
+                reader.skipType(wireType, _depth, tag);
+                if (!reader.discardUnknown) {
+                    $util.makeProp(message, "$unknowns", false);
+                    (message.$unknowns || (message.$unknowns = [])).push(reader.raw(start, reader.pos));
+                }
+            }
+            if (length !== $undefined) {
+                if (reader.pos !== end)
+                    throw $RangeError("index out of range");
+                reader.len = length;
+            }
+            if (_end !== $undefined)
+                throw $Error("missing end group");
+            return message;
+        };
+
+        /**
+         * Gets the type url for TerminalOutputAck
+         * @function getTypeUrl
+         * @memberof cloudcli.TerminalOutputAck
+         * @static
+         * @param {string} [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns {string} The type url
+         */
+        TerminalOutputAck.getTypeUrl = function(prefix) {
+            if (prefix === $undefined)
+                prefix = "type.googleapis.com";
+            return prefix + "/cloudcli.TerminalOutputAck";
+        };
+
+        return TerminalOutputAck;
+    })();
+
     cloudcli.TerminalClientMessage = (function() {
 
         /**
@@ -1188,7 +1338,8 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {cloudcli.TerminalResize.$Properties|null} [resize] TerminalClientMessage resize
          * @property {cloudcli.TerminalClose.$Properties|null} [close] TerminalClientMessage close
          * @property {cloudcli.Ping.$Properties|null} [ping] TerminalClientMessage ping
-         * @property {"init"|"input"|"resize"|"close"|"ping"} [body] TerminalClientMessage body
+         * @property {cloudcli.TerminalOutputAck.$Properties|null} [outputAck] TerminalClientMessage outputAck
+         * @property {"init"|"input"|"resize"|"close"|"ping"|"outputAck"} [body] TerminalClientMessage body
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -1208,9 +1359,10 @@ export const cloudcli = $root.cloudcli = (() => {
          *   resize?: cloudcli.TerminalResize.$Shape|null;
          *   close?: cloudcli.TerminalClose.$Shape|null;
          *   ping?: cloudcli.Ping.$Shape|null;
+         *   outputAck?: cloudcli.TerminalOutputAck.$Shape|null;
          *   $unknowns?: Array.<Uint8Array>;
          * } & (
-         *   ({ body?: undefined; init?: null; input?: null; resize?: null; close?: null; ping?: null }|{ body?: "init"; init: cloudcli.TerminalInit.$Shape; input?: null; resize?: null; close?: null; ping?: null }|{ body?: "input"; init?: null; input: cloudcli.TerminalInput.$Shape; resize?: null; close?: null; ping?: null }|{ body?: "resize"; init?: null; input?: null; resize: cloudcli.TerminalResize.$Shape; close?: null; ping?: null }|{ body?: "close"; init?: null; input?: null; resize?: null; close: cloudcli.TerminalClose.$Shape; ping?: null }|{ body?: "ping"; init?: null; input?: null; resize?: null; close?: null; ping: cloudcli.Ping.$Shape })
+         *   ({ body?: undefined; init?: null; input?: null; resize?: null; close?: null; ping?: null; outputAck?: null }|{ body?: "init"; init: cloudcli.TerminalInit.$Shape; input?: null; resize?: null; close?: null; ping?: null; outputAck?: null }|{ body?: "input"; init?: null; input: cloudcli.TerminalInput.$Shape; resize?: null; close?: null; ping?: null; outputAck?: null }|{ body?: "resize"; init?: null; input?: null; resize: cloudcli.TerminalResize.$Shape; close?: null; ping?: null; outputAck?: null }|{ body?: "close"; init?: null; input?: null; resize?: null; close: cloudcli.TerminalClose.$Shape; ping?: null; outputAck?: null }|{ body?: "ping"; init?: null; input?: null; resize?: null; close?: null; ping: cloudcli.Ping.$Shape; outputAck?: null }|{ body?: "outputAck"; init?: null; input?: null; resize?: null; close?: null; ping?: null; outputAck: cloudcli.TerminalOutputAck.$Shape })
          * )} cloudcli.TerminalClientMessage.$Shape
          */
 
@@ -1269,17 +1421,25 @@ export const cloudcli = $root.cloudcli = (() => {
          */
         TerminalClientMessage.prototype.ping = null;
 
+        /**
+         * TerminalClientMessage outputAck.
+         * @member {cloudcli.TerminalOutputAck.$Properties|null|undefined} outputAck
+         * @memberof cloudcli.TerminalClientMessage
+         * @instance
+         */
+        TerminalClientMessage.prototype.outputAck = null;
+
         // OneOf field names bound to virtual getters and setters
         let $oneOfFields;
 
         /**
          * TerminalClientMessage body.
-         * @member {"init"|"input"|"resize"|"close"|"ping"|undefined} body
+         * @member {"init"|"input"|"resize"|"close"|"ping"|"outputAck"|undefined} body
          * @memberof cloudcli.TerminalClientMessage
          * @instance
          */
         $Object.defineProperty(TerminalClientMessage.prototype, "body", {
-            get: $util.oneOfGetter($oneOfFields = ["init", "input", "resize", "close", "ping"]),
+            get: $util.oneOfGetter($oneOfFields = ["init", "input", "resize", "close", "ping", "outputAck"]),
             set: $util.oneOfSetter($oneOfFields)
         });
 
@@ -1309,6 +1469,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 $root.cloudcli.TerminalClose.encode(message.close, writer.uint32(/* id 4, wireType 2 =*/34).fork(), _depth + 1).ldelim();
             if (message.ping != null && $Object.hasOwnProperty.call(message, "ping"))
                 $root.cloudcli.Ping.encode(message.ping, writer.uint32(/* id 5, wireType 2 =*/42).fork(), _depth + 1).ldelim();
+            if (message.outputAck != null && $Object.hasOwnProperty.call(message, "outputAck"))
+                $root.cloudcli.TerminalOutputAck.encode(message.outputAck, writer.uint32(/* id 8, wireType 2 =*/66).fork(), _depth + 1).ldelim();
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -1386,6 +1548,13 @@ export const cloudcli = $root.cloudcli = (() => {
                             break;
                         message.ping = $root.cloudcli.Ping.decode(reader, reader.uint32(), $undefined, _depth + 1, message.ping);
                         message.body = "ping";
+                        continue;
+                    }
+                case 8: {
+                        if (wireType !== 2)
+                            break;
+                        message.outputAck = $root.cloudcli.TerminalOutputAck.decode(reader, reader.uint32(), $undefined, _depth + 1, message.outputAck);
+                        message.body = "outputAck";
                         continue;
                     }
                 }

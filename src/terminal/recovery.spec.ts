@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'vitest';
 import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import {
@@ -162,7 +162,7 @@ describe('terminal renderer recovery', () => {
     cleanup();
   });
 
-  test('OMP sees synchronized output support and its current state through the input socket', async () => {
+  test('native terminal replies use the input socket without a custom mode-report handler', async () => {
     const harness = createHarness();
     const { cleanup } = loadLoop('terminal', harness);
     const output = harness.sockets[0];
@@ -170,19 +170,12 @@ describe('terminal renderer recovery', () => {
     emitServerMessage(harness, output, { type: 'ready', sessionGeneration: 'mode-probe' });
     const input = await readyInputConnection(harness, 'mode-probe');
     const terminal = harness.terminalInstances[0];
-    const query = terminal.modeReportHandlers.get('?')!;
-    query([2026]);
-    terminal.modes.synchronizedOutputMode = true;
-    query([2026]);
-    terminal.modes.synchronizedOutputMode = false;
-    query([2026]);
-    query([9999]);
-    terminal.modeReportHandlers.get('')!([2026]);
+    terminal.emitData('\x1b[?2026;2$y');
+    terminal.emitData('\x1b[?2004;1$y');
     expect(sentMessagesOfType(input, 'input').map((message) => message.data)).toEqual([
-      '\x1b[?2026;2$y', '\x1b[?2026;1$y', '\x1b[?2026;2$y', '\x1b[?9999;0$y', '\x1b[2026;0$y',
+      '\x1b[?2026;2$y', '\x1b[?2004;1$y',
     ]);
     cleanup();
-    expect(terminal.modeReportHandlers.size).toBe(0);
   });
 
   test('alternate-screen animation parses only dirty rows instead of forcing a full refresh', () => {
@@ -196,7 +189,7 @@ describe('terminal renderer recovery', () => {
     terminal.buffer.active.baseY = 20;
     terminal.buffer.active.viewportY = 10;
     terminal.emitParsed();
-    expect(terminal.refreshCalls).toBeGreaterThan(before);
+    expect(terminal.refreshCalls).toBe(before);
     cleanup();
   });
 
@@ -215,7 +208,7 @@ describe('terminal renderer recovery', () => {
     cleanup();
   });
 
-  test('the base terminal font redraws the existing renderer without reconnecting', async () => {
+  test('opening a terminal does not switch font families or remeasure after connecting', async () => {
     const harness = createHarness();
     let releaseFonts!: () => void;
     const fontsReady = new Promise<void>((resolve) => { releaseFonts = resolve; });
@@ -224,12 +217,12 @@ describe('terminal renderer recovery', () => {
     const { cleanup } = loadLoop('terminal', harness);
     const socket = harness.sockets[0];
     const terminal = harness.terminalInstances[0];
-    // Only the regular base chunk gates the cell measurement; bold loads on first use.
-    expect(fonts.loadCalls).toEqual([['14px "Maple Mono NF CN"', 'W']]);
+    // The entry point loads the measuring glyphs before any pane is opened.
+    expect(fonts.loadCalls).toEqual([]);
     const before = terminal.refreshCalls;
     releaseFonts();
     await flushMicrotasks();
-    expect(terminal.refreshCalls).toBeGreaterThan(before);
+    expect(terminal.refreshCalls).toBe(before);
     expect(terminal.options.fontFamily).toContain('Maple Mono NF CN');
     expect(harness.terminalInstances).toHaveLength(1);
     expect(harness.sockets).toHaveLength(1);
@@ -251,19 +244,15 @@ describe('terminal renderer recovery', () => {
     expect(fonts.listenerCount('loadingdone')).toBe(0);
   });
 
-  test('a font download completing after unmount cannot revive timers or a disposed terminal', async () => {
+  test('font events after unmount cannot revive timers or a disposed terminal', () => {
     const harness = createHarness();
-    let releaseFonts!: () => void;
-    const fontsReady = new Promise<void>((resolve) => { releaseFonts = resolve; });
-    const fonts = new FakeFontFaceSet(fontsReady);
+    const fonts = new FakeFontFaceSet(Promise.resolve());
     harness.document.fonts = fonts;
     const { cleanup } = loadLoop('terminal', harness);
     const terminal = harness.terminalInstances[0];
     cleanup();
     const before = terminal.refreshCalls;
-    releaseFonts();
     fonts.dispatch('loadingdone');
-    await flushMicrotasks();
     expect(terminal.disposed).toBe(true);
     expect(terminal.refreshCalls).toBe(before);
     expect(terminal.textureAtlasClears).toBe(0);
@@ -373,15 +362,16 @@ describe('terminal client snapshot recovery', () => {
     const { cleanup } = loadLoop('terminal', harness);
     const output = harness.sockets[0];
     const terminal = harness.terminalInstances[0];
+    const initialGrid = [terminal.cols, terminal.rows];
     output.open();
     emitServerMessage(harness, output, { type: 'ready', reset: true, lastSeq: 12,
       sessionGeneration: 'snapshot-size', cols: 40, rows: 10 });
     await flushMicrotasks();
-    expect([terminal.cols, terminal.rows]).toEqual([80, 24]);
+    expect([terminal.cols, terminal.rows]).toEqual(initialGrid);
     terminal.deferWrites = true;
     emitServerMessage(harness, output, { type: 'output', data: 'saved screen' });
     await flushMicrotasks();
-    expect([terminal.cols, terminal.rows]).toEqual([80, 24]);
+    expect([terminal.cols, terminal.rows]).toEqual(initialGrid);
     expect(terminal.writeCallbacks).toHaveLength(1);
     terminal.deferWrites = false;
     terminal.writeCallbacks.shift()!();

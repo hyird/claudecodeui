@@ -1,6 +1,7 @@
 {
   "scrollbackLines": 10000,
   "snapshotMaxBytes": 16777216,
-  "outputBatchesPerSecond": 25,
-  "renderFramesPerSecond": 25
+  "outputHighWaterBytes": 262144,
+  "outputLowWaterBytes": 65536,
+  "outputAckBatchBytes": 65536
 }

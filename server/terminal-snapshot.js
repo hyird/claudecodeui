@@ -1,10 +1,6 @@
 import terminalPolicy from '../shared/terminal-policy.json' with { type: 'json' };
 
 export const TERMINAL_SCROLLBACK_LINES = terminalPolicy.scrollbackLines;
-// xterm discards writes (and throws) once about 50 million UTF-16 units wait for its
-// time-sliced parser. UTF-8 bytes never undercount UTF-16 units, so a byte watermark
-// below that keeps headless copies safe while still fitting a whole 16 MiB restore.
-export const TERMINAL_PARSE_BACKLOG_LIMIT = 32 * 1024 * 1024;
 
 export function serializeTerminalSnapshot(terminal, serializer, mouseMode = '') {
   const budget = terminalPolicy.snapshotMaxBytes;

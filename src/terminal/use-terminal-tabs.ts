@@ -82,7 +82,7 @@ function cleanTerminalTitle(title: string) {
       cleaned += char;
     }
   }
-  return cleaned.trim().replace(SPINNER_TITLE_PREFIX, '').trim().slice(0, 80);
+  return cleaned.trim().replace(SPINNER_TITLE_PREFIX, '').trim().slice(0, 4096);
 }
 
 

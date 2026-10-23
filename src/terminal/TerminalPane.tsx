@@ -10,9 +10,10 @@ import { copyToClipboard, readClipboardText } from './clipboard';
 import type { TerminalPreferences, TerminalStatus } from './types';
 import { connectTerminal, type TerminalConnection } from './connection';
 import { useTerminalLayout } from './use-terminal-layout';
+import { attachTerminalTouchScroll } from './touch-scroll';
 import terminalPolicy from '../../shared/terminal-policy.json';
 import {
-  configureTerminalRenderer, registerTerminalModeReports, TERMINAL_FONT_FAMILY,
+  configureTerminalRenderer, TERMINAL_FONT_FAMILY,
   TERMINAL_SCROLLBAR_GUTTER,
   type TerminalRenderer,
 } from './renderer';
@@ -27,7 +28,6 @@ type TerminalPaneProps = {
   authToken: string;
   preferences: TerminalPreferences;
   onStatusChange: (tabId: string, status: TerminalStatus) => void;
-  onTitleChange: (tabId: string, title: string) => void;
 };
 
 function TerminalPane({
@@ -37,7 +37,6 @@ function TerminalPane({
   authToken,
   preferences,
   onStatusChange,
-  onTitleChange,
 }: TerminalPaneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -54,7 +53,7 @@ function TerminalPane({
   useEffect(() => { focusOnMountRef.current = focusOnMount; }, [focusOnMount]);
 
   const sendResize = useCallback((cols: number, rows: number) => connectionRef.current?.resize(cols, rows), []);
-  const { clearResizeTimers, clearScreenTransform, fitAndResize, proposeFrameDimensions,
+  const { clearResizeTimers, fitAndResize,
     resizeAfterLayoutSettles, resizeDuringDrag, forceFullRefresh, updateScrollbackAffordance, reset: resetLayout }
     = useTerminalLayout({ terminalRef, fitAddonRef, containerRef, onResize: sendResize });
   useEffect(() => {
@@ -102,10 +101,10 @@ function TerminalPane({
     }));
 
     terminal.open(container);
+    const disposeTouchScroll = attachTerminalTouchScroll(terminal, container);
     const renderer = configureTerminalRenderer(terminal, resizeAfterLayoutSettles, forceFullRefresh);
     renderer.setActive(activeRef.current);
     rendererRef.current = renderer;
-    const modeReports = registerTerminalModeReports(terminal);
     // Input handling mirrors cloudcli-plugin-terminal's TerminalSession.
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true;
@@ -130,7 +129,7 @@ function TerminalPane({
         return true;
       }
 
-      if (terminal.buffer.active.baseY <= 0) {
+      if (terminal.buffer.active.type !== 'alternate' && terminal.buffer.active.baseY <= 0) {
         event.preventDefault();
         event.stopPropagation();
         return false;
@@ -152,28 +151,9 @@ function TerminalPane({
     connectionRef.current = connection;
     const sendInput = connection.sendInput;
     const dataSubscription = terminal.onData(sendInput);
-    const titleSubscription = terminal.onTitleChange((title) => {
-      onTitleChange(tabId, title);
-    });
-    const refreshAfterTerminalChange = () => {
-      updateScrollbackAffordance();
-      forceFullRefresh();
-    };
-    const scrollSubscription = terminal.onScroll(() => {
-      refreshAfterTerminalChange();
-    });
-    const writeParsedSubscription = terminal.onWriteParsed(() => {
-      // xterm tracks dirty rows and schedules rendering after parsing. A full
-      // viewport refresh here would repaint every row for every output batch.
-      updateScrollbackAffordance();
-      const buffer = terminal.buffer.active;
-      if (buffer.viewportY !== buffer.baseY) {
-        forceFullRefresh();
-      }
-    });
-    const resizeSubscription = terminal.onResize(() => {
-      refreshAfterTerminalChange();
-    });
+    const scrollSubscription = terminal.onScroll(updateScrollbackAffordance);
+    const writeParsedSubscription = terminal.onWriteParsed(updateScrollbackAffordance);
+    const resizeSubscription = terminal.onResize(updateScrollbackAffordance);
     const resizeObserver = new ResizeObserver(() => {
       if (activeRef.current) {
         resizeDuringDrag();
@@ -184,14 +164,12 @@ function TerminalPane({
     return () => {
       disposed = true;
       connection.dispose();
+      disposeTouchScroll();
       clearResizeTimers();
-      clearScreenTransform();
       dataSubscription.dispose();
-      titleSubscription.dispose();
       scrollSubscription.dispose();
       writeParsedSubscription.dispose();
       resizeSubscription.dispose();
-      modeReports.dispose();
       resizeObserver.disconnect();
       renderer.dispose();
       rendererRef.current = null;
@@ -203,11 +181,8 @@ function TerminalPane({
     };
   }, [
     clearResizeTimers,
-    clearScreenTransform,
     fitAndResize,
     onStatusChange,
-    onTitleChange,
-    proposeFrameDimensions,
     resizeAfterLayoutSettles,
     resizeDuringDrag,
     forceFullRefresh,
@@ -236,14 +211,37 @@ function TerminalPane({
     resizeAfterLayoutSettles();
     // Only a newly shown pane takes focus; a font-size change must not pull
     // focus away from the settings stepper.
-    if (becameActive && focusOnMountRef.current) {
+    if (becameActive && focusOnMountRef.current && !window.matchMedia?.('(pointer: coarse)').matches) {
       terminal.focus();
     }
   }, [active, preferences.fontSize, resizeAfterLayoutSettles]);
 
   return (
     <div className="terminal-pane">
-      <div id={`terminal-frame-${tabId}`} ref={containerRef} className="terminal-frame" />
+      <div id={`terminal-frame-${tabId}`} className="terminal-frame">
+        <div ref={containerRef} className="terminal-host" />
+      </div>
+      <div className="terminal-touch-toolbar" role="toolbar" aria-label="终端快捷键">
+        <button type="button" onPointerDown={(event) => event.preventDefault()} onClick={() => {
+          const terminal = terminalRef.current;
+          if (terminal?.textarea === document.activeElement) terminal.blur();
+          else terminal?.focus();
+        }}>键盘</button>
+        {[
+          ['Esc', '\x1b', 'Escape'], ['Tab', '\t', 'Tab'], ['Ctrl+C', '\x03', '中断命令'],
+          ['←', 'D', '向左'], ['↓', 'B', '向下'], ['↑', 'A', '向上'], ['→', 'C', '向右'],
+        ].map(([label, value, description]) => (
+          <button key={label} type="button" aria-label={description}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => {
+              const terminal = terminalRef.current;
+              if (!terminal) return;
+              const data = value.length === 1 && /[ABCD]/.test(value)
+                ? `\x1b${terminal.modes.applicationCursorKeysMode ? 'O' : '['}${value}` : value;
+              terminal.input(data, true);
+            }}>{label}</button>
+        ))}
+      </div>
       <div className="terminal-notices">
         {sessionRebuiltNoticeVisible && (
           <div className="terminal-session-notice" role="status" aria-live="polite" aria-atomic="true">

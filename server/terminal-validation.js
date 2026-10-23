@@ -17,5 +17,5 @@ export function cleanTerminalTitle(title) {
     .trim()
     .replace(SPINNER_TITLE_PREFIX, '')
     .trim()
-    .slice(0, 80);
+    .slice(0, 4096);
 }

@@ -12,10 +12,7 @@ import { inflateSync } from 'node:zlib';
 import { WebSocket } from 'ws';
 import { cloudcli } from '../proto/messages.js';
 
-// This suite runs under node:test (Bun's runner cannot host node:test files), but the
-// server under test is Bun-only: it imports bun:sqlite and bun-pty. So it is launched
-// with Bun rather than the current interpreter. Set BUN_BIN if bun is not on PATH.
-const BUN_BIN = process.env.BUN_BIN || 'bun';
+const NODE_BIN = process.execPath;
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const {
@@ -104,8 +101,7 @@ function getFreePort() {
   });
 }
 
-// Bun's built-in `ws` client does not surface the rejected handshake's HTTP
-// status in its error, so read the status line straight off the socket.
+// Read rejected upgrade status directly without depending on client error formatting.
 function wsHandshakeStatus(pathname, token, protocols) {
   return new Promise((resolve, reject) => {
     const target = new URL(baseUrl);
@@ -200,7 +196,7 @@ async function waitForHealth(url) {
   }
 
   throw new Error(
-    `Timed out waiting for the Bun server on ${url}.\n`
+    `Timed out waiting for the Node server on ${url}.\n`
     + `Last error: ${lastError?.message ?? 'none'}\n`
     + `Server output:\n${serverOutput || '(none)'}`,
   );
@@ -274,7 +270,7 @@ before(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
   wsBaseUrl = `ws://127.0.0.1:${port}`;
   testDbPath = path.join(os.tmpdir(), `cloudcli-auth-${process.pid}-${Date.now()}.sqlite`);
-  serverProcess = spawn(BUN_BIN, ['server/index.js'], {
+  serverProcess = spawn(NODE_BIN, [process.env.CLOUDCLI_TEST_SERVER_ENTRY || 'server/index.js'], {
     cwd: fileURLToPath(new URL('..', import.meta.url)),
     env: {
       ...process.env,
@@ -288,7 +284,7 @@ before(async () => {
   // Keep the server's own output so a failed boot reports the real cause instead of
   // just a health-check timeout.
   serverProcess.once('error', (error) => {
-    serverOutput += `failed to spawn "${BUN_BIN}": ${error.message}\n`;
+    serverOutput += `failed to spawn "${NODE_BIN}": ${error.message}\n`;
   });
   serverProcess.stdout.on('data', (chunk) => { serverOutput += chunk.toString('utf8'); });
   serverProcess.stderr.on('data', (chunk) => { serverOutput += chunk.toString('utf8'); });
@@ -970,6 +966,11 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
   let pingAt = null;
   let pongAt = null;
   let complete = false;
+  let holdingCredit = true;
+  let holdTimer;
+  let latestSeq = 0;
+  let heldBytes;
+  let bytesBeforeResume;
 
   const done = new Promise((resolve, reject) => {
     const timeout = setTimeout(
@@ -1002,7 +1003,21 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
       const decoded = message.output.compressed ? inflateSync(payload) : Buffer.from(payload);
       largestOutputFrame = Math.max(largestOutputFrame, decoded.byteLength);
       text += decoded.toString('utf8');
-      if (pingAt === null && text.length > 4096) {
+      latestSeq = message.seq;
+      if (!holdingCredit) socket.send(TerminalClientMessage.encode({ outputAck: { seq: latestSeq } }).finish());
+      if (holdingCredit && !holdTimer && text.length >= 256 * 1024) {
+        // Deliberately stop consuming: the real PTY must stop producing output.
+        // Give already-read native pipe data time to arrive, then observe a plateau.
+        holdTimer = setTimeout(() => {
+          heldBytes = text.length;
+          setTimeout(() => {
+            bytesBeforeResume = text.length;
+            holdingCredit = false;
+            socket.send(TerminalClientMessage.encode({ outputAck: { seq: latestSeq } }).finish());
+          }, 50);
+        }, 100);
+      }
+      if (pingAt === null && text.length >= 256 * 1024) {
         pingAt = performance.now();
         socket.send(TerminalClientMessage.encode({ ping: {} }).finish());
       }
@@ -1054,6 +1069,8 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
   assert.ok(normalizedText.includes(`${expected}\n__DONE__`), 'every sequence line must arrive intact and in order');
   assert.ok(pongAt !== null && pingAt !== null && pongAt - pingAt < 250,
     `control traffic stalled during bulk output: ${pongAt - pingAt} ms`);
+  assert.equal(bytesBeforeResume, heldBytes, 'the PTY must pause until consumption credit returns');
+  assert.ok(heldBytes < SEQ_OUTPUT_MIN_CHARS, 'the producer must not finish while credit is withheld');
 
   socket.send(TerminalClientMessage.encode({ close: {} }).finish());
   socket.close();

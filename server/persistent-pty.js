@@ -6,6 +6,7 @@ const INPUT_TIMEOUT_MS = 5000;
 
 const disabledBackend = Object.freeze({
   enabled: false,
+  backend: null,
   sessionIds: new Set(),
   count: () => 0,
   prepare: async () => null,
@@ -30,6 +31,7 @@ export async function createPersistentPtyBackend({
   const pending = new Map();
   let requestId = 0;
   let control = null;
+  let backend = 'legacy-pty';
 
   const replaceSessionIds = (ids) => {
     sessionIds.clear();
@@ -84,7 +86,10 @@ export async function createPersistentPtyBackend({
     connection.ready = new Promise((resolve, reject) => {
       socket.once('connect', resolve);
       socket.once('close', () => reject(failure ?? new Error('PTY service disconnected')));
-    }).then(() => send(connection, { type: 'subscribe' })).then((reply) => replaceSessionIds(reply.ids));
+    }).then(() => send(connection, { type: 'subscribe' })).then((reply) => {
+      backend = reply.backend || 'legacy-pty';
+      replaceSessionIds(reply.ids);
+    });
     // Failures surface through request(); a dropped connection is reopened lazily.
     connection.ready.catch(() => {});
     return connection;
@@ -140,10 +145,15 @@ export async function createPersistentPtyBackend({
       } else if (message.error) socket.destroy();
     });
     return {
+      pid: prepared.pid,
       onData(callback) { onData = callback; },
       onExit(callback) { onExit = callback; },
       onDisconnect(callback) { onDisconnect = callback; },
       onResize(callback) { onResize = callback; },
+      // Native stream pressure propagates through the IPC socket to the
+      // broker's writable/drain handling. The write direction stays available.
+      pause() { socket.pause(); },
+      resume() { socket.resume(); },
       write(data) { sendToSession({ type: 'write', data }); },
       writeInput(data, streamId, inputSeq) {
         if (socket.destroyed) return Promise.reject(new Error('PTY service disconnected'));
@@ -176,6 +186,7 @@ export async function createPersistentPtyBackend({
 
   return {
     enabled: true,
+    get backend() { return backend; },
     // Live ids, kept current by the service; read without I/O.
     sessionIds,
     count() { return sessionIds.size; },

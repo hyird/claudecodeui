@@ -4,24 +4,26 @@
   "private": true,
   "type": "module",
   "workspaces": ["packages/*"],
+  "engines": { "node": ">=24" },
   "scripts": {
-    "postinstall": "bun scripts/prepare-fonts.js",
-    "dev": "bun scripts/prepare-fonts.js && concurrently -k \"bun server/index.js\" \"vite --host 0.0.0.0\"",
-    "server": "bun server/index.js",
-    "build": "bun run build:web && bun run build:server",
-    "build:web": "bun scripts/prepare-fonts.js && tsc --noEmit && vite build",
-    "build:server": "bun build server/index.js --target=bun --outfile dist-server/server.js && bun build server/pty-broker.js --target=bun --outfile dist-server/pty-broker.js",
+    "postinstall": "node scripts/prepare-fonts.js",
+    "dev": "node scripts/prepare-fonts.js && concurrently -k \"node server/index.js\" \"vite --host 0.0.0.0\"",
+    "server": "node server/index.js",
+    "build": "npm run build:web && npm run build:server",
+    "build:web": "node scripts/prepare-fonts.js && tsc --noEmit && vite build",
+    "build:server": "node scripts/build-server.mjs",
     "preview": "vite preview --host 0.0.0.0",
-    "start": "bun server/index.js",
-    "test": "concurrently --max-processes 1 --group --names types,node,bun \"bun run test:types\" \"bun run test:node\" \"bun run test:bun\"",
+    "start": "node server/index.js",
+    "test": "concurrently --max-processes 1 --group --names types,node,spec \"npm run test:types\" \"npm run test:node\" \"npm run test:spec\"",
     "test:types": "tsc -p tsconfig.spec.json",
     "test:node": "node --test \"server/*.test.js\"",
-    "test:bun": "bun test spec",
+    "test:spec": "vitest run",
     "smoke:browser": "node scripts/browser-smoke.mjs",
     "proto": "pbjs -t static-module -w es6 --no-create --no-verify --no-convert --no-delimited -o proto/messages.js proto/messages.proto && pbts -o proto/messages.d.ts proto/messages.js"
   },
   "dependencies": {
-    "@cloud-terminal/maple-mono-nf-cn": "workspace:*",
+    "@cloud-terminal/maple-mono-nf-cn": "*",
+    "@hono/node-server": "^2.1.5",
     "@xterm/addon-clipboard": "0.2.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-serialize": "0.14.0",
@@ -30,27 +32,27 @@
     "@xterm/addon-webgl": "0.19.0",
     "@xterm/headless": "6.0.0",
     "@xterm/xterm": "6.0.0",
-    "bun-pty": "^0.4.11",
+    "better-sqlite3": "^13.0.3",
+    "node-pty": "^1.1.0",
     "hono": "^4.13.13",
     "lucide-react": "^0.468.0",
     "protobufjs": "^8.8.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.2",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.20.5",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^9.2.4",
+    "esbuild": "^0.28.2",
     "protobufjs-cli": "^2.7.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.4",
     "vite-plugin-singlefile": "^2.3.3",
-    "ws": "^8.22.0"
-  },
-  "patchedDependencies": {
-    "bun-pty@0.4.11": "patches/bun-pty@0.4.11.patch"
+    "vitest": "^5.0.5"
   }
 }

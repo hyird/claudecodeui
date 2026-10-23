@@ -12,13 +12,12 @@ Group=@GROUP@
 WorkingDirectory=@BASE@/current
 Environment=HOME=@HOME@
 Environment=SHELL=/bin/bash
-Environment=PATH=@BUN_DIR@:@HOME@/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=@NODE_DIR@:@HOME@/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PORT=@PORT@
 Environment=CLOUDCLI_DB_PATH=@BASE@/data/auth.sqlite
-Environment=BUN_PTY_LIB=@BASE@/current/librust_pty.so
 Environment=CLOUDCLI_PERSIST_TERMINALS=1
 Environment=CLOUDCLI_PTY_SOCKET=/run/cloud-terminal/pty.sock
-ExecStart=@BUN@ @BASE@/current/server.js
+ExecStart=@NODE@ @BASE@/current/server.js
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=10s
@@ -27,8 +26,7 @@ LimitNOFILE=65536
 
 # Sandbox. Shells run in @PTY_SERVICE@, so this process only serves HTTP and
 # WebSockets, writes SQLite (plus -wal/-shm) under data/, reads current/, and
-# connects to the PTY socket. The server bundles carry the `// @bun` pragma, so
-# Bun keeps no transpiler cache and needs no writable home.
+# connects to the PTY socket. Node loads the bundles and native addons read-only.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict

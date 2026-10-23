@@ -12,11 +12,11 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
 const skip = process.platform === 'win32' && 'deployment scripts run under a POSIX bash';
 
 const LEGACY_HEALTH = '{"ok":true,"sessions":2}';
-const PERSISTENT_HEALTH = '{"ok":true,"sessions":2,"persistentSessions":true,"persistentBackend":"bun-pty"}';
+const PERSISTENT_HEALTH = '{"ok":true,"sessions":2,"persistentSessions":true,"persistentBackend":"node-pty"}';
 
 // A copy of the deploy script in a throwaway project with stand-in build output,
-// and fake curl/sudo/bun that record what the script asked them to do.
-function createFakeProject({ health, bunExit = 0 }) {
+// and fake curl/sudo/npm that record what the script asked them to do.
+function createFakeProject({ health, npmExit = 0 }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-deploy-'));
   const write = (relative, content, mode = 0o644) => {
     const file = path.join(root, relative);
@@ -27,7 +27,7 @@ function createFakeProject({ health, bunExit = 0 }) {
     write(relative, fs.readFileSync(path.join(projectDir, relative)));
   }
   for (const relative of ['dist/index.html', 'dist/logo.svg', 'dist-server/server.js', 'dist-server/pty-broker.js',
-    'node_modules/bun-pty/rust-pty/target/release/librust_pty.so']) {
+    'dist-server/node_modules/node-pty/index.js', 'dist-server/node_modules/better-sqlite3/index.js', 'dist-server/package.json']) {
     write(relative, 'stand-in');
   }
   // health is the /api/health payload per call; the last one repeats.
@@ -39,7 +39,7 @@ echo "$n" > "$FAKE_STATE/curl-calls"
 cat "$FAKE_STATE/health-$n"
 `, 0o755);
   write('bin/sudo', '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$FAKE_STATE/sudo.log"\n', 0o755);
-  write('bin/bun', `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$FAKE_STATE/bun.log"\nexit ${bunExit}\n`, 0o755);
+  write('bin/npm', `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$FAKE_STATE/npm.log"\nexit ${npmExit}\n`, 0o755);
 
   const read = (name) => {
     const file = path.join(root, 'state', name);
@@ -52,7 +52,7 @@ cat "$FAKE_STATE/health-$n"
       env: { ...process.env, PATH: `${path.join(root, 'bin')}:${process.env.PATH}`, FAKE_STATE: path.join(root, 'state') },
     }),
     sudoLog: () => read('sudo.log'),
-    bunLog: () => read('bun.log'),
+    npmLog: () => read('npm.log'),
     remove: () => fs.rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -64,7 +64,7 @@ test('local deployment refuses to restart active legacy terminal sessions by def
     assert.equal(result.status, 1);
     assert.match(result.stderr, /refusing to restart cloud-terminal\.service with 2 active terminal session/);
     assert.match(result.stderr, /explicitly use --force/);
-    assert.equal(project.bunLog(), '');
+    assert.equal(project.npmLog(), '');
     assert.equal(project.sudoLog(), '');
   } finally {
     project.remove();
@@ -72,23 +72,36 @@ test('local deployment refuses to restart active legacy terminal sessions by def
 });
 
 test('--force deploys over active legacy terminal sessions', { skip }, () => {
-  const project = createFakeProject({ health: [LEGACY_HEALTH], bunExit: 23 });
+  const project = createFakeProject({ health: [LEGACY_HEALTH], npmExit: 23 });
   try {
     const result = project.run('--force');
     assert.equal(result.status, 23, result.stderr);
-    assert.equal(project.bunLog(), 'run build\n');
+    assert.equal(project.npmLog(), 'run build\n');
   } finally {
     project.remove();
   }
 });
 
 test('persistent sessions are allowed through the deployment guard without a forced restart', { skip }, () => {
-  const project = createFakeProject({ health: [PERSISTENT_HEALTH], bunExit: 23 });
+  const project = createFakeProject({ health: [PERSISTENT_HEALTH], npmExit: 23 });
   try {
     const result = project.run();
     assert.equal(result.status, 23, result.stderr);
-    assert.equal(project.bunLog(), 'run build\n');
+    assert.equal(project.npmLog(), 'run build\n');
     assert.doesNotMatch(result.stderr, /refusing to restart/);
+  } finally {
+    project.remove();
+  }
+});
+
+test('an older persistent broker remains running while its web runtime is migrated', { skip }, () => {
+  const health = '{"ok":true,"sessions":2,"persistentSessions":true,"persistentBackend":"legacy-pty"}';
+  const project = createFakeProject({ health: [health], npmExit: 23 });
+  try {
+    const result = project.run();
+    assert.equal(result.status, 23, result.stderr);
+    assert.equal(project.npmLog(), 'run build\n');
+    assert.doesNotMatch(project.sudoLog(), /systemctl (?:restart|stop).*pty/);
   } finally {
     project.remove();
   }
@@ -100,7 +113,7 @@ test('a legacy session opened during build and test stops the deployment before 
     const result = project.run();
     assert.equal(result.status, 1);
     assert.match(result.stderr, /refusing to restart/);
-    assert.equal(project.bunLog(), 'run build\nrun test\n');
+    assert.equal(project.npmLog(), 'run build\nrun test\n');
     assert.equal(project.sudoLog(), '-n true\n');
   } finally {
     project.remove();
@@ -126,7 +139,7 @@ test('local deployment installs units and replaces dist without restarting the P
 });
 
 test('unit templates render every placeholder and reject unsafe values', { skip }, () => {
-  const values = ['USER=svc', 'GROUP=svc', 'HOME=/home/svc', 'BUN=/home/svc/.bun/bin/bun', 'BUN_DIR=/home/svc/.bun/bin',
+  const values = ['USER=svc', 'GROUP=svc', 'HOME=/home/svc', 'NODE=/usr/bin/node', 'NODE_DIR=/usr/bin',
     'BASE=/srv/ct', 'PORT=4001', 'PTY_SERVICE=ct-pty.service'];
   const render = (template, ...pairs) => spawnSync('bash', ['-c', 'source deploy/render-unit.sh && render_unit "$@"', 'render', template, ...pairs], {
     cwd: projectDir,
@@ -136,13 +149,13 @@ test('unit templates render every placeholder and reject unsafe values', { skip 
   const web = render('deploy/cloud-terminal.service', ...values);
   assert.equal(web.status, 0, web.stderr);
   assert.doesNotMatch(web.stdout, /@[A-Z_]+@/);
-  assert.match(web.stdout, /^ExecStart=\/home\/svc\/\.bun\/bin\/bun \/srv\/ct\/current\/server\.js$/m);
+  assert.match(web.stdout, /^ExecStart=\/usr\/bin\/node \/srv\/ct\/current\/server\.js$/m);
   assert.match(web.stdout, /^Wants=ct-pty\.service$/m);
   assert.match(web.stdout, /^ReadWritePaths=\/srv\/ct\/data -\/run\/cloud-terminal$/m);
 
   const pty = render('deploy/cloud-terminal-pty.service', ...values);
   assert.equal(pty.status, 0, pty.stderr);
-  assert.match(pty.stdout, /^ExecStart=\/home\/svc\/\.bun\/bin\/bun \/srv\/ct\/current\/pty-broker\.js$/m);
+  assert.match(pty.stdout, /^ExecStart=\/usr\/bin\/node \/srv\/ct\/current\/pty-broker\.js$/m);
   // The PTY unit hosts interactive shells: sudo must keep working and the web
   // service must never take it down with it.
   assert.doesNotMatch(pty.stdout, /^(?:NoNewPrivileges|ProtectSystem|PartOf|BindsTo)=/m);

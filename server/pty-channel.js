@@ -32,7 +32,7 @@ export function readPtyMessages(socket, onMessage, onError = () => socket.destro
 export function sendPtyMessage(socket, message) {
   if (socket.destroyed) return;
   if (socket.writableLength > 64 * 1024 * 1024) { socket.destroy(); return; }
-  socket.write(`${JSON.stringify(message)}\n`);
+  return socket.write(`${JSON.stringify(message)}\n`);
 }
 
 export function requestPtyBroker(socketPath, message) {

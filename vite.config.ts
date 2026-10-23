@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 
 export default defineConfig({
-  // viteSingleFile inlines JS + CSS into a single dist/index.html the Bun server hosts.
+  // viteSingleFile inlines JS + CSS into a single dist/index.html the Node server hosts.
   plugins: [react(), viteSingleFile()],
   server: {
     port: 5173,

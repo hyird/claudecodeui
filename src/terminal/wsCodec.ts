@@ -28,6 +28,7 @@ export type TerminalClientMessage =
     }
   | { type: 'input'; data: string; inputSeq: number }
   | { type: 'resize'; cols: number; rows: number }
+  | { type: 'output-ack'; seq: number }
   | { type: 'close' }
   | { type: 'ping' };
 
@@ -95,6 +96,8 @@ export function encodeTerminalClientMessage(message: TerminalClientMessage): Uin
       }).finish();
     case 'resize':
       return TerminalClientMessage.encode({ resize: { cols: message.cols, rows: message.rows } }).finish();
+    case 'output-ack':
+      return TerminalClientMessage.encode({ outputAck: { seq: message.seq } }).finish();
     case 'close':
       return TerminalClientMessage.encode({ close: {} }).finish();
     case 'ping':

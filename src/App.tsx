@@ -1,4 +1,4 @@
-import { LogOut, Minus, Plus, Settings, Terminal as TerminalIcon, Users } from 'lucide-react';
+import { LogOut, Minus, Plus, Settings, Terminal as TerminalIcon, Users, X } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { AuthGate } from './auth';
@@ -9,6 +9,7 @@ import TerminalTabs from './terminal/TerminalTabs';
 import { useTerminalTabs } from './terminal/use-terminal-tabs';
 import { clampFontSize, readPreferences, MIN_FONT_SIZE, MAX_FONT_SIZE } from './terminal/preferences';
 import type { TerminalPreferences } from './terminal/types';
+import { followVisualViewport } from './viewport';
 type TerminalAppProps = {
   authToken: string;
   user: AuthUser;
@@ -17,12 +18,16 @@ type TerminalAppProps = {
 
 function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   const tabsController = useTerminalTabs(authToken);
-  const { activeTab, pendingTabFocusRef, pendingKeyboardTabFocusRef, updateTabStatus, updateTabTitle, addTab } = tabsController;
+  const { activeTab, pendingTabFocusRef, pendingKeyboardTabFocusRef, updateTabStatus, addTab } = tabsController;
   const [preferences, setPreferences] = useState<TerminalPreferences>(readPreferences);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(false);
   const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
   const settingsPanelRef = useRef<HTMLDivElement | null>(null);
+  const shellRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (shellRef.current) return followVisualViewport(shellRef.current);
+  }, []);
   useEffect(() => {
     localStorage.setItem('terminal-preferences', JSON.stringify(preferences));
   }, [preferences]);
@@ -58,9 +63,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   const closeCollaborators = useCallback(() => setCollaboratorsOpen(false), []);
 
   useEffect(() => {
-    document.title = activeTab?.title
-      ? `${activeTab.title} - Cloud Terminal`
-      : 'Cloud Terminal';
+    document.title = activeTab?.title || 'Cloud Terminal';
   }, [activeTab?.title]);
 
   useLayoutEffect(() => {
@@ -110,7 +113,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
   }, [settingsOpen]);
 
   return (
-    <main className="app-shell">
+    <main ref={shellRef} className="app-shell">
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark">
@@ -122,11 +125,11 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
         <TerminalTabs controller={tabsController} />
 
         <div className="toolbar">
-          <button type="button" className="icon-button" onClick={addTab} title="新增终端" aria-label="新增终端">
+          <button type="button" className="icon-button desktop-toolbar-action" onClick={addTab} title="新增终端" aria-label="新增终端">
             <Plus size={16} aria-hidden="true" />
           </button>
           {user.role === 'admin' && (
-            <button type="button" className="icon-button" onClick={() => setCollaboratorsOpen(true)} title="管理协作者" aria-label="管理协作者">
+            <button type="button" className="icon-button desktop-toolbar-action" onClick={() => setCollaboratorsOpen(true)} title="管理协作者" aria-label="管理协作者">
               <Users size={16} aria-hidden="true" />
             </button>
           )}
@@ -145,7 +148,7 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
           </button>
           <button
             type="button"
-            className="icon-button"
+            className="icon-button desktop-toolbar-action"
             onClick={() => { void onLogout(); }}
             title={`退出 ${user.username}`}
             aria-label={`退出 ${user.username}`}
@@ -178,7 +181,6 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
               authToken={authToken}
               preferences={preferences}
               onStatusChange={updateTabStatus}
-              onTitleChange={updateTabTitle}
             />
           </div>
         ))}
@@ -217,6 +219,35 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
                 <Plus size={14} aria-hidden="true" />
               </button>
             </div>
+          </div>
+          <div className="mobile-settings-actions">
+            <button type="button" onClick={() => {
+              setSettingsOpen(false);
+              addTab();
+            }}>
+              <Plus size={16} aria-hidden="true" />新增终端
+            </button>
+            {user.role === 'admin' && (
+              <button type="button" onClick={() => {
+                setSettingsOpen(false);
+                setCollaboratorsOpen(true);
+              }}>
+                <Users size={16} aria-hidden="true" />管理协作者
+              </button>
+            )}
+            <button type="button" disabled={tabsController.tabsState.tabs.length < 2} onClick={() => {
+              if (!activeTab) return;
+              setSettingsOpen(false);
+              tabsController.closeTab(activeTab.id);
+            }}>
+              <X size={16} aria-hidden="true" />关闭当前终端
+            </button>
+            <button type="button" onClick={() => {
+              setSettingsOpen(false);
+              void onLogout();
+            }}>
+              <LogOut size={16} aria-hidden="true" />退出 {user.username}
+            </button>
           </div>
         </div>
       )}

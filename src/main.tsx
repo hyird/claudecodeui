@@ -4,9 +4,12 @@ import '@xterm/xterm/css/xterm.css';
 
 import App from './App';
 import './styles.css';
+import { loadTerminalFonts } from './terminal/fonts';
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+void loadTerminalFonts(document.fonts).then(() => {
+  ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+});

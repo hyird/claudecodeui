@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import headless from '@xterm/headless';
 import type { Terminal } from '@xterm/xterm';
 import { SerializeAddon } from '@xterm/addon-serialize';

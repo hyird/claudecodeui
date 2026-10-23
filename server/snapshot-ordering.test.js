@@ -10,11 +10,11 @@ import { createTerminalWorkspaces } from './terminal-workspaces.js';
 import {
   cancelTerminalOutputFlush, flushTerminalOutput, queueTerminalOutput, readTerminalSnapshot, resizeSession, applyTerminalResize,
 } from './terminal-output.js';
-import { TERMINAL_PARSE_BACKLOG_LIMIT } from './terminal-snapshot.js';
+import { OUTPUT_HIGH_WATER } from './terminal-flow-control.js';
 import { resizeFixture, bufferRows } from './test-support/resize-fixture.js';
 
 // Exercise the real session and workspace factories with a real xterm parser, a
-// fake PTY and in-memory tab storage. Importing the server entry would start Bun's
+// fake PTY and in-memory tab storage. Importing the server entry would start the Node
 // HTTP listener and auth database.
 const { TerminalClientMessage, TerminalServerMessage } = cloudcli;
 const disabledPty = { enabled: false, sessionIds: new Set(), count: () => 0, prepare: async () => null, close: async () => {} };
@@ -57,7 +57,9 @@ function socket(workspace, kind) {
 
 function fakePty() {
   return {
-    writes: [], sizes: [],
+    writes: [], sizes: [], paused: false, pauses: 0, resumes: 0,
+    pause() { this.paused = true; this.pauses++; },
+    resume() { this.paused = false; this.resumes++; },
     onData(callback) { this.emitData = callback; },
     onExit(callback) { this.emitExit = callback; },
     write(data) { this.writes.push(data); },
@@ -113,6 +115,21 @@ function harness(t, { cols = 20, rows = 4, persistentPty = disabledPty } = {}) {
   return { sessions, ptys, ptyOptions, sessionId, stored, saves, workspace, workspaces, terminals, send, init };
 }
 
+test('tab titles follow the session directory and cannot be replaced by application titles', async (t) => {
+  const h = harness(t);
+  h.init(socket(h.workspace, 'terminal-output'));
+  const session = h.sessions.get(h.sessionId);
+  const directory = process.platform === 'win32' ? 'C:\\srv\\project with spaces' : '/srv/project with spaces';
+  const directoryUrl = process.platform === 'win32' ? 'file:///C:/srv/project%20with%20spaces' : 'file:///srv/project%20with%20spaces';
+  assert.equal(h.workspace.tabsState.tabs[0].title, session.cwd);
+  await new Promise((resolve) => session.terminal.write(`\x1b]7;${directoryUrl}\x1b\\`, resolve));
+  assert.equal(session.cwd, directory);
+  assert.equal(h.workspace.tabsState.tabs[0].title, session.cwd);
+  await new Promise((resolve) => session.terminal.write('\x1b]0;Building project...\x07', resolve));
+  h.workspaces.updateTabTitle(h.workspace, h.sessionId, 'Building project...');
+  assert.equal(h.workspace.tabsState.tabs[0].title, directory);
+});
+
 // Create the session through a viewer that leaves before it is ready, so tests
 // start from a running PTY without an attached socket.
 function setup(t, options) {
@@ -154,7 +171,7 @@ test('small live output is sent before the next timer without waiting for the hi
   assert.equal(ws.messages.filter((m) => m.data === 'first-second').length, 1);
 });
 
-test('continuous output is combined behind the 25 Hz deadline without losing order', async (t) => {
+test('continuous output is coalesced within each event-loop turn without a fixed frame delay', async (t) => {
   const { session, attach } = setup(t);
   const ws = socket(session.workspace);
   attach(ws);
@@ -163,9 +180,7 @@ test('continuous output is combined behind the 25 Hz deadline without losing ord
   await new Promise((resolve) => setImmediate(resolve));
   queueTerminalOutput(session, '-second');
   queueTerminalOutput(session, '-third');
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.deepEqual(ws.messages.filter((m) => m.seq > 0).map((m) => m.data), ['first']);
-  await new Promise((resolve) => setTimeout(resolve, 45));
+  await new Promise((resolve) => setImmediate(resolve));
   await drain(session.terminal);
   assert.deepEqual(ws.messages.filter((m) => m.seq > 0).map((m) => m.data), ['first', '-second-third']);
 });
@@ -521,49 +536,77 @@ test('live output reaches a ready downlink before the headless parser and is com
   assert.equal(output.messages.filter((message) => message.type === 'output' && message.seq > 0).length, 2);
 });
 
-test('a parser backlog past the watermark keeps output sequenced and catches up afterwards', async (t) => {
-  const { session, attach } = setup(t);
-  const ws = socket(session.workspace);
-  attach(ws);
-  await settled(session, ws);
-  // Simulate a parser that is far behind the PTY.
-  session.parseBacklogBytes = TERMINAL_PARSE_BACKLOG_LIMIT;
-  queueTerminalOutput(session, 'flooded');
+test('a parser backlog pauses the PTY and parses every byte before resuming', async (t) => {
+  const { session } = setup(t);
+  const output = 'flooded\r\n'.repeat(Math.ceil(OUTPUT_HIGH_WATER / 9));
+  queueTerminalOutput(session, output);
   flushTerminalOutput(session);
+  assert.equal(session.pty.paused, true);
+  assert.ok(session.parseBacklogBytes >= OUTPUT_HIGH_WATER);
   await drain(session.terminal);
-  assert.equal(session.parseOverflow, true);
-  assert.equal(session.unparsedFromSeq, 1);
-  assert.equal(session.serializer.serialize().includes('flooded'), false);
-
-  // The backlog drains: the next commit replays the skipped output into the parser.
-  session.parseBacklogBytes = 0;
-  queueTerminalOutput(session, '-next');
-  flushTerminalOutput(session);
-  await drain(session.terminal);
-  await drain(session.terminal);
-  assert.equal(session.parseOverflow, false);
-  assert.equal(session.unparsedFromSeq, 0);
-  assert.ok(session.serializer.serialize().includes('flooded-next'));
-  assert.deepEqual(ws.messages.filter((m) => m.seq > 0).map(({ seq, data }) => [seq, data]), [[1, 'flooded'], [2, '-next']]);
+  assert.equal(session.pty.paused, false);
+  assert.equal(session.pty.pauses, 1);
+  assert.equal(session.pty.resumes, 1);
+  assert.equal(session.terminalEvents.events.map((event) => event.data).join(''), output);
+  assert.match(session.serializer.serialize(), /flooded/);
   assert.equal(session.parseBacklogBytes, 0);
 });
 
-test('a restore requested during a parser backlog includes output committed without parsing', async (t) => {
+test('a restore requested during a parser backlog includes every earlier output frame', async (t) => {
   const { session, attach } = setup(t);
-  session.parseBacklogBytes = TERMINAL_PARSE_BACKLOG_LIMIT;
-  queueTerminalOutput(session, 'skipped');
+  queueTerminalOutput(session, 'retained\r\n'.repeat(30000));
   flushTerminalOutput(session);
-  await drain(session.terminal);
-  assert.equal(session.unparsedFromSeq, 1);
+  assert.equal(session.pty.paused, true);
 
   const ws = socket(session.workspace);
   attach(ws);
   await settled(session, ws);
   await settled(session, ws);
   const [ready, snapshot] = ws.messages;
-  assert.equal(ready.lastSeq, 1);
+  assert.equal(ready.lastSeq, session.terminalEvents.lastSeq);
   assert.equal(ready.reset, true);
-  assert.match(snapshot.data, /skipped/);
+  assert.match(snapshot.data, /retained/);
+  assert.equal(session.parseBacklogBytes, 0);
+});
+
+test('browser consumption pauses output while input and heartbeats continue, then resumes below low water', async (t) => {
+  const { session, init, send, terminals } = setup(t);
+  const inputStreamId = randomUUID();
+  const output = socket(session.workspace, 'terminal-output');
+  init(output, { inputStreamId });
+  await settled(session, output);
+  const input = socket(session.workspace, 'terminal-input');
+  init(input, { inputStreamId, sessionGeneration: session.generation });
+  send(input, { outputAck: { seq: 0 } });
+
+  const flood = 'x'.repeat(OUTPUT_HIGH_WATER + 16 * 1024);
+  queueTerminalOutput(session, flood);
+  flushTerminalOutput(session);
+  await drain(session.terminal);
+  assert.equal(session.pty.paused, true, 'browser backlog must remain after history parsing');
+  send(input, { input: { data: '\x03', inputSeq: 1 } });
+  send(input, { ping: {} });
+  assert.deepEqual(session.pty.writes, ['\x03']);
+  assert.equal(input.messages.at(-1).type, 'pong');
+
+  const frames = output.messages.filter((message) => message.type === 'output' && message.seq);
+  send(input, { outputAck: { seq: frames[1].seq } });
+  assert.equal(session.pty.paused, true);
+  const lastSeq = frames.at(-1).seq;
+  send(input, { outputAck: { seq: lastSeq } });
+  assert.equal(session.pty.paused, false);
+  assert.equal(output.data.outputFlow.pendingBytes, 0);
+
+  queueTerminalOutput(session, flood);
+  flushTerminalOutput(session);
+  await drain(session.terminal);
+  send(input, { outputAck: { seq: lastSeq } });
+  assert.equal(session.pty.paused, true, 'duplicate acknowledgement cannot consume new output');
+  send(input, { outputAck: { seq: 1000000 } });
+  assert.equal(session.pty.paused, true, 'future acknowledgement cannot release pressure');
+  assert.equal(input.messages.at(-1).message, 'Invalid terminal output acknowledgement');
+  terminals.detachSocket(session, output);
+  assert.equal(session.pty.paused, false, 'disconnected viewers must not freeze background commands');
 });
 
 test('input acknowledgements use a separate socket even while the output viewer is congested', async (t) => {

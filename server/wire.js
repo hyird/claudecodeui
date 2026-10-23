@@ -56,6 +56,8 @@ export function decodeTerminalClientMessage(raw) {
       };
     case 'resize':
       return { type: 'resize', cols: message.resize.cols, rows: message.resize.rows };
+    case 'outputAck':
+      return { type: 'output-ack', seq: message.outputAck.seq };
     case 'close':
       return { type: 'close' };
     case 'ping':

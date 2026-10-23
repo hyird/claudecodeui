@@ -489,6 +489,70 @@ export namespace cloudcli {
     }
 
     /**
+     * Properties of a TerminalOutputAck.
+     * @deprecated Use cloudcli.TerminalOutputAck.$Properties instead.
+     */
+    interface ITerminalOutputAck extends cloudcli.TerminalOutputAck.$Properties {
+    }
+
+    /** Represents a TerminalOutputAck. */
+    class TerminalOutputAck {
+
+        /**
+         * Constructs a new TerminalOutputAck.
+         * @param [properties] Properties to set
+         */
+        constructor(properties?: cloudcli.TerminalOutputAck.$Properties);
+
+        /** Unknown fields preserved while decoding when enabled */
+        $unknowns?: Uint8Array[];
+
+        /** TerminalOutputAck seq. */
+        seq: number;
+
+        /**
+         * Encodes the specified TerminalOutputAck message. Does not implicitly {@link cloudcli.TerminalOutputAck.verify|verify} messages.
+         * @param message TerminalOutputAck message or plain object to encode
+         * @param [writer] Writer to encode to
+         * @returns Writer
+         */
+        static encode(message: cloudcli.TerminalOutputAck.$Properties, writer?: $protobuf.Writer): $protobuf.Writer;
+
+        /**
+         * Decodes a TerminalOutputAck message from the specified reader or buffer.
+         * @param reader Reader or buffer to decode from
+         * @param [length] Message length if known beforehand
+         * @returns {cloudcli.TerminalOutputAck & cloudcli.TerminalOutputAck.$Shape} TerminalOutputAck
+         * @throws {Error} If the payload is not a reader or valid buffer
+         * @throws {$protobuf.util.ProtocolError} If required fields are missing
+         */
+        static decode(reader: ($protobuf.Reader|Uint8Array), length?: number): cloudcli.TerminalOutputAck & cloudcli.TerminalOutputAck.$Shape;
+
+        /**
+         * Gets the type url for TerminalOutputAck
+         * @param [prefix] Custom type url prefix, defaults to `"type.googleapis.com"`
+         * @returns The type url
+         */
+        static getTypeUrl(prefix?: string): string;
+    }
+
+    namespace TerminalOutputAck {
+
+        /** Properties of a TerminalOutputAck. */
+        interface $Properties {
+
+            /** TerminalOutputAck seq */
+            seq?: (number|null);
+
+            /** Unknown fields preserved while decoding when enabled */
+            $unknowns?: Uint8Array[];
+        }
+
+        /** Shape of a TerminalOutputAck. */
+        type $Shape = cloudcli.TerminalOutputAck.$Properties;
+    }
+
+    /**
      * Properties of a TerminalClientMessage.
      * @deprecated Use cloudcli.TerminalClientMessage.$Properties instead.
      */
@@ -522,8 +586,11 @@ export namespace cloudcli {
         /** TerminalClientMessage ping. */
         ping?: (cloudcli.Ping.$Properties|null);
 
+        /** TerminalClientMessage outputAck. */
+        outputAck?: (cloudcli.TerminalOutputAck.$Properties|null);
+
         /** TerminalClientMessage body. */
-        body?: ("init"|"input"|"resize"|"close"|"ping");
+        body?: ("init"|"input"|"resize"|"close"|"ping"|"outputAck");
 
         /**
          * Encodes the specified TerminalClientMessage message. Does not implicitly {@link cloudcli.TerminalClientMessage.verify|verify} messages.
@@ -571,8 +638,11 @@ export namespace cloudcli {
             /** TerminalClientMessage ping */
             ping?: (cloudcli.Ping.$Properties|null);
 
+            /** TerminalClientMessage outputAck */
+            outputAck?: (cloudcli.TerminalOutputAck.$Properties|null);
+
             /** TerminalClientMessage body */
-            body?: ("init"|"input"|"resize"|"close"|"ping");
+            body?: ("init"|"input"|"resize"|"close"|"ping"|"outputAck");
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -585,9 +655,10 @@ export namespace cloudcli {
           resize?: cloudcli.TerminalResize.$Shape|null;
           close?: cloudcli.TerminalClose.$Shape|null;
           ping?: cloudcli.Ping.$Shape|null;
+          outputAck?: cloudcli.TerminalOutputAck.$Shape|null;
           $unknowns?: Uint8Array[];
         } & (
-          ({ body?: undefined; init?: null; input?: null; resize?: null; close?: null; ping?: null }|{ body?: "init"; init: cloudcli.TerminalInit.$Shape; input?: null; resize?: null; close?: null; ping?: null }|{ body?: "input"; init?: null; input: cloudcli.TerminalInput.$Shape; resize?: null; close?: null; ping?: null }|{ body?: "resize"; init?: null; input?: null; resize: cloudcli.TerminalResize.$Shape; close?: null; ping?: null }|{ body?: "close"; init?: null; input?: null; resize?: null; close: cloudcli.TerminalClose.$Shape; ping?: null }|{ body?: "ping"; init?: null; input?: null; resize?: null; close?: null; ping: cloudcli.Ping.$Shape })
+          ({ body?: undefined; init?: null; input?: null; resize?: null; close?: null; ping?: null; outputAck?: null }|{ body?: "init"; init: cloudcli.TerminalInit.$Shape; input?: null; resize?: null; close?: null; ping?: null; outputAck?: null }|{ body?: "input"; init?: null; input: cloudcli.TerminalInput.$Shape; resize?: null; close?: null; ping?: null; outputAck?: null }|{ body?: "resize"; init?: null; input?: null; resize: cloudcli.TerminalResize.$Shape; close?: null; ping?: null; outputAck?: null }|{ body?: "close"; init?: null; input?: null; resize?: null; close: cloudcli.TerminalClose.$Shape; ping?: null; outputAck?: null }|{ body?: "ping"; init?: null; input?: null; resize?: null; close?: null; ping: cloudcli.Ping.$Shape; outputAck?: null }|{ body?: "outputAck"; init?: null; input?: null; resize?: null; close?: null; ping?: null; outputAck: cloudcli.TerminalOutputAck.$Shape })
         );
     }
 

@@ -149,7 +149,7 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
       return false;
     }
 
-    const title = cleanTerminalTitle(rawTitle);
+    const title = cleanTerminalTitle(sessions.get(tabId)?.cwd ?? rawTitle);
     if (!title) {
       return false;
     }
@@ -249,6 +249,6 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
   }
 
   return {
-    workspaceFor, closeUserWorkspace, sendTabsState, broadcastTabsState, persistWorkspace, handleTabsCommand,
+    workspaceFor, closeUserWorkspace, sendTabsState, broadcastTabsState, persistWorkspace, updateTabTitle, handleTabsCommand,
   };
 }

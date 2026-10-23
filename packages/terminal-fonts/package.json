@@ -3,6 +3,6 @@
   "version": "7.9.0",
   "private": true,
   "license": "OFL-1.1",
-  "description": "Verified Maple Mono NF CN webfonts as unicode-range WOFF2 chunks, packaged locally for Bun installations",
+  "description": "Verified Maple Mono NF CN webfonts as unicode-range WOFF2 chunks, packaged locally for npm installations",
   "files": ["*.woff2", "maple-mono-nf-cn.css", "LICENSE.txt", "source.json"]
 }

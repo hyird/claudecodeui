@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -13,7 +13,7 @@ import { requestPtyBroker } from './pty-channel.js';
 import terminalPolicy from '../shared/terminal-policy.json';
 
 const projectDir = fileURLToPath(new URL('..', import.meta.url));
-(process.platform === 'win32' ? test.skip : test)('bun-pty service preserves shell, history and input deduplication across web restarts', async () => {
+(process.platform === 'win32' ? test.skip : test)('node-pty service preserves shell, history and input deduplication across web restarts', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-broker-'));
   const socketPath = path.join(directory, 'pty.sock');
   const host = net.createServer();
@@ -39,7 +39,7 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
   };
   const inspect = () => requestPtyBroker(socketPath, { type: 'prepare', sessionId: tabId }) as Promise<any>;
   const start = async () => {
-    application = spawn(process.execPath, ['server/index.js'], { cwd: projectDir,
+    application = spawn(process.execPath, [process.env.CLOUDCLI_TEST_SERVER_ENTRY || 'server/index.js'], { cwd: projectDir,
       env: { ...env, PORT: String(port), CLOUDCLI_DB_PATH: path.join(directory, 'auth.sqlite'), CLOUDCLI_PERSIST_TERMINALS: '1' },
       stdio: ['ignore', 'pipe', 'pipe'] });
     application.stderr?.on('data', (data) => { logs += data; });
@@ -56,6 +56,14 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     const ws = new WebSocket(`ws://127.0.0.1:${port}${pathname}`, ['cloudcli.v1', `auth.${token}`]);
     sockets.push(ws);
     const messages: any[] = [];
+    let creditSocket: WebSocket | undefined;
+    let parsedSeq: number | undefined;
+    let snapshotSeq = 0;
+    const acknowledge = () => {
+      if (parsedSeq !== undefined && creditSocket?.readyState === WebSocket.OPEN) {
+        creditSocket.send(cloudcli.TerminalClientMessage.encode({ outputAck: { seq: parsedSeq } }).finish());
+      }
+    };
     const terminal = new headlessXterm.Terminal({ allowProposedApi: true, cols: 200, rows: 24, scrollback: terminalPolicy.scrollbackLines });
     terminals.push(terminal);
     ws.binaryType = 'arraybuffer';
@@ -64,8 +72,12 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
       const message = pathname.endsWith('/tabs') ? cloudcli.TabsServerMessage.decode(bytes) : cloudcli.TerminalServerMessage.decode(bytes);
       messages.push(message);
       const output = 'output' in message ? message.output : null;
-      if (output?.data) terminal.write(output.compressed ? inflateSync(output.data) : output.data);
+      if (output?.data) terminal.write(output.compressed ? inflateSync(output.data) : output.data, () => {
+        parsedSeq = Number(('seq' in message ? message.seq : 0) || snapshotSeq);
+        acknowledge();
+      });
       if ('ready' in message && message.ready?.reset) {
+        snapshotSeq = Number(message.ready.lastSeq);
         terminal.reset();
         if (message.ready.cols && message.ready.rows) terminal.resize(message.ready.cols, message.ready.rows);
       }
@@ -77,11 +89,13 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     await new Promise<void>((resolve, reject) => { ws.addEventListener('open', () => resolve(), { once: true }); ws.addEventListener('error', reject, { once: true }); });
     if (init) ws.send(cloudcli.TerminalClientMessage.encode({ init }).finish());
     await waitFor(() => messages.some((m) => m.body === (pathname.endsWith('/tabs') ? 'tabs' : 'ready')));
-    return { ws, messages, terminal };
+    return { ws, messages, terminal, acknowledgeThrough(socket: WebSocket) { creditSocket = socket; acknowledge(); } };
   };
   try {
     await waitFor(async () => { try { return (await requestPtyBroker(socketPath, { type: 'ping' }) as any).ok; } catch { return false; } });
     await start();
+    expect(await fetch(`${baseUrl}/api/health`).then(r => r.json()))
+      .toMatchObject({ runtime: 'node', persistentSessions: true, persistentBackend: 'node-pty' });
     const registration = await fetch(`${baseUrl}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: 'broker-test', password: 'broker-test-password' }) }).then((r) => r.json()) as { token: string };
     const tabs = await connect('/terminal/tabs', registration.token);
@@ -90,6 +104,7 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     const output = await connect('/terminal/output', registration.token, { sessionId: tabId, inputStreamId: streamId, cols: 200, rows: 24 });
     const generation = output.messages.find((m) => m.ready).ready.sessionGeneration;
     const input = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
+    output.acknowledgeThrough(input.ws);
     const original = await inspect();
     expect(original.pid).toBeGreaterThan(0);
     input.ws.send(cloudcli.TerminalClientMessage.encode({ resize: { cols: 100, rows: 30 } }).finish());
@@ -115,6 +130,7 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     await waitFor(() => restored.terminal.buffer.active.baseY >= terminalPolicy.scrollbackLines - 100);
     expect(restored.terminal.buffer.active.type).toBe('normal');
     const restoredInput = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
+    restored.acknowledgeThrough(restoredInput.ws);
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 1, data: command } }).finish());
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 2, data: 'printf "CT_FINAL_%s\\n" "$CT_COUNT"\r' } }).finish());
     await waitFor(async () => (await inspect()).data.includes('CT_FINAL_1'));
@@ -139,6 +155,7 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     expect((await fetch(`${baseUrl}/api/health`)).ok).toBe(true);
     const replayedInput = await connect('/terminal/input', registration.token, { sessionId: tabId,
       inputStreamId: streamId, sessionGeneration: generation });
+    replayed.acknowledgeThrough(replayedInput.ws);
     // Disconnect the browser and produce output while the web process is down.
     replayedInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 4, data: '(sleep 0.3; printf "\\nBROKER_BACKGROUND_OK\\n") &\r' } }).finish());
     await waitFor(() => replayedInput.messages.some((m) => m.inputAck?.inputSeq === 4));

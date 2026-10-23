@@ -90,6 +90,14 @@ body,
   overflow: hidden;
 }
 
+html {
+  overscroll-behavior: none;
+}
+
+#root {
+  height: 100dvh;
+}
+
 button,
 select,
 input,
@@ -119,7 +127,7 @@ button:focus-visible {
 
 .auth-screen {
   position: relative;
-  min-height: 100%;
+  height: 100%;
   overflow-y: auto;
   --auth-background: 44 22% 96%;
   --auth-foreground: 36 25% 4%;
@@ -151,7 +159,7 @@ button:focus-visible {
   position: relative;
   z-index: 1;
   display: flex;
-  min-height: 100vh;
+  min-height: 100%;
   width: 100%;
   align-items: center;
   justify-content: center;
@@ -498,10 +506,13 @@ button:focus-visible {
    -------------------------------------------------------------------------- */
 
 .app-shell {
-  position: relative;
+  position: fixed;
+  top: var(--app-viewport-top, 0px);
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
-  height: 100%;
+  height: var(--app-viewport-height, 100%);
   min-width: 0;
   isolation: isolate;
   background:
@@ -605,6 +616,8 @@ button:focus-visible {
   padding: 0 2px;
   overflow-x: auto;
   overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* Ultra-thin native scrollbars everywhere (tab strip, dialogs, auth screen).
@@ -733,6 +746,11 @@ button:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tab-icon,
+.mobile-settings-actions {
+  display: none;
 }
 
 /* Status dot — semantic session state */
@@ -1049,23 +1067,21 @@ button:focus-visible {
   background: transparent; /* let the ambient canvas show around the frame */
 }
 
-/* Keep every tab's grid measured while only the selected pane is visible. */
+/* Let xterm's IntersectionObserver suspend painting hidden terminals. */
 .terminal-layer {
   position: absolute;
   inset: 0;
-  visibility: hidden;
-  pointer-events: none;
+  display: none;
 }
 
 .terminal-layer.visible {
-  visibility: visible;
-  pointer-events: auto;
+  display: block;
 }
 
 .tab.dragging { opacity: 0.45; pointer-events: none; }
 .tab.drop-before { box-shadow: inset 3px 0 var(--accent); }
 .tab.drop-after { box-shadow: inset -3px 0 var(--accent); }
-.tabs .tab { touch-action: none; }
+.tabs .tab { touch-action: pan-x pinch-zoom; }
 .tabs .tab-main { cursor: grab; }
 .tab.dragging .tab-main,
 .tabs .tab-main:active { cursor: grabbing; }
@@ -1179,8 +1195,20 @@ button:focus-visible {
     0 6px 20px -12px rgba(0, 0, 0, 0.55);
 }
 
+.terminal-host {
+  /* FitAddon measures this content box, without the frame's border/padding.
+     Leave one pixel for fractional-DPI canvas rounding at the bottom/right. */
+  width: calc(100% - 1px);
+  height: calc(100% - 1px);
+}
+
 .terminal-pane .xterm {
   height: 100%;
+  touch-action: pan-x pinch-zoom;
+}
+
+.terminal-touch-toolbar {
+  display: none;
 }
 
 .terminal-pane .xterm-helper-textarea {
@@ -1259,10 +1287,14 @@ button:focus-visible {
    Responsive (<= 720px)
    -------------------------------------------------------------------------- */
 
-@media (max-width: 720px) {
+@media (max-width: 720px), (pointer: coarse) {
+  .app-shell {
+    --topbar-h: 54px;
+  }
+
   .auth-shell {
     align-items: flex-start;
-    padding: 24px 12px;
+    padding: max(24px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
   }
 
   .auth-card {
@@ -1276,9 +1308,8 @@ button:focus-visible {
 
   .topbar {
     grid-template-columns: minmax(0, 1fr) auto;
-    height: auto;
-    min-height: 46px;
-    padding: 3px 7px;
+    height: calc(var(--topbar-h) + env(safe-area-inset-top));
+    padding: calc(3px + env(safe-area-inset-top)) max(7px, env(safe-area-inset-right)) 3px max(7px, env(safe-area-inset-left));
     gap: 8px;
   }
 
@@ -1297,18 +1328,41 @@ button:focus-visible {
   }
 
   .icon-button {
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
   }
 
   .tab {
-    min-width: 108px;
-    height: 40px;
+    min-width: 44px;
+    width: 44px;
+    max-width: 44px;
+    height: 44px;
   }
 
+  .tab-main {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .tab-icon {
+    display: inline-flex;
+  }
+
+  .tab-title,
   .tab-close {
-    width: 32px;
-    height: 32px;
+    display: none;
+  }
+
+  .tab .status-dot {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 5px;
+    height: 5px;
+  }
+
+  .desktop-toolbar-action {
+    display: none;
   }
 
   .font-stepper {
@@ -1321,15 +1375,113 @@ button:focus-visible {
   }
 
   .settings-popover {
-    top: calc(var(--topbar-h) + 6px);
-    right: 8px;
+    top: calc(var(--topbar-h) + env(safe-area-inset-top) + 6px);
+    right: max(8px, env(safe-area-inset-right));
+    max-width: calc(100% - 16px);
+    width: 240px;
+    max-height: calc(100% - var(--topbar-h) - env(safe-area-inset-top) - 14px);
+    overflow-y: auto;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .settings-control {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .mobile-settings-actions {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    padding-top: 8px;
+    border-top: 1px solid var(--edge-hairline);
+  }
+
+  .mobile-settings-actions button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 44px;
+    padding: 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-settings-actions button:hover:not(:disabled) {
+    background: var(--glass-elevated);
+  }
+
+  .mobile-settings-actions button:disabled {
+    color: var(--text-disabled);
+    cursor: default;
+  }
+
+  .mobile-settings-actions svg {
+    flex: 0 0 auto;
   }
 
   .terminal-frame {
-    inset: 6px;
+    inset: 6px max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
     /* Right 7 + 3px overlay scrollbar gutter = 10px. */
     padding: 10px 7px 10px 10px;
     border-radius: var(--radius-md);
+  }
+
+  .auth-input-wrap input,
+  .collaborators-form input {
+    font-size: 16px;
+  }
+
+  .collaborators-dialog {
+    max-height: calc(100dvh - 40px);
+  }
+}
+
+@media (max-width: 720px), (pointer: coarse) {
+  .terminal-frame {
+    bottom: calc(54px + env(safe-area-inset-bottom));
+  }
+
+  .terminal-touch-toolbar {
+    position: absolute;
+    left: max(6px, env(safe-area-inset-left));
+    right: max(6px, env(safe-area-inset-right));
+    bottom: env(safe-area-inset-bottom);
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 52px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x pinch-zoom;
+  }
+
+  .terminal-touch-toolbar button {
+    flex: 1 0 auto;
+    min-width: 44px;
+    height: 44px;
+    padding: 0 4px;
+    border: 1px solid var(--edge-hairline);
+    border-radius: var(--radius-sm);
+    background: var(--glass-elevated);
+    color: var(--text-primary);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .terminal-touch-toolbar button:active {
+    background: var(--accent-soft);
+  }
+
+  .terminal-pane .xterm-helper-textarea {
+    font-size: 16px;
   }
 }
 

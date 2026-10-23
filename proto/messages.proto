@@ -24,6 +24,7 @@ message TerminalInput {
 }
 message TerminalResize { uint32 cols = 1; uint32 rows = 2; }
 message TerminalClose {}
+message TerminalOutputAck { uint32 seq = 1; }
 
 message TerminalClientMessage {
   oneof body {
@@ -32,6 +33,7 @@ message TerminalClientMessage {
     TerminalResize resize = 3;
     TerminalClose close = 4;
     Ping ping = 5;
+    TerminalOutputAck output_ack = 8;
   }
   reserved 6, 7;
 }

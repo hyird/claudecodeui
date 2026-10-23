@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Hono } from 'hono';
-import { spawn as spawnPty } from 'bun-pty';
+import { spawn as spawnPty } from 'node-pty';
+import { serveGateway } from './node-server.js';
 import { initializeAuthStore } from './auth-store.js';
 import { createPersistentPtyBackend } from './persistent-pty.js';
 import { registerAuthRoutes } from './auth-http.js';
@@ -31,16 +32,16 @@ const authSessions = createAuthSocketSessions();
 
 app.get('/api/health', (c) => c.json({
   ok: true,
+  runtime: 'node',
   sessions: persistentPty.enabled ? persistentPty.count() : sessions.size,
   persistentSessions: persistentPty.enabled,
-  persistentBackend: persistentPty.enabled ? 'bun-pty' : null,
+  persistentBackend: persistentPty.backend,
 }));
 registerAuthRoutes(app, workspaces);
 registerStaticRoutes(app, distDir);
 
-const server = Bun.serve({
-  port: Number(process.env.PORT || 3001),
-  idleTimeout: 0,
-  ...createWebSocketGateway({ app, sessions, workspaces, terminals, authSessions }),
-});
-console.log(`Terminal server listening on http://localhost:${server.port}`);
+const server = serveGateway(
+  createWebSocketGateway({ app, sessions, workspaces, terminals, authSessions }),
+  { port: Number(process.env.PORT || 3001) },
+);
+server.on('listening', () => console.log(`Terminal server listening on http://localhost:${server.address().port}`));

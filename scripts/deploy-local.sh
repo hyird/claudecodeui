@@ -11,9 +11,8 @@ SERVICE_NAME="cloud-terminal.service"
 PTY_SERVICE="cloud-terminal-pty.service"
 SERVICE_USER="user"
 SERVICE_HOME="/home/${SERVICE_USER}"
-SERVICE_BUN="${SERVICE_HOME}/.bun/bin/bun"
+SERVICE_NODE="${DEPLOY_NODE:-$(command -v node)}"
 PORT=3001
-PTY_LIB="${PROJECT_DIR}/node_modules/bun-pty/rust-pty/target/release/librust_pty.so"
 HEALTH_URL="http://127.0.0.1:${PORT}/api/health"
 FORCE_RESTART=0
 
@@ -38,7 +37,7 @@ check_active_sessions() {
 
     active_sessions="${BASH_REMATCH[1]}"
     if (( active_sessions > 0 && FORCE_RESTART == 0 )) \
-      && [[ ! "${health_payload}" =~ \"persistentBackend\":[[:space:]]*\"bun-pty\" ]]; then
+      && [[ ! "${health_payload}" =~ \"persistentSessions\":[[:space:]]*true ]]; then
       printf 'error: refusing to restart %s with %s active terminal session(s).\n' \
         "${SERVICE_NAME}" "${active_sessions}" >&2
       printf 'These are legacy PTYs. Close them once to migrate, or explicitly use --force.\n' >&2
@@ -58,19 +57,21 @@ cd "${PROJECT_DIR}"
 
 check_active_sessions
 sudo -n true
-bun run build
-bun run test
+npm run build
+npm run test
 test -s dist/index.html
 test -s dist/logo.svg
 test -s dist-server/server.js
 test -s dist-server/pty-broker.js
-test -s "${PTY_LIB}"
+test -s dist-server/package.json
+test -d dist-server/node_modules/node-pty
+test -d dist-server/node_modules/better-sqlite3
 
 UNIT_STAGING="$(mktemp -d)"
 trap 'rm -rf "${UNIT_STAGING}"' EXIT
 UNIT_VALUES=(
-  USER="${SERVICE_USER}" GROUP="${SERVICE_USER}" HOME="${SERVICE_HOME}" BUN="${SERVICE_BUN}"
-  BUN_DIR="${SERVICE_BUN%/*}" BASE="${INSTALL_DIR}" PORT="${PORT}" PTY_SERVICE="${PTY_SERVICE}"
+  USER="${SERVICE_USER}" GROUP="${SERVICE_USER}" HOME="${SERVICE_HOME}" NODE="${SERVICE_NODE}"
+  NODE_DIR="${SERVICE_NODE%/*}" BASE="${INSTALL_DIR}" PORT="${PORT}" PTY_SERVICE="${PTY_SERVICE}"
 )
 render_unit deploy/cloud-terminal.service "${UNIT_VALUES[@]}" >"${UNIT_STAGING}/${SERVICE_NAME}"
 render_unit deploy/cloud-terminal-pty.service "${UNIT_VALUES[@]}" >"${UNIT_STAGING}/${PTY_SERVICE}"
@@ -81,11 +82,14 @@ check_active_sessions
 sudo -n install -d -o root -g root -m 0755 "${INSTALL_DIR}"
 sudo -n install -d -o root -g root -m 0755 "${INSTALL_DIR}/current"
 sudo -n install -d -o "${SERVICE_USER}" -g "${SERVICE_USER}" -m 0700 "${INSTALL_DIR}/data"
-sudo -n install -o root -g root -m 0644 dist-server/server.js "${INSTALL_DIR}/current/server.js"
-sudo -n install -o root -g root -m 0644 dist-server/pty-broker.js "${INSTALL_DIR}/current/pty-broker.js"
-# Replace the inode so the running PTY service retains its mapped native library.
-sudo -n install -o root -g root -m 0644 "${PTY_LIB}" "${INSTALL_DIR}/current/librust_pty.so.next"
-sudo -n mv -f "${INSTALL_DIR}/current/librust_pty.so.next" "${INSTALL_DIR}/current/librust_pty.so"
+# Replace the complete Node runtime (ESM manifest and native dependency closure).
+sudo -n rm -rf "${INSTALL_DIR}/current/node_modules.next"
+sudo -n cp -R dist-server/node_modules "${INSTALL_DIR}/current/node_modules.next"
+sudo -n chown -R root:root "${INSTALL_DIR}/current/node_modules.next"
+sudo -n chmod -R u=rwX,go=rX "${INSTALL_DIR}/current/node_modules.next"
+sudo -n rm -rf "${INSTALL_DIR}/current/node_modules"
+sudo -n mv "${INSTALL_DIR}/current/node_modules.next" "${INSTALL_DIR}/current/node_modules"
+sudo -n install -o root -g root -m 0644 dist-server/server.js dist-server/pty-broker.js dist-server/package.json "${INSTALL_DIR}/current/"
 # Replace dist/ as a whole: the server serves every file in it, and versioned
 # font names change between releases.
 sudo -n rm -rf "${INSTALL_DIR}/current/dist.next" "${INSTALL_DIR}/current/dist.prev"
