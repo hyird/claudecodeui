@@ -42,7 +42,7 @@ test('the real connection applies resize fences after old output and before new 
     write: model.write.bind(model), resize: model.resize.bind(model), scrollToBottom() {}, writeln() {},
   } as unknown as Terminal;
   const connection = module.connectTerminal({ terminal, tabId: 'resize-test', authToken: 'test',
-    beforeInit() {}, afterInit() {}, onReady() {}, onSessionRebuilt() {}, onStatusChange() {} });
+    beforeInit() {}, onReady() {}, onSessionRebuilt() {}, onStatusChange() {} });
   const output = harness.sockets[0];
   const settle = async () => {
     for (let i = 0; i < 20; i++) { await new Promise(resolve => setTimeout(resolve, 1)); await flushMicrotasks(); }

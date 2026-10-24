@@ -1,50 +1,9 @@
-import headlessXterm from '@xterm/headless';
-import { SerializeAddon } from '@xterm/addon-serialize';
-import { UnicodeGraphemesAddon } from './unicode.js';
 import { encodeTerminalServerMessage, encodeTerminalSnapshot, sendTerminalOutput } from './wire.js';
-import { TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
+import { serializeTerminalSnapshot } from './terminal-snapshot.js';
 import { OUTPUT_HIGH_WATER, OUTPUT_LOW_WATER } from './terminal-flow-control.js';
 
 export const WS_OPEN = 1;
 const TERMINAL_SOCKET_BUFFER_LIMIT = 1024 * 1024;
-const { Terminal: HeadlessTerminal } = headlessXterm;
-
-export function createTerminalSnapshot(cols, rows) {
-  const terminal = new HeadlessTerminal({
-    allowProposedApi: true,
-    cols,
-    rows,
-    scrollback: TERMINAL_SCROLLBACK_LINES,
-  });
-  const serializer = new SerializeAddon();
-  terminal.loadAddon(new UnicodeGraphemesAddon());
-  terminal.loadAddon(serializer);
-
-  // SerializeAddon preserves mouse tracking (1000/1002/1003), but omits the
-  // encoding (1006/1016). Remember it while parsing output so a snapshot sent
-  // after reconnect still produces SGR mouse reports for fullscreen TUIs.
-  const mouseEncoding = { mode: '' };
-  for (const [final, enabled] of [['h', true], ['l', false]]) {
-    terminal.parser.registerCsiHandler({ prefix: '?', final }, (params) => {
-      for (const mode of params) {
-        if (mode === 1006) mouseEncoding.mode = enabled ? '\x1b[?1006h' : '';
-        if (mode === 1016) mouseEncoding.mode = enabled ? '\x1b[?1016h' : '';
-      }
-      return false;
-    });
-  }
-  terminal.parser.registerEscHandler({ final: 'c' }, () => {
-    mouseEncoding.mode = '';
-    return false;
-  });
-
-  return {
-    terminal,
-    serializer,
-    mouseEncoding,
-    terminalSnapshot: '',
-  };
-}
 
 function invalidateTerminalSnapshot(session) {
   session.snapshotDirty = true;

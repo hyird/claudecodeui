@@ -1,6 +1,35 @@
+import headlessXterm from '@xterm/headless';
+import { SerializeAddon } from '@xterm/addon-serialize';
+import { UnicodeGraphemesAddon } from './unicode.js';
 import terminalPolicy from '../shared/terminal-policy.json' with { type: 'json' };
 
 export const TERMINAL_SCROLLBACK_LINES = terminalPolicy.scrollbackLines;
+
+// Both the PTY owner and the web mirror must use the same parser and saved modes.
+export function createTerminalSnapshot(cols, rows) {
+  const terminal = new headlessXterm.Terminal({
+    allowProposedApi: true, cols, rows, scrollback: TERMINAL_SCROLLBACK_LINES,
+  });
+  const serializer = new SerializeAddon();
+  terminal.loadAddon(new UnicodeGraphemesAddon());
+  terminal.loadAddon(serializer);
+
+  // SerializeAddon saves tracking modes, but not the SGR mouse encoding.
+  const mouseEncoding = { mode: '' };
+  for (const [final, enabled] of [['h', true], ['l', false]]) {
+    terminal.parser.registerCsiHandler({ prefix: '?', final }, (params) => {
+      for (const mode of params) {
+        if (mode === 1006 || mode === 1016) mouseEncoding.mode = enabled ? `\x1b[?${mode}h` : '';
+      }
+      return false;
+    });
+  }
+  terminal.parser.registerEscHandler({ final: 'c' }, () => {
+    mouseEncoding.mode = '';
+    return false;
+  });
+  return { terminal, serializer, mouseEncoding };
+}
 
 export function serializeTerminalSnapshot(terminal, serializer, mouseMode = '') {
   const budget = terminalPolicy.snapshotMaxBytes;

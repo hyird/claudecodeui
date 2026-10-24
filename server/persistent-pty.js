@@ -31,7 +31,6 @@ export async function createPersistentPtyBackend({
   const pending = new Map();
   let requestId = 0;
   let control = null;
-  let backend = 'legacy-pty';
 
   const replaceSessionIds = (ids) => {
     sessionIds.clear();
@@ -87,8 +86,11 @@ export async function createPersistentPtyBackend({
       socket.once('connect', resolve);
       socket.once('close', () => reject(failure ?? new Error('PTY service disconnected')));
     }).then(() => send(connection, { type: 'subscribe' })).then((reply) => {
-      backend = reply.backend || 'legacy-pty';
+      if (reply.backend !== 'node-pty') throw new Error('Unsupported PTY backend');
       replaceSessionIds(reply.ids);
+    }).catch((error) => {
+      socket.destroy();
+      throw error;
     });
     // Failures surface through request(); a dropped connection is reopened lazily.
     connection.ready.catch(() => {});
@@ -118,15 +120,9 @@ export async function createPersistentPtyBackend({
     let onResize = () => {};
     let requestedSize = { cols: prepared.cols, rows: prepared.rows };
     const inputs = new Map();
-    const queued = [];
     const sendToSession = (message) => {
-      const payload = { sessionId, ...message };
-      if (socket.connecting) queued.push(payload); else sendPtyMessage(socket, payload);
+      sendPtyMessage(socket, { sessionId, ...message });
     };
-    socket.on('connect', () => {
-      sendPtyMessage(socket, { type: 'attach', sessionId, generation: prepared.generation, seq: prepared.seq });
-      for (const message of queued.splice(0)) sendPtyMessage(socket, message);
-    });
     socket.on('error', () => {});
     socket.on('close', () => {
       for (const { reject, timer } of inputs.values()) { clearTimeout(timer); reject(new Error('PTY service disconnected')); }
@@ -144,6 +140,21 @@ export async function createPersistentPtyBackend({
         if (message.error) reject(new Error(message.error)); else resolve(message);
       } else if (message.error) socket.destroy();
     });
+    // net.Socket queues writes until connect. Put attach first, so subsequent
+    // input and resize commands follow it without a second application queue.
+    sendToSession({ type: 'attach', generation: prepared.generation, seq: prepared.seq });
+
+    const requestSession = (message, onReply = () => {}) => {
+      if (socket.destroyed) return Promise.reject(new Error('PTY service disconnected'));
+      return new Promise((resolve, reject) => {
+        const id = ++inputRequestId;
+        const timer = setTimeout(() => socket.destroy(), INPUT_TIMEOUT_MS);
+        // A resize fence must run before the decoder handles the next output
+        // from this same chunk; a Promise.then callback would run too late.
+        inputs.set(id, { resolve(reply) { onReply(reply); resolve(reply); }, reject, timer });
+        sendToSession({ ...message, requestId: id });
+      });
+    };
     return {
       pid: prepared.pid,
       onData(callback) { onData = callback; },
@@ -154,31 +165,16 @@ export async function createPersistentPtyBackend({
       // broker's writable/drain handling. The write direction stays available.
       pause() { socket.pause(); },
       resume() { socket.resume(); },
-      write(data) { sendToSession({ type: 'write', data }); },
       writeInput(data, streamId, inputSeq) {
-        if (socket.destroyed) return Promise.reject(new Error('PTY service disconnected'));
-        return new Promise((resolve, reject) => {
-          const id = ++inputRequestId;
-          const timer = setTimeout(() => socket.destroy(), INPUT_TIMEOUT_MS);
-          inputs.set(id, { resolve, reject, timer });
-          sendToSession({ type: 'input', data, streamId, inputSeq, requestId: id });
-        }).then((message) => message.inputSeq);
+        return requestSession({ type: 'input', data, streamId, inputSeq }).then((message) => message.inputSeq);
       },
       resize(cols, rows) {
         if (requestedSize.cols === cols && requestedSize.rows === rows) return;
         requestedSize = { cols, rows };
         sendToSession({ type: 'resize', cols, rows });
-        // Existing brokers serialize commands per session. A ping on the SAME
-        // viewer connection follows the resize barrier and precedes new-size
-        // output. This works without replacing the broker that owns live PTYs.
-        const id = ++inputRequestId;
-        const timer = setTimeout(() => socket.destroy(), INPUT_TIMEOUT_MS);
-        inputs.set(id, {
-          timer,
-          resolve() { onResize(cols, rows); },
-          reject() { socket.destroy(); },
-        });
-        sendToSession({ type: 'ping', requestId: id });
+        // Commands share this ordered stream: the reply fences old-size output
+        // before the web mirror switches its parser to the new geometry.
+        requestSession({ type: 'ping' }, () => onResize(cols, rows)).catch(() => socket.destroy());
       },
       kill() { ended = true; socket.destroy(); },
     };
@@ -186,7 +182,7 @@ export async function createPersistentPtyBackend({
 
   return {
     enabled: true,
-    get backend() { return backend; },
+    backend: 'node-pty',
     // Live ids, kept current by the service; read without I/O.
     sessionIds,
     count() { return sessionIds.size; },

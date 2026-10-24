@@ -18,7 +18,6 @@ type ConnectionOptions = {
   authToken: string;
   onStatusChange: (tabId: string, status: TerminalStatus) => void;
   beforeInit: () => void;
-  afterInit: () => void;
   onReady: () => void;
   onSessionRebuilt: (visible: boolean) => void;
 };
@@ -26,7 +25,7 @@ type ConnectionOptions = {
 export type TerminalConnection = ReturnType<typeof connectTerminal>;
 
 export function connectTerminal({
-  terminal, tabId, authToken, onStatusChange, beforeInit, afterInit, onReady, onSessionRebuilt,
+  terminal, tabId, authToken, onStatusChange, beforeInit, onReady, onSessionRebuilt,
 }: ConnectionOptions) {
   let currentSocket: WebSocket | null = null;
   let disposed = false;
@@ -223,7 +222,6 @@ export function connectTerminal({
       if (!isCurrent(socket)) return;
       beforeInit();
       send({ type: 'init', sessionId: tabId, ...desiredSize, inputStreamId: inputState.streamId });
-      afterInit();
     });
     socket.addEventListener('message', (event) => {
       if (!isCurrent(socket)) return;

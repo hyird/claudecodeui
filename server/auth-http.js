@@ -2,7 +2,6 @@ import {
   authenticateToken, createCollaborator, hasUsers, listUsers, loginUser, logoutToken,
   readBearerToken, registerUser, removeCollaborator, renewSession, toAuthErrorResponse,
 } from './auth-store.js';
-import { readString } from './terminal-validation.js';
 
 async function readJsonBody(c) {
   const contentType = c.req.header('content-type') || '';
@@ -18,7 +17,7 @@ async function readJsonBody(c) {
 }
 
 function readRequestToken(c) {
-  return readBearerToken(c.req.header('authorization')) || readString(c.req.query('token'));
+  return readBearerToken(c.req.header('authorization'));
 }
 
 async function requireAuth(c, next) {

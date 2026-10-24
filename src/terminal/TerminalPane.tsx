@@ -144,7 +144,7 @@ function TerminalPane({
 
     const connection = connectTerminal({
       terminal, tabId, authToken, onStatusChange,
-      beforeInit: fitAndResize, afterInit: resizeAfterLayoutSettles,
+      beforeInit: fitAndResize,
       onReady() { updateScrollbackAffordance(); resizeAfterLayoutSettles(); forceFullRefresh(); },
       onSessionRebuilt: setSessionRebuiltNoticeVisible,
     });

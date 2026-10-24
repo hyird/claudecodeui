@@ -105,11 +105,11 @@ function getFreePort() {
 function wsHandshakeStatus(pathname, token, protocols) {
   return new Promise((resolve, reject) => {
     const target = new URL(baseUrl);
-    const query = token && !protocols ? `?token=${encodeURIComponent(token)}` : '';
+    protocols ??= token ? ['cloudcli.v1', 'auth.' + token] : undefined;
     const protocolHeader = protocols ? `Sec-WebSocket-Protocol: ${protocols.join(', ')}\r\n` : '';
     const socket = net.connect(Number(target.port), target.hostname, () => {
       socket.write(
-        `GET ${pathname}${query} HTTP/1.1\r\n` +
+        `GET ${pathname} HTTP/1.1\r\n` +
         `Host: ${target.host}\r\n` +
         'Upgrade: websocket\r\n' +
         'Connection: Upgrade\r\n' +
@@ -225,7 +225,7 @@ function readTabsWebSocketMessage(ws, predicate, description) {
 }
 
 async function createTestTab() {
-  const tabsSocket = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
+  const tabsSocket = new WebSocket(`${wsBaseUrl}/terminal/tabs`, ['cloudcli.v1', `auth.${authToken}`]);
   const initial = await readTabsWebSocketMessage(tabsSocket, (message) => message.type === 'tabs', 'initial test tabs');
   const updated = readTabsWebSocketMessage(
     tabsSocket,
@@ -347,7 +347,7 @@ test('auth API creates the first user in SQLite and returns tokens for login', a
     user: { id: registered.user.id, username: TEST_USERNAME, role: 'admin' },
   });
 
-  const authSessionSocket = new WebSocket(`${wsBaseUrl}/auth/session?token=${encodeURIComponent(registrationToken)}`);
+  const authSessionSocket = new WebSocket(`${wsBaseUrl}/auth/session`, ['cloudcli.v1', `auth.${registrationToken}`]);
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Timed out waiting for auth session websocket')), 5000);
     authSessionSocket.once('open', () => {
@@ -474,14 +474,14 @@ test('collaborator accounts have isolated tabs and cannot open another user term
   });
   assert.equal(forbidden.status, 403);
 
-  const ownerTabs = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
-  const memberTabs = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(memberToken)}`);
+  const ownerTabs = new WebSocket(`${wsBaseUrl}/terminal/tabs`, ['cloudcli.v1', `auth.${authToken}`]);
+  const memberTabs = new WebSocket(`${wsBaseUrl}/terminal/tabs`, ['cloudcli.v1', `auth.${memberToken}`]);
   const ownerState = await readTabsWebSocketMessage(ownerTabs, (message) => message.type === 'tabs', 'owner tabs');
   const memberState = await readTabsWebSocketMessage(memberTabs, (message) => message.type === 'tabs', 'member tabs');
   const ownerTabId = ownerState.state.tabs[0].id;
   assert.notEqual(ownerTabId, memberState.state.tabs[0].id);
 
-  const foreignTerminal = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(memberToken)}`);
+  const foreignTerminal = new WebSocket(`${wsBaseUrl}/terminal`, ['cloudcli.v1', `auth.${memberToken}`]);
   await new Promise((resolve, reject) => { foreignTerminal.once('open', resolve); foreignTerminal.once('error', reject); });
   const denied = readTerminalWebSocketMessage(
     foreignTerminal,
@@ -515,7 +515,7 @@ test('collaborator accounts have isolated tabs and cannot open another user term
 test('terminal tab WebSocket requires auth and generates UUID ids', async () => {
   assert.equal(await wsHandshakeStatus('/terminal/tabs'), 401);
 
-  const authenticated = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
+  const authenticated = new WebSocket(`${wsBaseUrl}/terminal/tabs`, ['cloudcli.v1', `auth.${authToken}`]);
   const firstMessage = await readTabsWebSocketMessage(
     authenticated,
     (message) => message.type === 'tabs',
@@ -551,7 +551,7 @@ test('terminal tab WebSocket requires auth and generates UUID ids', async () => 
 });
 
 test('inactive PTYs report background and preserve their exited state', async () => {
-  const tabsSocket = new WebSocket(`${wsBaseUrl}/terminal/tabs?token=${encodeURIComponent(authToken)}`);
+  const tabsSocket = new WebSocket(`${wsBaseUrl}/terminal/tabs`, ['cloudcli.v1', `auth.${authToken}`]);
   let tabsMessage = await readTabsWebSocketMessage(
     tabsSocket,
     (message) => message.type === 'tabs',
@@ -578,7 +578,7 @@ test('inactive PTYs report background and preserve their exited state', async ()
     ),
     'connected inactive PTY status',
   );
-  const terminalSocket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const terminalSocket = new WebSocket(`${wsBaseUrl}/terminal`, ['cloudcli.v1', `auth.${authToken}`]);
   const terminalReady = readTerminalWebSocketMessage(
     terminalSocket,
     (message) => message.body === 'ready',
@@ -622,7 +622,7 @@ test('inactive PTYs report background and preserve their exited state', async ()
     ),
     'reattached PTY status',
   );
-  const exitSocket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const exitSocket = new WebSocket(`${wsBaseUrl}/terminal`, ['cloudcli.v1', `auth.${authToken}`]);
   const exitReady = readTerminalWebSocketMessage(
     exitSocket,
     (message) => message.body === 'ready',
@@ -665,7 +665,7 @@ test('inactive PTYs report background and preserve their exited state', async ()
 });
 
 test('terminal WebSocket rejects legacy non-UUID session ids', async () => {
-  const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const socket = new WebSocket(`${wsBaseUrl}/terminal`, ['cloudcli.v1', `auth.${authToken}`]);
   const rejection = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Timed out waiting for legacy id rejection')), 5000);
     socket.once('error', reject);
@@ -716,7 +716,7 @@ test('one terminal socket carries raw output and deduplicated input acknowledgem
 
 test('terminal input is acknowledged and duplicate delivery is ignored', async () => {
   const sessionId = await createTestTab();
-  const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const socket = new WebSocket(`${wsBaseUrl}/terminal`, ['cloudcli.v1', `auth.${authToken}`]);
   const inputStreamId = randomUUID();
   let output = '';
   let markerResolve;
@@ -800,7 +800,7 @@ test('terminal session generations preserve reconnect input and identify a rebui
   t.after(() => sockets.forEach((socket) => socket.terminate()));
 
   async function attach(forceRestart = false) {
-    const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+    const socket = new WebSocket(`${wsBaseUrl}/terminal`, ['cloudcli.v1', `auth.${authToken}`]);
     sockets.push(socket);
     const ready = readTerminalWebSocketMessage(socket, (message) => message.body === 'ready', 'generation ready');
     socket.on('open', () => {
@@ -866,11 +866,18 @@ test('websocket auth accepts the token as a subprotocol so it stays out of the U
   assert.equal(socket.protocol, 'cloudcli.v1');
   socket.close();
 
-  // A bad token in the subprotocol is rejected exactly like a bad query token.
+  // A bad token is rejected; the token never needs to appear in the URL.
   assert.equal(
     await wsHandshakeStatus('/terminal/tabs', null, ['cloudcli.v1', 'auth.not-a-real-token']),
     403,
   );
+});
+
+test('URL query credentials are rejected for HTTP and WebSocket requests', async () => {
+  const query = `?token=${encodeURIComponent(authToken)}`;
+  const response = await fetch(`${baseUrl}/api/auth/user${query}`);
+  assert.equal(response.status, 401);
+  assert.equal(await wsHandshakeStatus(`/terminal/tabs${query}`, null), 401);
 });
 
 test('the built frontend is served compressed and revalidates with an ETag', async () => {
@@ -941,7 +948,7 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
   // Drive a real shell through a real socket: every byte must arrive in order,
   // frames stay bounded, and a control request remains responsive during the flood.
   const sessionId = await createTestTab();
-  const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
+  const socket = new WebSocket(`${wsBaseUrl}/terminal`, ['cloudcli.v1', `auth.${authToken}`]);
   const inputStreamId = randomUUID();
 
   let outputFrames = 0;

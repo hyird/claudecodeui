@@ -17,7 +17,7 @@ function socketPath() {
     : path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cloud-terminal-pty-')), 'pty.sock');
 }
 
-async function fakeBroker(t, { resizeOutput = false, backend } = {}) {
+async function fakeBroker(t, { resizeOutput = false, backend = 'node-pty' } = {}) {
   const received = [];
   const ids = new Set();
   const subscribers = new Set();
@@ -39,6 +39,7 @@ async function fakeBroker(t, { resizeOutput = false, backend } = {}) {
       }
       if (message.type === 'close') { ids.delete(message.sessionId); push(); reply({ ok: true }); return; }
       if (message.type === 'attach') { reply({ ok: true }); sendPtyMessage(socket, { type: 'output', data: 'live', seq: 6 }); }
+      if (message.type === 'input') reply({ inputSeq: message.inputSeq });
       if (message.type === 'resize' && resizeOutput) sendPtyMessage(socket, { type: 'output', data: 'old-size', seq: 7 });
       if (message.type === 'ping') {
         // Reply and following output deliberately share one transport chunk.
@@ -70,15 +71,17 @@ test('a missing persistent service fails startup instead of creating temporary s
     /Persistent PTY service unavailable/);
 });
 
-test('health identifies the running broker instead of assuming it was upgraded with the web service', async t => {
-  for (const reported of [undefined, 'node-pty']) {
-    const broker = await fakeBroker(t, { backend: reported });
-    const backend = await createPersistentPtyBackend({ enabled: true, socketPath: broker.path });
-    assert.equal(backend.backend, reported ?? 'legacy-pty');
+test('only the supported node-pty backend is accepted', async t => {
+  const broker = await fakeBroker(t);
+  const backend = await createPersistentPtyBackend({ enabled: true, socketPath: broker.path });
+  assert.equal(backend.backend, 'node-pty');
+  for (const reported of [null, 'unsupported']) {
+    const unsupported = await fakeBroker(t, { backend: reported });
+    await assert.rejects(createPersistentPtyBackend({ enabled: true, socketPath: unsupported.path }), /Unsupported PTY backend/);
   }
 });
 
-test('persistent resize fences old and new output on the existing viewer without replacing the broker', async t => {
+test('persistent resize fences old and new output on the same viewer stream', async t => {
   const broker = await fakeBroker(t, { resizeOutput: true });
   const backend = await createPersistentPtyBackend({ enabled: true, socketPath: broker.path });
   const { pty } = await backend.prepare(randomUUID(), { cols: 80, rows: 24 });
@@ -108,6 +111,17 @@ test('ordinary development does not contact the persistent service', async () =>
   await backend.close('session');
 });
 
+test('input queued before connect follows attach on the native socket stream', async t => {
+  const broker = await fakeBroker(t);
+  const backend = await createPersistentPtyBackend({ enabled: true, socketPath: broker.path });
+  const sessionId = randomUUID();
+  const { pty } = await backend.prepare(sessionId, { cols: 80, rows: 24 });
+  assert.equal(await pty.writeInput('command\r', randomUUID(), 1), 1);
+  assert.deepEqual(broker.received.filter(message => message.sessionId === sessionId).map(message => message.type),
+    ['prepare', 'attach', 'input']);
+  pty.kill();
+});
+
 test('persistent output can be paused while the IPC write direction remains usable', async (t) => {
   const broker = await fakeBroker(t, { resizeOutput: true });
   const backend = await createPersistentPtyBackend({ enabled: true, socketPath: broker.path });
@@ -118,11 +132,12 @@ test('persistent output can be paused while the IPC write direction remains usab
   await until(() => output.includes('live'));
   pty.pause();
   pty.resize(90, 30);
-  pty.write('\x03');
-  await until(() => broker.ofType('write').length === 1);
+  const input = pty.writeInput('\x03', randomUUID(), 1);
+  await until(() => broker.ofType('input').length === 1);
   assert.deepEqual(output, ['live']);
-  assert.equal(broker.ofType('write')[0].data, '\x03');
+  assert.equal(broker.ofType('input')[0].data, '\x03');
   pty.resume();
+  assert.equal(await input, 1);
   await until(() => output.includes('new-size'));
   assert.deepEqual(output, ['live', 'old-size', 'new-size']);
   pty.kill();

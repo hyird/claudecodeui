@@ -1,6 +1,5 @@
 import { authenticateToken, hashToken, onSessionInvalidated, readBearerToken } from './auth-store.js';
 import { encodeAuthServerMessage } from './wire.js';
-import { readString } from './terminal-validation.js';
 import { WS_OPEN } from './terminal-output.js';
 
 export function readOfferedSubprotocols(request) {
@@ -12,8 +11,8 @@ export function readOfferedSubprotocols(request) {
 
 // Browsers cannot set headers on a WebSocket handshake, so the client sends its session
 // token as an `auth.<token>` subprotocol. That keeps the token out of the URL, and so out
-// of reverse-proxy access logs, browser history and Referer headers. The query parameter
-// and Authorization header stay supported for non-browser clients.
+// of reverse-proxy access logs, browser history and Referer headers. Non-browser
+// clients can use the standard Authorization header instead.
 function readSubprotocolToken(offered) {
   const entry = offered.find((value) => value.startsWith('auth.'));
   return entry ? entry.slice('auth.'.length) : '';
@@ -22,10 +21,8 @@ function readSubprotocolToken(offered) {
 // Mirrors the HTTP guard's status codes: a missing token is 401, while a token that no
 // longer resolves to a live session (e.g. displaced by a newer login) is 403.
 export async function authenticateUpgrade(request, offered) {
-  const url = new URL(request.url);
   const token = readSubprotocolToken(offered)
-    || readBearerToken(request.headers.get('authorization'))
-    || readString(url.searchParams.get('token'));
+    || readBearerToken(request.headers.get('authorization'));
 
   if (!token) {
     return { rejectStatus: 401, rejectMessage: 'Unauthorized' };
@@ -36,7 +33,7 @@ export async function authenticateUpgrade(request, offered) {
     return { rejectStatus: 403, rejectMessage: 'Forbidden' };
   }
 
-  return { url, user, token, tokenHash: hashToken(token) };
+  return { user, tokenHash: hashToken(token) };
 }
 
 export function createAuthSocketSessions() {

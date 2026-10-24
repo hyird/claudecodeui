@@ -27,6 +27,9 @@
 每个账户同一时间只有一个有效页面：新登录会让旧登录退出；同一浏览器新打开的标签页会在加载时
 换发新会话（`POST /api/auth/session`），之前的标签页随即退出并提示“已在另一个浏览器标签页中打开”。
 
+HTTP API 使用 Authorization Bearer 认证；浏览器 WebSocket 使用认证子协议。
+不接受 URL 查询参数中的 token。
+
 ## 开发
 
 需要 Node.js 24 或更新版本，依赖以 `package-lock.json` 为准。
@@ -157,8 +160,7 @@ unit 替换手写的 `cloudcli.service`（手工添加的配置会丢失），�
 检查 shell PID、历史、标签和代次不变，重发未确认输入不会再次执行，Web 停止时后台命令继续输出。
 在 Windows 上跳过该 Unix 服务测试，普通 Windows 开发使用 node-pty 的 ConPTY 后端。
 
-从旧运行时迁移时，Node Web 服务仍兼容已运行的旧 PTY 服务。部署不会重启 PTY，
-现有 shell 会继续运行；新 unit 的 Node 启动命令在下一次 PTY 服务启动时生效。
+部署只重启 Web 服务，现有 shell 会继续运行；PTY 服务在独立进程中持有会话。
 `/api/health` 的 `runtime` 是 Web 运行时，`persistentBackend` 是 PTY 服务实际报告的后端；
-旧服务未报告后端时显示 `legacy-pty`，不会误报为已完成切换。
-要立即切换 PTY 后端，必须先结束所有旧会话，再单独重启 PTY 服务。
+持久模式只接受 `node-pty` 服务；缺失或未知后端会在启动时明确报错。
+更新运行中的 PTY 服务需要单独重启，该操作会结束它持有的 shell。

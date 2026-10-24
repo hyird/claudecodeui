@@ -6,8 +6,10 @@ import { decodeTerminalClientMessage, encodeTerminalServerMessage } from './wire
 import { UUID_V4_PATTERN, readString, readNumber } from './terminal-validation.js';
 import { watchTerminalCwd } from './terminal-cwd.js';
 import { createPtyFlowControl, createViewerFlowControl } from './terminal-flow-control.js';
+import { createTerminalSnapshot } from './terminal-snapshot.js';
+import { writeTerminalInput } from './terminal-input.js';
 import {
-  WS_OPEN, createTerminalSnapshot, writeTerminalOutput, whenTerminalParsed, cancelTerminalOutputFlush,
+  WS_OPEN, writeTerminalOutput, whenTerminalParsed, cancelTerminalOutputFlush,
   flushTerminalOutput, queueTerminalOutput, sendTerminalSnapshot, websocketWritable,
   readTerminalSnapshot, resizeSession, applyTerminalResize, sendSessionEvent,
 } from './terminal-output.js';
@@ -88,7 +90,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       terminal: terminalSnapshot.terminal,
       serializer: terminalSnapshot.serializer,
       mouseEncoding: terminalSnapshot.mouseEncoding,
-      terminalSnapshot: terminalSnapshot.terminalSnapshot,
+      terminalSnapshot: '',
       snapshotDirty: false,
       socket: null,
       socketReady: false,
@@ -395,26 +397,15 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
         }).catch(() => ws.close(1011, 'PTY input disconnected'));
         return;
       }
-      const lastInputSeq = activeSession.inputStreams.get(inputStreamId);
-      if (!inputStreamId || lastInputSeq === undefined || inputSeq <= 0) {
-        sendError(ws, 'Invalid terminal input');
-        return;
+      try {
+        const ack = writeTerminalInput(activeSession.pty, activeSession.inputStreams, {
+          data: message.data, streamId: inputStreamId, inputSeq,
+        });
+        ws.send(encodeTerminalServerMessage({ type: 'input-ack', inputSeq: ack }));
+      } catch (error) {
+        sendError(ws, error.message);
+        ws.close(1011, error.message);
       }
-
-      if (inputSeq <= lastInputSeq) {
-        ws.send(encodeTerminalServerMessage({ type: 'input-ack', inputSeq: lastInputSeq }));
-        return;
-      }
-
-      if (inputSeq !== lastInputSeq + 1) {
-        sendError(ws, 'Terminal input sequence gap');
-        ws.close(1011, 'Terminal input sequence gap');
-        return;
-      }
-
-      activeSession.pty.write(readString(message.data));
-      activeSession.inputStreams.set(inputStreamId, inputSeq);
-      ws.send(encodeTerminalServerMessage({ type: 'input-ack', inputSeq }));
       return;
     }
 
