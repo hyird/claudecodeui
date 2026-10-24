@@ -5,8 +5,6 @@ import { websocketWritable } from './terminal-output.js';
 const WS_ROUTES = {
   '/auth/session': 'auth',
   '/terminal': 'terminal',
-  '/terminal/output': 'terminal-output',
-  '/terminal/input': 'terminal-input',
   '/terminal/tabs': 'tabs',
 };
 // Marker subprotocol echoed back on a successful upgrade.
@@ -33,7 +31,7 @@ export function createWebSocketGateway({ app, sessions, workspaces, terminals, a
     message(ws, raw) {
       if (!websocketWritable(ws)) return;
       const { kind } = ws.data;
-      if (kind === 'terminal' || kind === 'terminal-output' || kind === 'terminal-input') {
+      if (kind === 'terminal') {
         handleTerminalMessage(ws, raw);
         return;
       }
@@ -54,7 +52,7 @@ export function createWebSocketGateway({ app, sessions, workspaces, terminals, a
     close(ws) {
       const { kind } = ws.data;
       removeAuthSessionSubscriber(ws.data.auth.tokenHash, ws);
-      if (kind === 'terminal' || kind === 'terminal-output' || kind === 'terminal-input') {
+      if (kind === 'terminal') {
         const activeSession = ws.data.activeSession;
         if (activeSession && sessions.get(activeSession.id) === activeSession) {
           detachSocket(activeSession, ws);

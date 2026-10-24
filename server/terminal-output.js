@@ -1,7 +1,6 @@
 import headlessXterm from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { UnicodeGraphemesAddon } from './unicode.js';
-import { recordTerminalEvent } from './terminal-stream.js';
 import { encodeTerminalServerMessage, encodeTerminalSnapshot, sendTerminalOutput } from './wire.js';
 import { TERMINAL_SCROLLBACK_LINES, serializeTerminalSnapshot } from './terminal-snapshot.js';
 import { OUTPUT_HIGH_WATER, OUTPUT_LOW_WATER } from './terminal-flow-control.js';
@@ -54,7 +53,7 @@ function invalidateTerminalSnapshot(session) {
 
 // Like xterm's flow-control guide, pause the producer above a high-water mark
 // and resume below a low-water mark. Every byte is still parsed and committed.
-export function writeTerminalOutput(session, data, bytes, commit) {
+export function writeTerminalOutput(session, data, bytes, commit = () => {}) {
   session.parseBacklogBytes += bytes;
   if (session.parseBacklogBytes >= OUTPUT_HIGH_WATER) session.flowControl.setPaused('parser', true);
   session.terminal.write(data, () => {
@@ -86,20 +85,15 @@ export function cancelTerminalOutputFlush(session) {
 }
 
 // Forward live output immediately, without waiting for the headless parser.
-// Reserve its sequence, but commit replay only after parsing so reconnect
-// snapshots still advertise exactly the bytes they contain. `encoded` is the
-// frame's UTF-8 bytes when the batch was already encoded for splitting.
-function emitOutputFrame(session, frame, bytes, encoded, forwardedSocket) {
-  session.pendingOutputEvents += 1;
-  if (forwardedSocket) {
-    sendTerminalEvent(forwardedSocket, {
-      type: 'output', data: frame,
-      seq: session.terminalEvents.lastSeq + session.pendingOutputEvents,
-    }, encoded);
-  }
+// Sequence numbers only account for consumed output; stream order comes from
+// WebSocket. The headless parser maintains the single reconnect snapshot.
+function emitOutputFrame(session, frame, bytes, encoded) {
+  const viewer = session.socketReady ? session.socket : null;
+  sendSessionEvent(session, { type: 'output', data: frame, bytes }, encoded);
   writeTerminalOutput(session, frame, bytes, () => {
-    session.pendingOutputEvents -= 1;
-    return recordAndSendTerminalEvent(session, { type: 'output', data: frame, bytes }, forwardedSocket);
+    // A viewer attached between forwarding and parsing receives these bytes
+    // after its snapshot barrier, rather than losing or replaying them twice.
+    if (session.socket !== viewer) sendSessionEvent(session, { type: 'output', data: frame, bytes }, encoded);
   });
 }
 
@@ -116,13 +110,12 @@ export function flushTerminalOutput(session) {
   session.pendingOutput.length = 0;
   session.pendingOutputBytes = 0;
 
-  const forwardedSocket = session.socketReady ? session.socket : null;
   if (textBytes <= TERMINAL_OUTPUT_MAX_FRAME_BYTES) {
-    emitOutputFrame(session, text, textBytes, null, forwardedSocket);
+    emitOutputFrame(session, text, textBytes, null);
     return;
   }
 
-  // Encode once: the wire takes byte slices, the parser and replay log the decoded frame.
+  // Encode once: the wire takes byte slices and the parser takes the decoded frame.
   const bytes = Buffer.from(text, 'utf8');
   let offset = 0;
   while (offset < bytes.length) {
@@ -131,7 +124,7 @@ export function flushTerminalOutput(session) {
       end -= 1;
     }
     const encoded = bytes.subarray(offset, end);
-    emitOutputFrame(session, encoded.toString('utf8'), end - offset, encoded, forwardedSocket);
+    emitOutputFrame(session, encoded.toString('utf8'), end - offset, encoded);
     offset = end;
   }
 }
@@ -169,7 +162,7 @@ export function queueTerminalOutput(session, chunk) {
 // compressed off the event loop; events for this viewer wait behind it so the
 // stream order on the socket is unchanged. Resolves once the restore was handed
 // to the socket (or abandoned).
-export function sendTerminalSnapshot(ws, snapshot, seq = 0) {
+export function sendTerminalSnapshot(ws, snapshot) {
   if (!websocketWritable(ws)) return Promise.resolve();
   const queue = [];
   ws.data.snapshotQueue = queue;
@@ -186,7 +179,7 @@ export function sendTerminalSnapshot(ws, snapshot, seq = 0) {
       ws.close(1013, 'Terminal snapshot dropped');
       return;
     }
-    ws.data.outputFlow?.record(seq, Buffer.byteLength(snapshot || '\x1b[0m'));
+    ws.data.outputFlow?.record(0, Buffer.byteLength(snapshot || '\x1b[0m'));
     if (ws.getBufferedAmount?.() === 0) ws.data.snapshotBufferAllowance = 0;
     for (const [event, encoded] of queue) sendTerminalEvent(ws, event, encoded);
   }, () => {
@@ -234,15 +227,11 @@ export function resizeSession(session, cols, rows) {
 export function applyTerminalResize(session, cols, rows, resizePty = () => {}) {
   if (session.disposed) return;
   flushTerminalOutput(session);
-  // Reserve and forward the fence in exactly the same order as live output.
+  // Forward the resize in exactly the same order as live output.
   // The browser waits for its earlier writes before applying the geometry, and
   // the headless mirror commits the same fence only after its parser catches up.
-  session.pendingOutputEvents += 1;
-  const forwardedSocket = session.socketReady ? session.socket : null;
-  const event = { type: 'resize', cols, rows };
-  if (forwardedSocket) sendTerminalEvent(forwardedSocket, {
-    ...event, seq: session.terminalEvents.lastSeq + session.pendingOutputEvents,
-  });
+  const viewer = session.socketReady ? session.socket : null;
+  sendSessionEvent(session, { type: 'resize', cols, rows });
   session.terminal.write('', () => {
     if (session.disposed) return;
     if (session.terminal.cols !== cols || session.terminal.rows !== rows) {
@@ -250,8 +239,7 @@ export function applyTerminalResize(session, cols, rows, resizePty = () => {}) {
       resizePty();
     }
     invalidateTerminalSnapshot(session);
-    session.pendingOutputEvents -= 1;
-    recordAndSendTerminalEvent(session, event, forwardedSocket);
+    if (session.socket !== viewer) sendSessionEvent(session, { type: 'resize', cols, rows });
   });
 }
 
@@ -265,7 +253,7 @@ export function sendTerminalEvent(ws, event, encoded = null) {
   }
 
   if (event.type === 'output') {
-    if (sendTerminalOutput(ws, encoded ?? event.data, event.seq, ws.data.kind !== 'terminal-output') === 0) {
+    if (sendTerminalOutput(ws, encoded ?? event.data, event.seq) === 0) {
       ws.close(1013, 'Terminal output dropped');
     } else {
       ws.data.outputFlow?.record(event.seq ?? 0, event.bytes ?? (encoded?.byteLength ?? Buffer.byteLength(event.data)));
@@ -276,10 +264,8 @@ export function sendTerminalEvent(ws, event, encoded = null) {
   ws.send(encodeTerminalServerMessage(event));
 }
 
-export function recordAndSendTerminalEvent(session, event, forwardedSocket = null) {
-  const sequencedEvent = recordTerminalEvent(session.terminalEvents, event);
-  if (session.socketReady && session.socket !== forwardedSocket) {
-    sendTerminalEvent(session.socket, sequencedEvent);
-  }
-  return sequencedEvent;
+export function sendSessionEvent(session, event, encoded = null) {
+  if (!session.socketReady) return;
+  if (event.type === 'output') event = { ...event, seq: ++session.outputSeq };
+  sendTerminalEvent(session.socket, event, encoded);
 }

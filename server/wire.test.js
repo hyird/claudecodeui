@@ -8,6 +8,7 @@ import {
   decodeTerminalClientMessage,
   encodeTabsServerMessage,
   encodeTerminalOutput,
+  encodeTerminalSnapshot,
   encodeTerminalServerMessage,
   sendTerminalOutput,
 } from './wire.js';
@@ -24,12 +25,12 @@ function decodeOutputFrame(frame) {
   return message.output.compressed ? inflateSync(payload).toString('utf8') : payload.toString('utf8');
 }
 
-test('terminal output uses a compressed protobuf frame when deflate reduces payload size', () => {
+test('snapshot output uses a compressed protobuf frame when deflate reduces payload size', async () => {
   const output = `\x1b[32m${'build output '.repeat(400)}\x1b[0m\r\n`;
-  const frame = encodeTerminalOutput(output, 7);
+  const frame = await encodeTerminalSnapshot(output);
   const message = TerminalServerMessage.decode(frame);
 
-  assert.equal(message.seq, 7);
+  assert.equal(message.seq, 0);
   assert.equal(message.output.compressed, true);
   assert.ok(frame.length < Buffer.byteLength(output));
   assert.equal(decodeOutputFrame(frame), output);
@@ -43,16 +44,16 @@ test('small terminal output stays uncompressed inside the protobuf frame', () =>
   assert.equal(decodeOutputFrame(frame), 'ok\r\n');
 });
 
-test('fast downlink skips compression for large repetitive output', () => {
+test('live output skips compression for large repetitive output', () => {
   const output = 'terminal output\r\n'.repeat(800);
-  const frame = encodeTerminalOutput(output, 8, false);
+  const frame = encodeTerminalOutput(output, 8);
   const message = TerminalServerMessage.decode(frame);
   assert.equal(message.output.compressed, false);
   assert.equal(message.seq, 8);
   assert.equal(decodeOutputFrame(frame), output);
 });
 
-test('terminal output below the compression threshold skips deflate even when repetitive', () => {
+test('short repetitive output remains raw UTF-8', () => {
   const output = 'x'.repeat(256);
   const frame = encodeTerminalOutput(output, 12);
   const message = TerminalServerMessage.decode(frame);
@@ -101,9 +102,7 @@ test('terminal client messages round-trip through protobuf', () => {
       rows: 40,
       cwd: '/tmp',
       forceRestart: true,
-      lastSeq: 9,
       inputStreamId: INPUT_STREAM_ID,
-      sessionGeneration: 'generation-1',
     },
   }).finish();
   assert.deepEqual(decodeTerminalClientMessage(init), {
@@ -113,9 +112,7 @@ test('terminal client messages round-trip through protobuf', () => {
     rows: 40,
     cwd: '/tmp',
     forceRestart: true,
-    lastSeq: 9,
     inputStreamId: INPUT_STREAM_ID,
-    sessionGeneration: 'generation-1',
   });
 
   const input = TerminalClientMessage.encode({ input: { data: 'ls\r', inputSeq: 7 } }).finish();
@@ -125,23 +122,12 @@ test('terminal client messages round-trip through protobuf', () => {
   assert.deepEqual(decodeTerminalClientMessage(resize), { type: 'resize', cols: 80, rows: 24 });
 });
 
-test('terminal init without a session generation defaults to an empty string', () => {
-  const frame = TerminalClientMessage.encode({
-    init: { sessionId: TERMINAL_ID, inputStreamId: INPUT_STREAM_ID },
-  }).finish();
-
-  assert.equal(decodeTerminalClientMessage(frame).sessionGeneration, '');
-});
-
-test('terminal ready frames carry replay reset metadata', () => {
+test('terminal ready frames carry the session generation', () => {
   const frame = encodeTerminalServerMessage({
     type: 'ready',
     cwd: '/tmp/project',
     sessionId: TERMINAL_ID,
     sessionGeneration: 'generation-1',
-    reset: true,
-    gap: true,
-    lastSeq: 21,
   });
   const message = TerminalServerMessage.decode(frame);
 
@@ -149,9 +135,6 @@ test('terminal ready frames carry replay reset metadata', () => {
   assert.equal(message.ready.cwd, '/tmp/project');
   assert.equal(message.ready.sessionId, TERMINAL_ID);
   assert.equal(message.ready.sessionGeneration, 'generation-1');
-  assert.equal(message.ready.reset, true);
-  assert.equal(message.ready.gap, true);
-  assert.equal(message.ready.lastSeq, 21);
 });
 
 test('terminal ready without a session generation decodes with an empty string', () => {
@@ -159,9 +142,6 @@ test('terminal ready without a session generation decodes with an empty string',
     type: 'ready',
     cwd: '/tmp/project',
     sessionId: TERMINAL_ID,
-    reset: false,
-    gap: false,
-    lastSeq: 0,
   });
   const message = TerminalServerMessage.decode(frame);
 

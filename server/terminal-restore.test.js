@@ -33,7 +33,7 @@ test('a large UTF-8 restore is one complete compressed message and survives its 
   assert.equal(ws.closedCode, 1013);
 });
 
-test('an empty screen still sends a restore frame that can complete the input handshake', async () => {
+test('an empty screen still sends a restore frame that can complete the restore', async () => {
   const ws = viewer();
   await sendTerminalSnapshot(ws, '');
   assert.equal(ws.messages.length, 1);
@@ -41,7 +41,7 @@ test('an empty screen still sends a restore frame that can complete the input ha
   assert.equal(Buffer.from(message.output.data).toString(), '\x1b[0m');
 });
 
-test('a dropped restore disconnects the viewer rather than enabling a broken input pair', async () => {
+test('a dropped restore disconnects the viewer rather than completing a broken restore', async () => {
   const ws = viewer();
   ws.send = () => 0;
   await sendTerminalSnapshot(ws, 'snapshot');

@@ -218,14 +218,8 @@ export namespace cloudcli {
         /** TerminalInit forceRestart. */
         forceRestart: boolean;
 
-        /** TerminalInit lastSeq. */
-        lastSeq: number;
-
         /** TerminalInit inputStreamId. */
         inputStreamId: string;
-
-        /** TerminalInit sessionGeneration. */
-        sessionGeneration: string;
 
         /**
          * Encodes the specified TerminalInit message. Does not implicitly {@link cloudcli.TerminalInit.verify|verify} messages.
@@ -273,14 +267,8 @@ export namespace cloudcli {
             /** TerminalInit forceRestart */
             forceRestart?: (boolean|null);
 
-            /** TerminalInit lastSeq */
-            lastSeq?: (number|null);
-
             /** TerminalInit inputStreamId */
             inputStreamId?: (string|null);
-
-            /** TerminalInit sessionGeneration */
-            sessionGeneration?: (string|null);
 
             /** Unknown fields preserved while decoding when enabled */
             $unknowns?: Uint8Array[];
@@ -687,15 +675,6 @@ export namespace cloudcli {
         /** TerminalReady sessionId. */
         sessionId: string;
 
-        /** TerminalReady reset. */
-        reset: boolean;
-
-        /** TerminalReady gap. */
-        gap: boolean;
-
-        /** TerminalReady lastSeq. */
-        lastSeq: number;
-
         /** TerminalReady sessionGeneration. */
         sessionGeneration: string;
 
@@ -741,15 +720,6 @@ export namespace cloudcli {
 
             /** TerminalReady sessionId */
             sessionId?: (string|null);
-
-            /** TerminalReady reset */
-            reset?: (boolean|null);
-
-            /** TerminalReady gap */
-            gap?: (boolean|null);
-
-            /** TerminalReady lastSeq */
-            lastSeq?: (number|null);
 
             /** TerminalReady sessionGeneration */
             sessionGeneration?: (string|null);

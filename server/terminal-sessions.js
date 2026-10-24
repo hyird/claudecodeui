@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createTerminalEventLog, getTerminalReplayPlan } from './terminal-stream.js';
 import { decodeTerminalClientMessage, encodeTerminalServerMessage } from './wire.js';
 import { UUID_V4_PATTERN, readString, readNumber } from './terminal-validation.js';
 import { watchTerminalCwd } from './terminal-cwd.js';
@@ -10,8 +9,7 @@ import { createPtyFlowControl, createViewerFlowControl } from './terminal-flow-c
 import {
   WS_OPEN, createTerminalSnapshot, writeTerminalOutput, whenTerminalParsed, cancelTerminalOutputFlush,
   flushTerminalOutput, queueTerminalOutput, sendTerminalSnapshot, websocketWritable,
-  readTerminalSnapshot, resizeSession, applyTerminalResize, recordAndSendTerminalEvent,
-  sendTerminalEvent,
+  readTerminalSnapshot, resizeSession, applyTerminalResize, sendSessionEvent,
 } from './terminal-output.js';
 
 function resolveShell() {
@@ -84,7 +82,6 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       id: sessionId,
       workspace,
       generation: persistent?.generation ?? randomUUID(),
-      forceSnapshot: !!persistent,
       cwd,
       pty: shellProcess,
       flowControl: createPtyFlowControl(shellProcess),
@@ -95,9 +92,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       snapshotDirty: false,
       socket: null,
       socketReady: false,
-      inputSocket: null,
-      pendingOutputEvents: 0,
-      terminalEvents: createTerminalEventLog(),
+      outputSeq: 0,
       inputStreams: new Map(),
       closed: false,
       disposed: false,
@@ -120,7 +115,6 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       session.disposeCwdTracker?.();
       cancelTerminalOutputFlush(session);
       session.socket?.close(1011, 'PTY service disconnected');
-      session.inputSocket?.close(1011, 'PTY service disconnected');
       if (sessions.get(sessionId) === session) sessions.delete(sessionId);
       session.terminal.dispose();
     });
@@ -137,8 +131,8 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       // force-restarted. Ignore that stale process's later onExit callback so it cannot
       // overwrite the replacement session's state.
       writeTerminalOutput(session, message, Buffer.byteLength(message), () => {
-        const output = recordAndSendTerminalEvent(session, { type: 'output', data: message });
-        recordAndSendTerminalEvent(session, { type: 'exit', exitCode, signal });
+        sendSessionEvent(session, { type: 'output', data: message });
+        sendSessionEvent(session, { type: 'exit', exitCode, signal });
         session.socket = null;
         session.socketReady = false;
         if (sessions.get(sessionId) === session) {
@@ -152,7 +146,6 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
         session.flowControl.dispose();
         session.disposeCwdTracker?.();
         session.terminal.dispose();
-        return output;
       });
     });
 
@@ -191,15 +184,12 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
     return entry.promise;
   }
 
-  function attachSocket(ws, session, lastSeq = 0) {
-    // Land any buffered output in the event log and snapshot before the replay plan is
-    // computed, so a reconnecting client is never handed a view that is missing it.
+  function attachSocket(ws, session) {
+    // Every attachment starts with an authoritative snapshot. WebSocket already
+    // orders subsequent messages, so no browser replay cursor is needed.
     flushTerminalOutput(session);
     const oldSocket = session.socket;
     oldSocket?.data.outputFlow?.dispose();
-    const oldInputSocket = session.inputSocket;
-    session.inputSocket = null;
-    oldInputSocket?.close(1000, 'Replaced by newer terminal view');
     session.socket = ws;
     ws.data.outputFlow = createViewerFlowControl(session.flowControl);
     session.socketReady = false;
@@ -207,15 +197,11 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       oldSocket.close(1000, 'Replaced by newer terminal view');
     }
 
-    // Snapshot, replay boundary and ready are produced in the same parser callback.
+    // Snapshot and ready are produced in the same parser callback.
     // Writes queued after this barrier cannot overtake the snapshot on the socket.
     whenTerminalParsed(session, () => {
       if (session.socket !== ws || ws.readyState !== WS_OPEN) return;
-      // A new web process has a new replay sequence, even when the PTY generation
-      // survives. Its first viewer must receive the broker's complete snapshot.
-      const replayPlan = getTerminalReplayPlan(session.terminalEvents, session.forceSnapshot ? 0 : lastSeq);
-      session.forceSnapshot = false;
-      const terminalSnapshot = replayPlan.mode === 'reset' ? readTerminalSnapshot(session) : null;
+      const terminalSnapshot = readTerminalSnapshot(session);
       // Advertise ready only after the exact stream and snapshot are established.
       session.socketReady = true;
       ws.send(encodeTerminalServerMessage({
@@ -223,35 +209,20 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
         cwd: session.cwd,
         sessionId: session.id,
         sessionGeneration: session.generation,
-        reset: replayPlan.mode === 'reset',
-        gap: replayPlan.gap,
-        lastSeq: replayPlan.lastSeq,
         cols: session.terminal.cols,
         rows: session.terminal.rows,
       }));
 
-      if (replayPlan.mode === 'replay') {
-        for (const event of replayPlan.events) {
-          sendTerminalEvent(ws, event);
-        }
-      } else {
-        sendTerminalSnapshot(ws, terminalSnapshot, replayPlan.lastSeq);
-      }
+      sendTerminalSnapshot(ws, terminalSnapshot);
       broadcastTabsState(session.workspace);
     });
   }
 
   function detachSocket(session, ws) {
-    if (session.inputSocket === ws) {
-      session.inputSocket = null;
-    }
     if (session.socket === ws) {
       ws.data.outputFlow?.dispose();
       session.socket = null;
       session.socketReady = false;
-      const inputSocket = session.inputSocket;
-      session.inputSocket = null;
-      inputSocket?.close(1000, 'Terminal output disconnected');
       broadcastTabsState(session.workspace);
     }
   }
@@ -283,8 +254,6 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
     session.socket?.close(1000, 'Terminal closed');
     session.socket = null;
     session.socketReady = false;
-    session.inputSocket?.close(1000, 'Terminal closed');
-    session.inputSocket = null;
     session.pty.kill();
     sessions.delete(sessionId);
     session.terminal.dispose();
@@ -301,7 +270,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
     ws.send(encodeTerminalServerMessage({ type: 'error', message }));
   }
 
-  function joinSession(ws, session, workspace, { cols, rows, inputStreamId, lastSeq, knownGeneration }) {
+  function joinSession(ws, session, workspace, { cols, rows, inputStreamId }) {
     if (session.workspace !== workspace || session.disposed || sessions.get(session.id) !== session) {
       sendError(ws, 'Terminal is not available');
       return;
@@ -316,7 +285,7 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
     }
     ws.data.inputStreamId = inputStreamId;
     ws.data.activeSession = session;
-    attachSocket(ws, session, knownGeneration && knownGeneration !== session.generation ? 0 : lastSeq);
+    attachSocket(ws, session);
   }
 
   function handleInit(ws, message) {
@@ -339,45 +308,17 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
     const cols = readNumber(message.cols, 100);
     const rows = readNumber(message.rows, 30);
     const forceRestart = message.forceRestart === true;
-    const lastSeq = readNumber(message.lastSeq, 0);
-    const knownGeneration = readString(message.sessionGeneration);
 
     const existingSession = sessions.get(sessionId);
     if (existingSession && existingSession.workspace !== workspace) {
       sendError(ws, 'Terminal is not available');
       return;
     }
-    if (ws.data.kind === 'terminal-input') {
-      // The output connection owns session creation and replay. An input connection
-      // can only join its exact stream and generation; it never starts another PTY.
-      if (!existingSession || existingSession.closed || existingSession.disposed
-        || !existingSession.socketReady
-        || existingSession.socket?.readyState !== WS_OPEN
-        || existingSession.socket?.data.kind !== 'terminal-output'
-        || existingSession.socket.data.inputStreamId !== inputStreamId
-        || existingSession.generation !== knownGeneration) {
-        sendError(ws, 'Terminal output connection is not ready');
-        ws.close(1008, 'Invalid terminal input attachment');
-        return;
-      }
-      const oldInputSocket = existingSession.inputSocket;
-      // Receipt and parsing of the complete snapshot precede input attachment.
-      existingSession.socket.data.snapshotBufferAllowance = 0;
-      existingSession.inputSocket = ws;
-      ws.data.inputStreamId = inputStreamId;
-      ws.data.activeSession = existingSession;
-      oldInputSocket?.close(1000, 'Replaced by newer terminal input');
-      ws.send(encodeTerminalServerMessage({
-        type: 'ready', sessionId, cwd: existingSession.cwd,
-        sessionGeneration: existingSession.generation,
-      }));
-      return;
-    }
     if (forceRestart || existingSession?.closed) {
       closeSession(sessionId, false);
     }
 
-    const join = { cols, rows, inputStreamId, lastSeq, knownGeneration };
+    const join = { cols, rows, inputStreamId };
     const session = sessions.get(sessionId) ?? openSession(sessionId, { cwd: message.cwd, cols, rows }, workspace);
     if (!(session instanceof Promise)) {
       joinSession(ws, session, workspace, join);
@@ -429,21 +370,14 @@ export function createTerminalSessions({ sessions, persistentPty, workspaces, sp
       return;
     }
 
-    const attachedSocket = ws.data.kind === 'terminal-input'
-      ? activeSession.inputSocket : activeSession.socket;
-    if (attachedSocket !== ws || activeSession.disposed || activeSession.closed
+    if (activeSession.socket !== ws || activeSession.disposed || activeSession.closed
       || sessions.get(activeSession.id) !== activeSession) {
       ws.close(1000, 'Terminal connection replaced');
       return;
     }
 
-    if (ws.data.kind === 'terminal-output' && message.type !== 'ping') {
-      sendError(ws, 'Use the terminal input connection');
-      return;
-    }
-
     if (message.type === 'output-ack') {
-      if (!activeSession.socket?.data.outputFlow?.acknowledge(message.seq)) {
+      if (!ws.data.outputFlow?.acknowledge(message.seq)) {
         sendError(ws, 'Invalid terminal output acknowledgement');
       }
       return;

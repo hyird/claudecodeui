@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { createHarness, emitServerMessage, flushMicrotasks, loadLoop, readyInputConnection, sentMessagesOfType } from './test-support/component-harness';
+import { createHarness, emitServerMessage, flushMicrotasks, loadLoop, finishTerminalRestore, sentMessagesOfType } from './test-support/component-harness';
 import { decodeTerminalClientMessage } from '../../server/wire.js';
 import { encodeTerminalClientMessage } from './wsCodec';
 
@@ -9,7 +9,8 @@ async function connected() {
   const output = harness.sockets[0];
   output.open();
   emitServerMessage(harness, output, { type: 'ready', sessionGeneration: 'flow' });
-  const input = await readyInputConnection(harness, 'flow');
+  const input = await finishTerminalRestore(harness);
+  input.sent.length = 0;
   return { harness, cleanup, output, input, terminal: harness.terminalInstances[0] };
 }
 
@@ -59,9 +60,11 @@ test('a callback from a disconnected output cannot credit its replacement connec
   output.close();
   harness.clock.advance(1000);
   const replacement = harness.sockets.at(-1)!;
+  terminal.deferWrites = false;
   replacement.open();
   emitServerMessage(harness, replacement, { type: 'ready', sessionGeneration: 'flow' });
-  const newInput = await readyInputConnection(harness, 'flow');
+  const newInput = await finishTerminalRestore(harness);
+  newInput.sent.length = 0;
   parsed();
   harness.clock.advance(100);
   expect(sentMessagesOfType(newInput, 'output-ack')).toEqual([]);

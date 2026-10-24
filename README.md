@@ -7,19 +7,19 @@
 - 多标签 Web 终端
 - 标签和浏览器标题只显示当前工作目录；Linux 自动跟踪 shell 路径，终端程序设置的任务标题不会覆盖它
 - 管理员添加协作者；每个账户有独立的标签和 PTY 会话
-- 断线后短时间内可重连并回放输出
+- 断线后自动重连，恢复当前屏幕和保留的历史
 - 主题和字号设置
 - 自动适配终端尺寸
 - 支持手机横竖屏、软键盘和安全区；标签栏可左右滑动，终端可上下滑动查看历史输出
 - 移动端快捷键栏提供键盘开关、Esc、Tab、Ctrl+C 和方向键；全屏终端应用的滑动遵循其鼠标或方向键模式
-- 上行、下行分别使用 `/terminal/input` 和 `/terminal/output` 两个 WebSocket
-- 每个终端标签持有独立的上下行连接，切换标签不会断开或重新恢复历史
+- 每个终端标签使用一个 `/terminal` WebSocket，承载输入、输出、尺寸更新和消费确认
+- 切换标签不会断开连接或重新恢复历史
 - 整个界面（包括登录页）统一使用 Maple Mono NF CN 编程字体，包含 Nerd Font 图标和 2:1 中英文等宽字形；不依赖外部字体服务
 - Unicode 15 emoji/组合字符占列支持
 - Linux systemd 部署通过独立 Node.js / node-pty 服务保留更新前的终端会话
 - 历史最多保留最近 10,000 行；恢复快照按 16 MiB 预算进一步裁掉旧行，保留完整当前屏幕
 - 原生滚轮和滚动条同步更新，无需服务端滚动往返
-- 刷新时整份压缩快照一次恢复，完成绘制后再连接上行，避免逐行滚动和初始化竞态
+- 刷新时整份压缩快照一次恢复，解析完成后发送待确认输入，避免逐行滚动和重复执行命令
 
 首次启动时创建管理员账户，登录后可从工具栏的“管理协作者”添加或移除账户。
 移除账户会结束该账户的终端会话。账户之间的终端状态独立，但 PTY 仍以
@@ -41,9 +41,9 @@ npm run dev
 
 代码按职责组织：
 
-- `server/index.js` 负责装配，HTTP 鉴权、WebSocket 分发、标签状态、终端会话和输出回放分别在独立模块中。
+- `server/index.js` 负责装配，HTTP 鉴权、WebSocket 分发、标签状态、终端会话和快照恢复分别在独立模块中。
 - `src/App.tsx` 负责页面组合；标签状态与连接在 `use-terminal-tabs.ts`，拖动和键盘交互在 `TerminalTabs.tsx`。
-- `TerminalPane.tsx` 负责终端组件生命周期；双 WebSocket 连接在 `connection.ts`，输入确认状态在 `input-state.ts`，尺寸计算和渲染配置分别在布局与渲染模块中。
+- `TerminalPane.tsx` 负责终端组件生命周期；单 WebSocket 连接在 `connection.ts`，输入确认状态在 `input-state.ts`，尺寸计算和渲染配置分别在布局与渲染模块中。
 - `server/pty-broker.js` 仍是独立进程入口，通过 `pty-channel.js` 与 Web 服务通信。
 
 终端和界面字体都使用 Maple Mono NF CN v7.9（系统字体仅作后备），字体与授权文件在
@@ -63,7 +63,7 @@ PTY 使用 Microsoft 的 `node-pty` 包，通过原生 PTY 事件接收输出。
 Windows 使用 Visual Studio C++ Build Tools。构建和部署必须在目标平台上执行，不能跨平台复制原生模块。
 终端打开前等待常规和粗体的基础字体加载完成，避免用后备字体的尺寸启动 PTY 后再改变网格。
 下行输出只在同一轮事件循环内合并，按 16 KiB 拆帧；终端绘制由 xterm 原生动画帧和脏行调度。
-参考 [xterm 流控指南](https://xtermjs.org/docs/guides/flowcontrol/) 和 ttyd 的消费确认机制，
+参考 [xterm 流控指南](https://xtermjs.org/docs/guides/flowcontrol/) 和 ttyd 的流控机制，
 浏览器通过 `terminal.write` 的完成回调累计确认已解析的输出序号（每 64 KiB 或 50 ms 一次）。
 未消费输出达到 256 KiB 时暂停 PTY，降到 64 KiB 后恢复；输入和心跳仍可发送。
 后台标签继续接收和解析输出，通过隐藏容器触发 xterm 原生暂停绘制，切回时整屏重绘一次；WebGL 上下文丢失后会自动重建
@@ -72,7 +72,7 @@ Windows 使用 Visual Studio C++ Build Tools。构建和部署必须在目标平
 和 [VS Code](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/contrib/terminal/browser/xterm/xtermTerminal.ts)
 的接入方式，终端输出、能力探测和局部刷新由 xterm 原生处理，不添加 OMP/Vim 特判，也不修改渲染器私有方法。
 FitAddon 在选定渲染器后测量独立内容容器，避免从取整后的屏幕高度反推单元格尺寸。
-服务端无头终端解析使用相同的高低水位背压，每个字节都会解析、记录，不再跳过解析后从回放窗口补齐。
+服务端无头终端解析使用相同的高低水位背压，每个字节都会解析，不跳过解析。
 多个消费者同时积压时，要全部恢复到低水位才会恢复读取；断开浏览器会释放该浏览器的暂停状态，
 后台命令继续运行。持久 PTY 通道通过 Node 流的 pause/resume 和 write/drain 传递背压。
 恢复快照在 zlib 线程池压缩，不阻塞事件循环；压缩期间暂停生产者以限制待发送队列。
@@ -80,7 +80,13 @@ FitAddon 在选定渲染器后测量独立内容容器，避免从取整后的�
 
 尺寸变更与输出共用有序下行：浏览器只请求新尺寸，等旧尺寸输出解析完成后再切换网格。
 持久模式利用原有 PTY 连接的命令顺序确认尺寸边界，无需重启 PTY 服务；
-恢复快照带上实际网格尺寸，增量重连也按原顺序重放尺寸变更。
+恢复快照带上实际网格尺寸，后续尺寸变更与实时输出按 WebSocket 顺序处理。
+
+会话恢复采用 [VS Code 的无头终端序列化思路](https://github.com/microsoft/vscode/blob/main/src/vs/platform/terminal/node/ptyService.ts)：
+每次浏览器连接都先恢复完整快照，再接收实时输出。不在 Web 服务保存第二份增量回放日志，
+也不在浏览器维护乱序缓冲或缺号重试。独立 PTY 服务内部的短日志仅用于原子衔接快照与实时订阅，
+避免 Web 服务重启后的连接切换丢失输出。输入保留序号和确认，重连时只重试未确认输入；
+会话代次改变时丢弃旧输入，防止将旧命令发送到新 shell。
 
 测试分三部分：服务端用例跑在 `node:test` 上；前端组件行为和持久会话用例由 Vitest 在 Node 中运行；
 `tsconfig.spec.json` 对 spec 做类型检查。组件用例继续使用 `src/terminal/test-support/component-harness.ts`。

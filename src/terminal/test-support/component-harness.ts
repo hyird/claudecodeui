@@ -752,14 +752,15 @@ export function emitServerMessage(harness: Harness, socket: FakeSocket, message:
   socket.emit('message', harness.encode(message));
 }
 
-export async function readyInputConnection(harness: Harness, generation: string) {
+export async function finishTerminalRestore(harness: Harness) {
   await flushMicrotasks();
-  const input = harness.sockets.at(-1)!;
-  expect(input.url).toBe('/terminal/input');
-  input.open();
-  emitServerMessage(harness, input, { type: 'ready', sessionGeneration: generation });
-  await flushMicrotasks();
-  return input;
+  const socket = harness.sockets.at(-1)!;
+  expect(socket.url).toBe('/terminal');
+  if (!sentMessagesOfType(socket, 'resize').length) {
+    emitServerMessage(harness, socket, { type: 'output', data: '' });
+    await flushMicrotasks();
+  }
+  return socket;
 }
 
 export function makeFailureSequence(harness: Harness) {

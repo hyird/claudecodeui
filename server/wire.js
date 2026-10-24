@@ -1,4 +1,4 @@
-import { deflate, deflateSync } from 'node:zlib';
+import { deflate } from 'node:zlib';
 import { promisify } from 'node:util';
 
 import { cloudcli } from '../proto/messages.js';
@@ -43,9 +43,7 @@ export function decodeTerminalClientMessage(raw) {
         rows: init.rows,
         cwd: init.cwd,
         forceRestart: init.forceRestart,
-        lastSeq: init.lastSeq,
         inputStreamId: init.inputStreamId,
-        sessionGeneration: init.sessionGeneration,
       };
     }
     case 'input':
@@ -76,9 +74,6 @@ export function encodeTerminalServerMessage(message) {
         ready: {
           cwd: message.cwd ?? '',
           sessionId: message.sessionId ?? '',
-          reset: message.reset === true,
-          gap: message.gap === true,
-          lastSeq: message.lastSeq ?? 0,
           sessionGeneration: message.sessionGeneration ?? '',
           cols: message.cols ?? 0,
           rows: message.rows ?? 0,
@@ -124,17 +119,10 @@ function encodeOutputMessage(data, compressed, seq) {
   return TerminalServerMessage.encode(message).finish();
 }
 
-// The split downlink sends raw bytes to avoid compression/decompression latency
-// on fast networks. Legacy clients retain optional DEFLATE compatibility.
+// Live output is raw UTF-8; only reconnect snapshots are compressed.
 // `data` is text or its already encoded UTF-8 bytes, which are framed without a copy.
-export function encodeTerminalOutput(data, seq = 0, compress = true) {
+export function encodeTerminalOutput(data, seq = 0) {
   const raw = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
-  if (compress && raw.length >= TERMINAL_OUTPUT_COMPRESSION_THRESHOLD) {
-    const compressed = deflateSync(raw, { level: 1 });
-    if (compressed.length < raw.length) {
-      return encodeOutputMessage(compressed, true, seq);
-    }
-  }
   return encodeOutputMessage(raw, false, seq);
 }
 
@@ -151,11 +139,11 @@ export async function encodeTerminalSnapshot(text) {
   return encodeOutputMessage(raw, false, 0);
 }
 
-export function sendTerminalOutput(ws, data, seq = 0, compress = true) {
+export function sendTerminalOutput(ws, data, seq = 0) {
   if (!data || data.length === 0) {
     return;
   }
-  return ws.send(encodeTerminalOutput(data, seq, compress));
+  return ws.send(encodeTerminalOutput(data, seq));
 }
 
 // ---- /terminal/tabs : client -> server ----------------------------------

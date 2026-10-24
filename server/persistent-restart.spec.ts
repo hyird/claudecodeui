@@ -56,12 +56,10 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     const ws = new WebSocket(`ws://127.0.0.1:${port}${pathname}`, ['cloudcli.v1', `auth.${token}`]);
     sockets.push(ws);
     const messages: any[] = [];
-    let creditSocket: WebSocket | undefined;
     let parsedSeq: number | undefined;
-    let snapshotSeq = 0;
     const acknowledge = () => {
-      if (parsedSeq !== undefined && creditSocket?.readyState === WebSocket.OPEN) {
-        creditSocket.send(cloudcli.TerminalClientMessage.encode({ outputAck: { seq: parsedSeq } }).finish());
+      if (parsedSeq !== undefined && ws.readyState === WebSocket.OPEN) {
+        ws.send(cloudcli.TerminalClientMessage.encode({ outputAck: { seq: parsedSeq } }).finish());
       }
     };
     const terminal = new headlessXterm.Terminal({ allowProposedApi: true, cols: 200, rows: 24, scrollback: terminalPolicy.scrollbackLines });
@@ -73,11 +71,10 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
       messages.push(message);
       const output = 'output' in message ? message.output : null;
       if (output?.data) terminal.write(output.compressed ? inflateSync(output.data) : output.data, () => {
-        parsedSeq = Number(('seq' in message ? message.seq : 0) || snapshotSeq);
+        parsedSeq = Number(('seq' in message ? message.seq : 0));
         acknowledge();
       });
-      if ('ready' in message && message.ready?.reset) {
-        snapshotSeq = Number(message.ready.lastSeq);
+      if ('ready' in message && message.ready) {
         terminal.reset();
         if (message.ready.cols && message.ready.rows) terminal.resize(message.ready.cols, message.ready.rows);
       }
@@ -89,7 +86,7 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     await new Promise<void>((resolve, reject) => { ws.addEventListener('open', () => resolve(), { once: true }); ws.addEventListener('error', reject, { once: true }); });
     if (init) ws.send(cloudcli.TerminalClientMessage.encode({ init }).finish());
     await waitFor(() => messages.some((m) => m.body === (pathname.endsWith('/tabs') ? 'tabs' : 'ready')));
-    return { ws, messages, terminal, acknowledgeThrough(socket: WebSocket) { creditSocket = socket; acknowledge(); } };
+    return { ws, messages, terminal };
   };
   try {
     await waitFor(async () => { try { return (await requestPtyBroker(socketPath, { type: 'ping' }) as any).ok; } catch { return false; } });
@@ -101,10 +98,9 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     const tabs = await connect('/terminal/tabs', registration.token);
     tabId = tabs.messages[0].tabs.activeId;
     const streamId = randomUUID();
-    const output = await connect('/terminal/output', registration.token, { sessionId: tabId, inputStreamId: streamId, cols: 200, rows: 24 });
+    const output = await connect('/terminal', registration.token, { sessionId: tabId, inputStreamId: streamId, cols: 200, rows: 24 });
     const generation = output.messages.find((m) => m.ready).ready.sessionGeneration;
-    const input = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
-    output.acknowledgeThrough(input.ws);
+    const input = output;
     const original = await inspect();
     expect(original.pid).toBeGreaterThan(0);
     input.ws.send(cloudcli.TerminalClientMessage.encode({ resize: { cols: 100, rows: 30 } }).finish());
@@ -125,37 +121,32 @@ const projectDir = fileURLToPath(new URL('..', import.meta.url));
     await start();
     const restoredTabs = await connect('/terminal/tabs', registration.token);
     expect(restoredTabs.messages[0].tabs.activeId).toBe(tabId);
-    const restored = await connect('/terminal/output', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation, lastSeq: 1, cols: 200, rows: 24 });
+    const restored = await connect('/terminal', registration.token, { sessionId: tabId, inputStreamId: streamId, cols: 200, rows: 24 });
     expect(restored.messages.find((m) => m.ready).ready.sessionGeneration).toBe(generation);
     await waitFor(() => restored.terminal.buffer.active.baseY >= terminalPolicy.scrollbackLines - 100);
     expect(restored.terminal.buffer.active.type).toBe('normal');
-    const restoredInput = await connect('/terminal/input', registration.token, { sessionId: tabId, inputStreamId: streamId, sessionGeneration: generation });
-    restored.acknowledgeThrough(restoredInput.ws);
+    const restoredInput = restored;
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 1, data: command } }).finish());
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 2, data: 'printf "CT_FINAL_%s\\n" "$CT_COUNT"\r' } }).finish());
     await waitFor(async () => (await inspect()).data.includes('CT_FINAL_1'));
     expect((await inspect()).pid).toBe(original.pid);
-    // Exercise incremental replay through actual module imports. Source-extraction
-    // tests previously hid a missing replay-function import that crashed the web process.
+    // A browser reconnect also restores a full snapshot, including output that
+    // arrived while disconnected, without a second WebSocket handshake.
     await waitFor(() => restored.messages.some((m) => m.output && Buffer.from(m.output.data).includes('CT_FINAL_1')));
-    const lastSeq = Math.max(...restored.messages.map((m) => Number(m.seq ?? 0)));
-    expect(lastSeq).toBeGreaterThan(0);
     restoredInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 3,
-      data: '(sleep 0.2; printf "\\nINCREMENTAL_REPLAY_OK\\n") &\r' } }).finish());
+      data: '(sleep 0.2; printf "\\nSNAPSHOT_RECONNECT_OK\\n") &\r' } }).finish());
     await waitFor(() => restoredInput.messages.some((m) => m.inputAck?.inputSeq === 3));
     restored.ws.close();
     await waitFor(() => restored.ws.readyState === WebSocket.CLOSED);
-    await waitFor(async () => /\r?\nINCREMENTAL_REPLAY_OK\r?\n/.test((await inspect()).data));
-    const replayed = await connect('/terminal/output', registration.token, { sessionId: tabId,
-      inputStreamId: streamId, sessionGeneration: generation, lastSeq, cols: 200, rows: 24 });
+    await waitFor(async () => /\r?\nSNAPSHOT_RECONNECT_OK\r?\n/.test((await inspect()).data));
+    const replayed = await connect('/terminal', registration.token, { sessionId: tabId,
+      inputStreamId: streamId, cols: 200, rows: 24 });
     const replayReady = replayed.messages.find((m) => m.ready).ready;
-    expect({ reset: replayReady.reset, gap: replayReady.gap, cursor: lastSeq, serverSeq: Number(replayReady.lastSeq) })
-      .toMatchObject({ reset: false, gap: false });
-    await waitFor(() => replayed.messages.some((m) => m.output && Buffer.from(m.output.data).includes('INCREMENTAL_REPLAY_OK')));
+    expect(replayReady.sessionGeneration).toBe(generation);
+    await waitFor(() => Array.from({ length: replayed.terminal.buffer.active.length }, (_, i) =>
+      replayed.terminal.buffer.active.getLine(i)?.translateToString(true) ?? '').join('\n').includes('SNAPSHOT_RECONNECT_OK'));
     expect((await fetch(`${baseUrl}/api/health`)).ok).toBe(true);
-    const replayedInput = await connect('/terminal/input', registration.token, { sessionId: tabId,
-      inputStreamId: streamId, sessionGeneration: generation });
-    replayed.acknowledgeThrough(replayedInput.ws);
+    const replayedInput = replayed;
     // Disconnect the browser and produce output while the web process is down.
     replayedInput.ws.send(cloudcli.TerminalClientMessage.encode({ input: { inputSeq: 4, data: '(sleep 0.3; printf "\\nBROKER_BACKGROUND_OK\\n") &\r' } }).finish());
     await waitFor(() => replayedInput.messages.some((m) => m.inputAck?.inputSeq === 4));

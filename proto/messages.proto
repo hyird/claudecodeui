@@ -14,9 +14,8 @@ message TerminalInit {
   uint32 rows = 3;
   string cwd = 4;
   bool force_restart = 5;
-  uint32 last_seq = 6;
   string input_stream_id = 7;
-  string session_generation = 8;
+  reserved 6, 8;
 }
 message TerminalInput {
   string data = 1;
@@ -42,9 +41,7 @@ message TerminalClientMessage {
 message TerminalReady {
   string cwd = 1;
   string session_id = 2;
-  bool reset = 3;
-  bool gap = 4;
-  uint32 last_seq = 5;
+  reserved 3, 4, 5;
   string session_generation = 6;
   uint32 cols = 7;
   uint32 rows = 8;
@@ -65,6 +62,7 @@ message TerminalServerMessage {
     TerminalResize resize = 8;
   }
   reserved 7;
+  // Output consumption receipt, not an application-level ordering mechanism.
   uint32 seq = 100;
 }
 

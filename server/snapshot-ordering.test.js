@@ -29,8 +29,8 @@ function decodeServerMessage(bytes) {
     }
     case 'ready':
       return {
-        type: 'ready', cwd: message.ready.cwd, sessionId: message.ready.sessionId, reset: message.ready.reset,
-        gap: message.ready.gap, lastSeq: message.ready.lastSeq, sessionGeneration: message.ready.sessionGeneration, seq,
+        type: 'ready', cwd: message.ready.cwd, sessionId: message.ready.sessionId,
+        sessionGeneration: message.ready.sessionGeneration, seq,
       };
     case 'exit':
       return { type: 'exit', exitCode: message.exit.exitCode, signal: message.exit.signal, seq };
@@ -139,7 +139,7 @@ function setup(t, options) {
   const session = h.sessions.get(h.sessionId);
   h.terminals.detachSocket(session, boot);
   boot.readyState = 3;
-  return { ...h, session, attach: (ws, lastSeq = 0, fields = {}) => h.init(ws, { lastSeq, ...fields }) };
+  return { ...h, session, attach: (ws, fields = {}) => h.init(ws, fields) };
 }
 
 const drain = (terminal) => new Promise((resolve) => terminal.write('', resolve));
@@ -191,7 +191,7 @@ test('web PTYs advertise a remote clipboard route to fullscreen programs', (t) =
   assert.equal(ptyOptions[0].env.TERM, 'xterm-256color');
 });
 
-test('attach snapshot includes pending parsed output at exactly the advertised sequence', async (t) => {
+test('attach snapshot includes prior output and precedes later live output', async (t) => {
   const { session, attach } = setup(t);
   const ws = socket(session.workspace);
   queueTerminalOutput(session, 'before');
@@ -203,12 +203,11 @@ test('attach snapshot includes pending parsed output at exactly the advertised s
 
   const [ready, snapshot, live] = ws.messages;
   assert.equal(ready.type, 'ready');
-  assert.equal(ready.lastSeq, 1);
   assert.equal(ready.sessionGeneration, session.generation);
   assert.equal(snapshot.data, 'before');
   assert.equal(snapshot.seq, undefined);
   assert.equal(live.data, '-after');
-  assert.equal(live.seq, 2);
+  assert.equal(live.seq, 1);
   assert.equal(ws.messages.length, 3);
 });
 
@@ -253,19 +252,18 @@ test('fullscreen mouse encoding survives a reset snapshot', async (t) => {
   assert.equal(readTerminalSnapshot(session).endsWith('\x1b[?1006h'), false);
 });
 
-test('incremental reconnect replays pending output once before newer live frames', async (t) => {
+test('reconnect restores a complete snapshot before newer live frames', async (t) => {
   const { session, attach } = setup(t);
   queueTerminalOutput(session, 'one');
   flushTerminalOutput(session);
   await drain(session.terminal);
   queueTerminalOutput(session, 'two');
   const ws = socket(session.workspace);
-  attach(ws, 1);
+  attach(ws);
   queueTerminalOutput(session, 'three');
   flushTerminalOutput(session);
   await settled(session, ws);
-  assert.equal(ws.messages[0].reset, false);
-  assert.deepEqual(ws.messages.slice(1).map(({ seq, data }) => [seq, data]), [[2, 'two'], [3, 'three']]);
+  assert.deepEqual(ws.messages.slice(1).map(({ data }) => data), ['onetwo', 'three']);
 });
 
 test('resize preserves old-width parsing and serializes only when a snapshot is requested', async (t) => {
@@ -291,7 +289,7 @@ test('resize preserves old-width parsing and serializes only when a snapshot is 
   await new Promise((resolve) => reference.write('JK', resolve));
   assert.equal(serialize(), referenceSerializer.serialize());
   const ws = socket(session.workspace);
-  attach(ws, 0, { cols: 4, rows: 4 });
+  attach(ws, { cols: 4, rows: 4 });
   await settled(session, ws);
   assert.equal(serializations, 1);
 });
@@ -315,7 +313,7 @@ test('new output and resize release an obsolete serialized snapshot', async (t) 
   assert.ok(readTerminalSnapshot(session).includes('first second'));
 });
 
-test('resize is committed and replayed between the exact old-size and new-size output frames', async t => {
+test('resize follows old-size output and reconnect restores the resulting grid', async t => {
   const { cols, oldRows, newRows, initial, oldPaint, newPaint } = resizeFixture;
   const { session, attach } = setup(t, { cols, rows: oldRows });
   const ws = socket(session.workspace);
@@ -324,7 +322,7 @@ test('resize is committed and replayed between the exact old-size and new-size o
   queueTerminalOutput(session, initial);
   flushTerminalOutput(session);
   await drain(session.terminal);
-  const lastSeq = session.terminalEvents.lastSeq;
+  const lastSeq = session.outputSeq;
   ws.messages.length = 0;
   queueTerminalOutput(session, oldPaint);
   applyTerminalResize(session, cols, newRows);
@@ -332,7 +330,7 @@ test('resize is committed and replayed between the exact old-size and new-size o
   flushTerminalOutput(session);
   await drain(session.terminal);
   assert.deepEqual(ws.messages.map(message => [message.type, message.seq]),
-    [['output', lastSeq + 1], ['resize', lastSeq + 2], ['output', lastSeq + 3]]);
+    [['output', lastSeq + 1], ['resize', undefined], ['output', lastSeq + 2]]);
   const reference = new headlessXterm.Terminal({ allowProposedApi: true, cols, rows: oldRows, scrollback: 1000 });
   const replay = new headlessXterm.Terminal({ allowProposedApi: true, cols, rows: oldRows, scrollback: 1000 });
   t.after(() => { reference.dispose(); replay.dispose(); });
@@ -340,11 +338,10 @@ test('resize is committed and replayed between the exact old-size and new-size o
   reference.resize(cols, newRows);
   await new Promise(resolve => reference.write(newPaint, resolve));
   assert.deepEqual(bufferRows(session.terminal), bufferRows(reference));
-  await new Promise(resolve => replay.write(initial, resolve));
+  replay.resize(cols, newRows);
   const reconnected = socket(session.workspace);
-  attach(reconnected, lastSeq, { cols, rows: newRows });
+  attach(reconnected, { cols, rows: newRows });
   await settled(session, reconnected);
-  assert.equal(reconnected.messages[0].reset, false);
   for (const event of reconnected.messages.slice(1)) {
     if (event.type === 'resize') replay.resize(event.cols, event.rows);
     else if (event.type === 'output') await new Promise(resolve => replay.write(event.data, resolve));
@@ -370,7 +367,6 @@ test('newer attachments and closed sessions cancel obsolete parser callbacks', a
   terminals.closeSession(session.id);
   await drain(session.terminal);
   assert.equal(third.messages.length, 0);
-  assert.equal(session.terminalEvents.lastSeq, 1);
 });
 
 test('process exit follows queued output and an already requested attachment', async (t) => {
@@ -382,22 +378,20 @@ test('process exit follows queued output and an already requested attachment', a
   await settled(session, ws);
   assert.deepEqual(ws.messages.map((message) => message.type), ['ready', 'output', 'output', 'exit']);
   assert.equal(ws.messages[1].data, 'final bytes');
-  assert.equal(ws.messages.at(-1).seq, 3);
   assert.equal(sessions.has(session.id), false);
   // The exit is persisted for the tab bar, and the scrollback copy is released.
   assert.deepEqual(stored.get(1).exitedTabs, [session.id]);
   assert.equal(session.disposed, true);
 });
 
-test('generation mismatch forces a fresh snapshot even if the old sequence is in range', async (t) => {
+test('each attachment restores the snapshot and announces the current generation', async (t) => {
   const { session, attach, send } = setup(t);
   queueTerminalOutput(session, 'new shell');
   flushTerminalOutput(session);
   await drain(session.terminal);
   const ws = socket(session.workspace);
-  attach(ws, 1, { sessionGeneration: randomUUID() });
+  attach(ws);
   await settled(session, ws);
-  assert.equal(ws.messages[0].reset, true);
   assert.equal(ws.messages[0].sessionGeneration, session.generation);
   send(ws, { input: { inputSeq: 1, data: 'new command' } });
   send(ws, { input: { inputSeq: 1, data: 'new command' } });
@@ -482,7 +476,7 @@ test('sustained output stays bounded, ordered and complete through parser callba
   });
 });
 
-test('multi-byte output is split on UTF-8 boundaries and recorded with its byte size', async (t) => {
+test('multi-byte output is split on UTF-8 boundaries', async (t) => {
   const { session, attach } = setup(t);
   const ws = socket(session.workspace);
   ws.data.kind = 'terminal-output';
@@ -495,13 +489,12 @@ test('multi-byte output is split on UTF-8 boundaries and recorded with its byte 
   const frames = ws.messages.filter((message) => message.type === 'output' && message.seq > 0);
   assert.ok(frames.length > 1);
   assert.equal(frames.map((frame) => frame.data).join(''), output);
-  for (const event of session.terminalEvents.events) {
-    assert.equal(event.bytes, Buffer.byteLength(event.data));
-    assert.ok(event.bytes <= 16 * 1024);
+  for (const event of frames) {
+    assert.ok(Buffer.byteLength(event.data) <= 16 * 1024);
   }
 });
 
-test('a slow terminal viewer is disconnected while replay state remains available', async (t) => {
+test('a slow terminal viewer is disconnected while its reconnect snapshot remains available', async (t) => {
   const { session, attach } = setup(t);
   const slow = socket(session.workspace);
   attach(slow);
@@ -512,7 +505,6 @@ test('a slow terminal viewer is disconnected while replay state remains availabl
   flushTerminalOutput(session);
   await drain(session.terminal);
   assert.equal(slow.closedCode, 1013);
-  assert.equal(session.terminalEvents.lastSeq, 1);
 
   const resumed = socket(session.workspace);
   attach(resumed);
@@ -520,7 +512,7 @@ test('a slow terminal viewer is disconnected while replay state remains availabl
   assert.ok(resumed.messages.some((message) => message.type === 'output' && message.data.includes('still running')));
 });
 
-test('live output reaches a ready downlink before the headless parser and is committed once', async (t) => {
+test('live output reaches a ready downlink before the headless parser without duplicate delivery', async (t) => {
   const { session, attach } = setup(t);
   const output = socket(session.workspace);
   attach(output);
@@ -530,9 +522,9 @@ test('live output reaches a ready downlink before the headless parser and is com
   queueTerminalOutput(session, 'two');
   flushTerminalOutput(session);
   assert.deepEqual(output.messages.filter((message) => message.type === 'output' && message.seq > 0).map(({ seq, data }) => [seq, data]), [[1, 'one'], [2, 'two']]);
-  assert.equal(session.terminalEvents.lastSeq, 0, 'live output does not wait for snapshot parsing');
+  assert.ok(session.parseBacklogBytes > 0, 'live output does not wait for snapshot parsing');
   await drain(session.terminal);
-  assert.equal(session.terminalEvents.lastSeq, 2);
+  assert.equal(session.parseBacklogBytes, 0);
   assert.equal(output.messages.filter((message) => message.type === 'output' && message.seq > 0).length, 2);
 });
 
@@ -547,7 +539,6 @@ test('a parser backlog pauses the PTY and parses every byte before resuming', as
   assert.equal(session.pty.paused, false);
   assert.equal(session.pty.pauses, 1);
   assert.equal(session.pty.resumes, 1);
-  assert.equal(session.terminalEvents.events.map((event) => event.data).join(''), output);
   assert.match(session.serializer.serialize(), /flooded/);
   assert.equal(session.parseBacklogBytes, 0);
 });
@@ -563,8 +554,7 @@ test('a restore requested during a parser backlog includes every earlier output 
   await settled(session, ws);
   await settled(session, ws);
   const [ready, snapshot] = ws.messages;
-  assert.equal(ready.lastSeq, session.terminalEvents.lastSeq);
-  assert.equal(ready.reset, true);
+  assert.equal(ready.type, 'ready');
   assert.match(snapshot.data, /retained/);
   assert.equal(session.parseBacklogBytes, 0);
 });
@@ -572,11 +562,10 @@ test('a restore requested during a parser backlog includes every earlier output 
 test('browser consumption pauses output while input and heartbeats continue, then resumes below low water', async (t) => {
   const { session, init, send, terminals } = setup(t);
   const inputStreamId = randomUUID();
-  const output = socket(session.workspace, 'terminal-output');
+  const output = socket(session.workspace, 'terminal');
   init(output, { inputStreamId });
   await settled(session, output);
-  const input = socket(session.workspace, 'terminal-input');
-  init(input, { inputStreamId, sessionGeneration: session.generation });
+  const input = output;
   send(input, { outputAck: { seq: 0 } });
 
   const flood = 'x'.repeat(OUTPUT_HIGH_WATER + 16 * 1024);
@@ -609,80 +598,11 @@ test('browser consumption pauses output while input and heartbeats continue, the
   assert.equal(session.pty.paused, false, 'disconnected viewers must not freeze background commands');
 });
 
-test('input acknowledgements use a separate socket even while the output viewer is congested', async (t) => {
-  const { session, init, send } = setup(t);
-  const streamId = randomUUID();
-  const output = socket(session.workspace, 'terminal-output');
-  init(output, { inputStreamId: streamId });
-  await settled(session, output);
-  const input = socket(session.workspace, 'terminal-input');
-  init(input, { inputStreamId: streamId, sessionGeneration: session.generation });
-  assert.equal(session.socket, output);
-  assert.equal(session.inputSocket, input);
-  output.getBufferedAmount = () => 2 * 1024 * 1024;
-  send(input, { input: { data: 'echo test\r', inputSeq: 1 } });
-  send(input, { input: { data: 'echo test\r', inputSeq: 1 } });
-  assert.deepEqual(session.pty.writes, ['echo test\r']);
-  assert.deepEqual(input.messages.map((message) => message.type), ['ready', 'input-ack', 'input-ack']);
-  assert.equal(output.messages.some((message) => message.type === 'input-ack'), false);
-  send(output, { input: { data: 'forbidden', inputSeq: 2 } });
-  assert.deepEqual(session.pty.writes, ['echo test\r']);
-});
-
-test('the advertised output-ready state already accepts its matching input attachment', async (t) => {
-  const { session, init } = setup(t);
-  const streamId = randomUUID();
-  const output = socket(session.workspace, 'terminal-output');
-  const input = socket(session.workspace, 'terminal-input');
-  const send = output.send;
-  output.send = function (bytes) {
-    send.call(this, bytes);
-    const message = this.messages.at(-1);
-    if (message.type === 'ready') init(input, { inputStreamId: streamId, sessionGeneration: message.sessionGeneration });
-  };
-  init(output, { inputStreamId: streamId });
-  await settled(session, output);
-  assert.equal(input.messages[0].type, 'ready');
-  assert.equal(input.closedCode, undefined);
-  assert.equal(session.inputSocket, input);
-});
-
-test('input attachment rejects mismatched streams and generations without creating a PTY', async (t) => {
-  const { session, ptys, init } = setup(t);
-  const streamId = randomUUID();
-  const output = socket(session.workspace, 'terminal-output');
-  init(output, { inputStreamId: streamId });
-  await settled(session, output);
-  for (const fields of [
-    { inputStreamId: randomUUID(), sessionGeneration: session.generation },
-    { inputStreamId: streamId, sessionGeneration: randomUUID() },
-  ]) {
-    const input = socket(session.workspace, 'terminal-input');
-    init(input, fields);
-    assert.equal(input.closedCode, 1008);
-  }
-  assert.equal(ptys.length, 1);
-  assert.equal(session.socket, output);
-});
-
-test('closing the output attachment also detaches its input socket without killing the shell', async (t) => {
-  const { session, attach, terminals } = setup(t);
-  const output = socket(session.workspace);
-  attach(output);
-  await settled(session, output);
-  const input = socket(session.workspace);
-  session.inputSocket = input;
-  terminals.detachSocket(session, output);
-  assert.equal(input.readyState, 3);
-  assert.equal(session.inputSocket, null);
-  assert.equal(session.pty.killed, undefined);
-});
-
 test('reattach during queued process exit creates a new generation immune to stale finalization', async (t) => {
   const { session, init, sessions } = setup(t);
   session.pty.emitExit({ exitCode: 0 });
   const ws = socket(session.workspace);
-  init(ws, { sessionGeneration: session.generation, lastSeq: 0 });
+  init(ws);
   const replacement = sessions.get(session.id);
   assert.notEqual(replacement.generation, session.generation);
   await drain(session.terminal);
@@ -750,7 +670,6 @@ test('persistent sessions open asynchronously while the viewer keeps its heartbe
   assert.equal(ws.readyState, 3, 'the later viewer replaces the earlier one');
   const ready = second.messages.find((message) => message.type === 'ready');
   assert.equal(ready.sessionGeneration, 'pty:broker-generation');
-  assert.equal(ready.reset, true);
   assert.equal(ready.cwd, '/srv');
   assert.ok(second.messages.some((message) => message.type === 'output' && message.data.includes('restored history')));
 });
@@ -803,4 +722,19 @@ test('an unavailable persistent service fails the viewer instead of starting a l
   assert.equal(ptys.length, 0);
   assert.equal(ws.closedCode, 1011);
   assert.deepEqual(ws.messages, [{ type: 'error', message: 'Terminal service unavailable' }]);
+});
+
+test('one terminal connection carries input, output, acknowledgements and heartbeats', async t => {
+  const { session, init, send, terminals } = setup(t);
+  const ws = socket(session.workspace, 'terminal');
+  init(ws);
+  await settled(session, ws);
+  send(ws, { input: { data: 'echo test\\r', inputSeq: 1 } });
+  send(ws, { input: { data: 'echo test\\r', inputSeq: 1 } });
+  send(ws, { ping: {} });
+  assert.deepEqual(session.pty.writes, ['echo test\\r']);
+  assert.deepEqual(ws.messages.slice(-3).map(message => message.type), ['input-ack', 'input-ack', 'pong']);
+  terminals.detachSocket(session, ws);
+  assert.equal(session.socket, null);
+  assert.equal(session.pty.killed, undefined);
 });

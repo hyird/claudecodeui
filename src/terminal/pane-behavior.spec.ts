@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
-  createHarness, emitServerMessage, findElements, flushMicrotasks, loadLoop, readyInputConnection, runEffect,
+  createHarness, emitServerMessage, findElements, flushMicrotasks, loadLoop, finishTerminalRestore, runEffect,
   sentMessagesOfType, TEST_TAB_ID, type FakeKeyEvent, type Harness,
 } from './test-support/component-harness';
 import { terminalTheme } from './themes';
@@ -16,7 +16,8 @@ async function connectedPane(harness: Harness, props: Record<string, unknown> = 
   const output = harness.sockets[0];
   output.open();
   emitServerMessage(harness, output, { type: 'ready', sessionGeneration: 'generation-1', reset: false });
-  const input = await readyInputConnection(harness, 'generation-1');
+  const input = await finishTerminalRestore(harness);
+  harness.terminalInstances[0].writes.length = 0;
   return { ...loop, output, input, terminal: harness.terminalInstances[0] };
 }
 
@@ -197,49 +198,28 @@ describe('background terminal panes', () => {
 });
 
 describe('terminal pane output ordering', () => {
-  test('out-of-order output frames are applied in sequence and duplicates are dropped', async () => {
+  test('WebSocket arrival order is used without sequence-gap buffering', async () => {
     const harness = createHarness();
     const { cleanup, output, terminal } = await connectedPane(harness);
-
-    emitServerMessage(harness, output, { type: 'output', data: 'second', seq: 2 });
+    const before = terminal.writes.length;
+    emitServerMessage(harness, output, { type: 'output', data: 'first', seq: 20 });
+    emitServerMessage(harness, output, { type: 'output', data: 'second', seq: 25 });
     await flushMicrotasks();
-    expect(terminal.writes).toEqual([]);
-    emitServerMessage(harness, output, { type: 'output', data: 'first', seq: 1 });
-    emitServerMessage(harness, output, { type: 'output', data: 'first', seq: 1 });
-    emitServerMessage(harness, output, { type: 'output', data: 'third', seq: 3 });
-    await flushMicrotasks();
-
-    expect(terminal.writes).toEqual(['first', 'second', 'third']);
+    expect(terminal.writes.slice(before)).toEqual(['first', 'second']);
     expect(output.closeCalls).toBe(0);
     cleanup();
   });
 
-  test('a sequence gap that never fills closes the socket to resync from a snapshot', async () => {
-    const harness = createHarness();
-    const { cleanup, output, terminal } = await connectedPane(harness);
-
-    emitServerMessage(harness, output, { type: 'output', data: 'later', seq: 2 });
-    await flushMicrotasks();
-    harness.clock.advance(250);
-
-    expect(terminal.writes).toEqual([]);
-    expect(output.closeCalls).toBe(1);
-    cleanup();
-  });
-
-  test('reconnect announces the last applied output sequence', async () => {
+  test('reconnect uses the same endpoint without an output replay cursor', async () => {
     const harness = createHarness();
     const { cleanup, output } = await connectedPane(harness);
-
-    emitServerMessage(harness, output, { type: 'output', data: 'a', seq: 1 });
-    emitServerMessage(harness, output, { type: 'output', data: 'b', seq: 2 });
-    await flushMicrotasks();
     output.close();
     harness.clock.advance(500);
-    const replacement = harness.sockets.find((socket) => socket !== output && socket.url === '/terminal/output')!;
+    const replacement = harness.sockets.at(-1)!;
     replacement.open();
-
-    expect(sentMessagesOfType(replacement, 'init')[0].lastSeq).toBe(2);
+    expect(replacement.url).toBe('/terminal');
+    expect(sentMessagesOfType(replacement, 'init')[0]).not.toHaveProperty('lastSeq');
+    expect(harness.sockets).toHaveLength(2);
     cleanup();
   });
 });

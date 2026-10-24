@@ -1,28 +1,16 @@
 import type { Terminal } from '@xterm/xterm';
-import type { TerminalServerMessage, TerminalStatus } from './types';
+import type { TerminalStatus } from './types';
 import { decodeTerminalServerMessage, encodeTerminalClientMessage } from './wsCodec';
 import { openAuthenticatedSocket } from '../wsHost';
 import { getTerminalInputState, splitTerminalInput } from './input-state';
 import terminalPolicy from '../../shared/terminal-policy.json';
 
-// Reconnect backoff: the base delay doubles each consecutive failure up to the cap,
-// so a flaky network is retried gently instead of hammered every second. Reset to the
-// base on a successful open or when the user returns to the tab.
-const TERMINAL_RECONNECT_DELAY_MS = 1000;
-const TERMINAL_RECONNECT_MAX_DELAY_MS = 15000;
-const TERMINAL_CONNECT_TIMEOUT_MS = 10000;
-const TERMINAL_RESUME_PONG_TIMEOUT_MS = 2500;
-// Active liveness check: while the tab is visible, ping on an interval so a silently
-// dropped socket (common on weak/mobile networks, no close event) is detected and
-// resumed. The pong window is deliberately generous so high latency is not mistaken
-// for a dead connection and does not trigger a needless reconnect.
-const TERMINAL_HEARTBEAT_INTERVAL_MS = 20000;
-const TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS = 8000;
-
-function createTerminalSocket(authToken: string) {
-  return openAuthenticatedSocket('/terminal/output', authToken);
-}
-
+const RECONNECT_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 15000;
+const CONNECT_TIMEOUT_MS = 10000;
+const RESUME_PONG_TIMEOUT_MS = 2500;
+const HEARTBEAT_INTERVAL_MS = 20000;
+const HEARTBEAT_PONG_TIMEOUT_MS = 8000;
 
 type ConnectionOptions = {
   terminal: Terminal;
@@ -40,33 +28,74 @@ export type TerminalConnection = ReturnType<typeof connectTerminal>;
 export function connectTerminal({
   terminal, tabId, authToken, onStatusChange, beforeInit, afterInit, onReady, onSessionRebuilt,
 }: ConnectionOptions) {
-  let currentOutputSocket: WebSocket | null = null;
-  let currentInputSocket: WebSocket | null = null;
-  let inputReady = false;
+  let currentSocket: WebSocket | null = null;
   let disposed = false;
-  let outputAckSeq: number | null = null;
-  let outputAckBytes = 0;
-  let outputAckTimer = 0;
+  let ready = false;
+  let exited = false;
+  let awaitingSnapshot = false;
+  let snapshotGeometry: { cols: number; rows: number } | null = null;
   let desiredSize = { cols: terminal.cols, rows: terminal.rows };
   const inputState = getTerminalInputState(tabId);
+  let reconnectAttempts = 0;
+  let reconnectTimer = 0;
+  let connectionTimer = 0;
+  let pongTimer = 0;
+  let outputAckTimer = 0;
+  let outputAckSeq: number | null = null;
+  let outputAckBytes = 0;
+
+  const isCurrent = (socket: WebSocket) => !disposed && currentSocket === socket
+    && socket.readyState === WebSocket.OPEN;
+
+  function clearConnectionTimers() {
+    window.clearTimeout(connectionTimer);
+    window.clearTimeout(pongTimer);
+    window.clearTimeout(outputAckTimer);
+    connectionTimer = pongTimer = outputAckTimer = 0;
+  }
+
+  function scheduleReconnect() {
+    if (disposed || exited || reconnectTimer) return;
+    onStatusChange(tabId, 'disconnected');
+    const delay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_DELAY_MS * 2 ** reconnectAttempts++);
+    reconnectTimer = window.setTimeout(connect, delay / 2 + Math.random() * delay / 2);
+  }
+
+  function disconnect(socket: WebSocket) {
+    if (currentSocket !== socket) return;
+    currentSocket = null;
+    ready = false;
+    clearConnectionTimers();
+    socket.close();
+    scheduleReconnect();
+  }
+
+  function send(message: Parameters<typeof encodeTerminalClientMessage>[0]) {
+    const socket = currentSocket;
+    if (!socket || !isCurrent(socket)) return false;
+    try {
+      socket.send(encodeTerminalClientMessage(message));
+      return true;
+    } catch {
+      disconnect(socket);
+      return false;
+    }
+  }
 
   function flushOutputAck() {
     window.clearTimeout(outputAckTimer);
     outputAckTimer = 0;
-    const socket = currentInputSocket;
-    if (outputAckSeq === null || !inputReady || socket?.readyState !== WebSocket.OPEN) return;
-    try {
-      socket.send(encodeTerminalClientMessage({ type: 'output-ack', seq: outputAckSeq }));
+    if (!ready || outputAckSeq === null) return;
+    if (send({ type: 'output-ack', seq: outputAckSeq })) {
       outputAckSeq = null;
       outputAckBytes = 0;
-    } catch {
-      socket.close();
-      currentOutputSocket?.close();
     }
   }
 
+  // Credit means parsed bytes, not merely received bytes. These sequence numbers
+  // are flow-control receipts; WebSocket itself provides stream ordering.
   function outputParsed(socket: WebSocket, seq: number, bytes: number) {
-    if (disposed || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) return;
+    if (!isCurrent(socket)) return;
     outputAckSeq = Math.max(outputAckSeq ?? 0, seq);
     outputAckBytes += bytes;
     if (outputAckBytes >= terminalPolicy.outputAckBatchBytes) flushOutputAck();
@@ -74,571 +103,189 @@ export function connectTerminal({
   }
 
   function sendInput(data: string) {
-    if (!data) {
-      return;
-    }
-
-    const socket = currentInputSocket;
-    let canSend = inputReady && socket?.readyState === WebSocket.OPEN;
-
     for (const frame of splitTerminalInput(data)) {
-      const inputSeq = inputState.nextSeq;
-      inputState.nextSeq += 1;
+      const inputSeq = inputState.nextSeq++;
       inputState.pending.set(inputSeq, frame);
-
-      if (!canSend || !socket) {
-        continue;
-      }
-
-      try {
-        socket.send(encodeTerminalClientMessage({ type: 'input', data: frame, inputSeq }));
-      } catch {
-        inputReady = false;
-        canSend = false;
-        socket.close();
-      }
+      if (ready) send({ type: 'input', data: frame, inputSeq });
     }
   }
 
-  let lastAppliedTerminalSeq = 0;
-  const pendingTerminalMessages = new Map<number, TerminalServerMessage>();
-  let terminalResyncTimer = 0;
-  let awaitingSnapshot: WebSocket | null = null;
-  let snapshotGeometry: { cols: number; rows: number } | null = null;
-
-  function clearTerminalResyncTimer() {
-    if (terminalResyncTimer) {
-      window.clearTimeout(terminalResyncTimer);
-      terminalResyncTimer = 0;
-    }
+  function restoreSnapshot(socket: WebSocket, data: Uint8Array) {
+    return new Promise<void>((resolve) => {
+      // Queue the reset behind any old writes, then restore the saved geometry.
+      // The native synchronized-output mode hides intermediate restore frames.
+      terminal.write('\x1bc\x1b[?2026h', () => {
+        if (!isCurrent(socket)) { resolve(); return; }
+        if (snapshotGeometry) terminal.resize(snapshotGeometry.cols, snapshotGeometry.rows);
+        terminal.write(data);
+        terminal.write('\x1b[?2026l', resolve);
+      });
+    });
   }
 
-  function scheduleTerminalResync(socket: WebSocket) {
-    if (terminalResyncTimer) {
-      return;
+  function finishRestore(socket: WebSocket, bytes: number) {
+    if (!isCurrent(socket)) return;
+    awaitingSnapshot = false;
+    ready = true;
+    reconnectAttempts = 0;
+    window.clearTimeout(connectionTimer);
+    connectionTimer = 0;
+    outputParsed(socket, 0, bytes);
+    flushOutputAck();
+    // Retries keep their original sequence. The PTY owner deduplicates them,
+    // including when the web service restarted after writing but before ACKing.
+    for (const [inputSeq, data] of inputState.pending) {
+      if (!send({ type: 'input', data, inputSeq })) return;
     }
-
-    terminalResyncTimer = window.setTimeout(() => {
-      terminalResyncTimer = 0;
-      if (currentOutputSocket === socket) {
-        pendingTerminalMessages.clear();
-        lastAppliedTerminalSeq = 0;
-        socket.close(1011, 'Terminal sequence gap');
-      }
-    }, 250);
+    if (!send({ type: 'resize', ...desiredSize })) return;
+    terminal.scrollToBottom();
+    onStatusChange(tabId, 'connected');
+    onReady();
   }
 
-  const applyTerminalServerMessage = async (socket: WebSocket, message: TerminalServerMessage) => {
-    if (message.type === 'ready') {
-      const sessionGeneration = typeof message.sessionGeneration === 'string'
-        ? message.sessionGeneration
-        : '';
-      if (sessionGeneration) {
-        if (inputState.generation && inputState.generation !== sessionGeneration) {
-          const discardedPendingInput = inputState.pending.size > 0;
+  async function handleMessage(socket: WebSocket, raw: MessageEvent['data']) {
+    const message = await decodeTerminalServerMessage(raw);
+    if (!isCurrent(socket)) return;
+    if (!message) throw new Error('Invalid terminal message');
+    switch (message.type) {
+      case 'ready': {
+        const generation = message.sessionGeneration as string;
+        if (inputState.generation && inputState.generation !== generation) {
+          const discardedInput = inputState.pending.size > 0;
           inputState.pending.clear();
           inputState.nextSeq = 1;
-          if (discardedPendingInput) {
-            onSessionRebuilt(true);
-          }
+          if (discardedInput) onSessionRebuilt(true);
         }
-        inputState.generation = sessionGeneration;
+        inputState.generation = generation;
+        snapshotGeometry = typeof message.cols === 'number' && typeof message.rows === 'number'
+          && message.cols > 0 && message.rows > 0 ? { cols: message.cols, rows: message.rows } : null;
+        awaitingSnapshot = true;
+        return;
       }
-      if (message.reset) {
-        pendingTerminalMessages.clear();
-        lastAppliedTerminalSeq = typeof message.lastSeq === 'number' ? message.lastSeq : 0;
-        // Retain the existing display until the complete snapshot arrives.
-        awaitingSnapshot = socket;
-        if (typeof message.cols === 'number' && typeof message.rows === 'number'
-          && message.cols > 0 && message.rows > 0) {
-          snapshotGeometry = { cols: message.cols, rows: message.rows };
+      case 'output': {
+        if (!(message.data instanceof Uint8Array)) throw new Error('Invalid terminal output');
+        if (awaitingSnapshot) {
+          await restoreSnapshot(socket, message.data);
+          finishRestore(socket, message.data.byteLength);
         } else {
-          snapshotGeometry = null;
+          const seq = typeof message.seq === 'number' ? message.seq : 0;
+          const data = message.data;
+          terminal.write(data, () => outputParsed(socket, seq, data.byteLength));
         }
         return;
       }
-      awaitingSnapshot = null;
-      connectInputSocket(socket);
-      onReady();
-      return;
-    }
-
-    if (message.type === 'resize' && typeof message.cols === 'number' && typeof message.rows === 'number') {
-      await applyGeometry(socket, message.cols, message.rows);
-      return;
-    }
-
-    if (message.type === 'output' && message.data instanceof Uint8Array) {
-      const data = message.data;
-      if (awaitingSnapshot === socket) {
-        await new Promise<void>((resolve) => {
-          // xterm parses queued writes in order. DEC 2026 holds rendering from the
-          // reset through the last snapshot byte, so no intermediate history row
-          // paints, without copying the snapshot into one prefixed string.
-          const restore = () => {
-            if (disposed || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) {
-              resolve();
-              return;
-            }
-            if (snapshotGeometry) terminal.resize(snapshotGeometry.cols, snapshotGeometry.rows);
-            terminal.write(data);
-            terminal.write('\x1b[?2026l', () => {
-              if (!disposed && currentOutputSocket === socket && awaitingSnapshot === socket
-                && socket.readyState === WebSocket.OPEN) {
-                outputParsed(socket, lastAppliedTerminalSeq, data.byteLength);
-                awaitingSnapshot = null;
-                terminal.scrollToBottom();
-                onReady();
-                connectInputSocket(socket);
-              }
-              resolve();
-            });
-          };
-          if (snapshotGeometry && (terminal.cols !== snapshotGeometry.cols || terminal.rows !== snapshotGeometry.rows)) {
-            terminal.write('\x1bc\x1b[?2026h', restore);
-          } else {
-            terminal.write('\x1bc\x1b[?2026h');
-            restore();
+      case 'resize':
+        await new Promise<void>((resolve) => terminal.write('', () => {
+          if (isCurrent(socket)) {
+            terminal.resize(message.cols as number, message.rows as number);
+            terminal.scrollToBottom();
           }
-        });
-        return;
-      }
-      const seq = typeof message.seq === 'number' ? message.seq : lastAppliedTerminalSeq;
-      terminal.write(data, () => outputParsed(socket, seq, data.byteLength));
-      return;
-    }
-
-    if (message.type === 'error' && typeof message.message === 'string') {
-      terminal.writeln(`\r\n\x1b[31m${message.message}\x1b[0m`);
-      onStatusChange(tabId, 'error');
-      return;
-    }
-
-    if (message.type === 'exit') {
-      closeInputSocket();
-      onStatusChange(tabId, 'exited');
-      return;
-    }
-
-    if (message.type === 'pong') {
-      clearPongTimer();
-      return;
-    }
-
-    if (message.type === 'input-ack' && typeof message.inputSeq === 'number') {
-      for (const inputSeq of inputState.pending.keys()) {
-        if (inputSeq > message.inputSeq) break;
-        inputState.pending.delete(inputSeq);
-      }
-      return;
-    }
-  };
-
-  function applyGeometry(socket: WebSocket, cols: number, rows: number) {
-    return new Promise<void>((resolve) => terminal.write('', () => {
-      if (!disposed && currentOutputSocket === socket) {
-        terminal.resize(cols, rows);
-        terminal.scrollToBottom();
-      }
-      resolve();
-    }));
-  }
-
-  const applyOrderedTerminalServerMessage = async (socket: WebSocket, message: TerminalServerMessage) => {
-    if (typeof message.seq !== 'number' || message.seq <= 0 || message.type === 'ready') {
-      await applyTerminalServerMessage(socket, message);
-      return;
-    }
-
-    if (message.seq <= lastAppliedTerminalSeq) {
-      return;
-    }
-
-    if (message.seq > lastAppliedTerminalSeq + 1) {
-      pendingTerminalMessages.set(message.seq, message);
-      scheduleTerminalResync(socket);
-      return;
-    }
-
-    await applyTerminalServerMessage(socket, message);
-    if (disposed || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) return;
-    lastAppliedTerminalSeq = message.seq;
-
-    while (pendingTerminalMessages.has(lastAppliedTerminalSeq + 1)) {
-      const nextSeq = lastAppliedTerminalSeq + 1;
-      const nextMessage = pendingTerminalMessages.get(nextSeq)!;
-      pendingTerminalMessages.delete(nextSeq);
-      await applyTerminalServerMessage(socket, nextMessage);
-      if (disposed || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) return;
-      lastAppliedTerminalSeq = nextSeq;
-    }
-
-    if (pendingTerminalMessages.size === 0) {
-      clearTerminalResyncTimer();
-    }
-  };
-
-  const handleTerminalServerMessage = async (socket: WebSocket, raw: MessageEvent['data']) => {
-    const message = await decodeTerminalServerMessage(raw);
-    if (!message || currentOutputSocket !== socket || socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    await applyOrderedTerminalServerMessage(socket, message);
-  };
-
-  let reconnectTimer = 0;
-  let reconnectAttempts = 0;
-  let heartbeatTimer = 0;
-  let connectionTimer = 0;
-  let pongTimer = 0;
-  let inputConnectionTimer = 0;
-  let inputPongTimer = 0;
-  let terminalMessageQueue = Promise.resolve();
-
-  function closeInputSocket() {
-    inputReady = false;
-    window.clearTimeout(inputConnectionTimer);
-    window.clearTimeout(inputPongTimer);
-    inputConnectionTimer = 0;
-    inputPongTimer = 0;
-    const inputSocket = currentInputSocket;
-    currentInputSocket = null;
-    inputSocket?.close();
-  }
-
-  function connectInputSocket(outputSocket: WebSocket) {
-    if (disposed || currentOutputSocket !== outputSocket || outputSocket.readyState !== WebSocket.OPEN) return;
-    closeInputSocket();
-    const inputSocket = openAuthenticatedSocket('/terminal/input', authToken);
-    inputSocket.binaryType = 'arraybuffer';
-    currentInputSocket = inputSocket;
-    // A separate queue keeps input acknowledgements and pongs independent of
-    // output decoding, replay and rendering work on the downlink.
-    let inputMessageQueue = Promise.resolve();
-    const failInputConnection = () => {
-      if (currentInputSocket !== inputSocket) return;
-      closeInputSocket();
-      outputSocket.close();
-    };
-    inputConnectionTimer = window.setTimeout(failInputConnection, TERMINAL_CONNECT_TIMEOUT_MS);
-    inputSocket.addEventListener('open', () => {
-      if (currentInputSocket !== inputSocket) return;
-      if (currentOutputSocket !== outputSocket || outputSocket.readyState !== WebSocket.OPEN) {
-        failInputConnection();
-        return;
-      }
-      try {
-        inputSocket.send(encodeTerminalClientMessage({
-          type: 'init', sessionId: tabId,
-          cols: desiredSize.cols, rows: desiredSize.rows,
-          inputStreamId: inputState.streamId,
-          sessionGeneration: inputState.generation,
+          resolve();
         }));
-      } catch {
-        failInputConnection();
-      }
-    });
-    inputSocket.addEventListener('message', (event) => {
-      inputMessageQueue = inputMessageQueue.then(async () => {
-        const message = await decodeTerminalServerMessage(event.data);
-        if (disposed || currentInputSocket !== inputSocket
-          || currentOutputSocket !== outputSocket || !message) return;
-        if (message.type === 'ready') {
-          if (message.sessionGeneration !== inputState.generation) {
-            failInputConnection();
-            return;
-          }
-          window.clearTimeout(inputConnectionTimer);
-          inputConnectionTimer = 0;
-          inputReady = true;
-          flushOutputAck();
-          for (const [inputSeq, data] of inputState.pending) {
-            inputSocket.send(encodeTerminalClientMessage({ type: 'input', data, inputSeq }));
-          }
-          inputSocket.send(encodeTerminalClientMessage({
-            type: 'resize', cols: desiredSize.cols, rows: desiredSize.rows,
-          }));
-          reconnectAttempts = 0;
-          onStatusChange(tabId, 'connected');
-        } else if (message.type === 'pong') {
-          window.clearTimeout(inputPongTimer);
-          inputPongTimer = 0;
-        } else if (message.type === 'input-ack') {
-          await applyTerminalServerMessage(inputSocket, message);
-        } else if (message.type === 'error') {
-          // An output replacement can overtake the input handshake. Retry the
-          // pair without inserting this recoverable transport error into the TUI.
-          if (message.message === 'Terminal output connection is not ready') {
-            failInputConnection();
-            return;
-          }
-          await applyTerminalServerMessage(inputSocket, message);
-          failInputConnection();
+        return;
+      case 'input-ack':
+        for (const inputSeq of inputState.pending.keys()) {
+          if (inputSeq > (message.inputSeq as number)) break;
+          inputState.pending.delete(inputSeq);
         }
-      }).catch(failInputConnection);
-    });
-    inputSocket.addEventListener('close', failInputConnection);
-    inputSocket.addEventListener('error', failInputConnection);
-  }
-
-  function clearReconnectTimer() {
-    if (reconnectTimer) {
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = 0;
+        return;
+      case 'pong':
+        window.clearTimeout(pongTimer);
+        pongTimer = 0;
+        return;
+      case 'exit':
+        exited = true;
+        disconnect(socket);
+        onStatusChange(tabId, 'exited');
+        return;
+      case 'error':
+        throw new Error(String(message.message));
     }
-  }
-
-  function clearConnectionTimer() {
-    if (connectionTimer) {
-      window.clearTimeout(connectionTimer);
-      connectionTimer = 0;
-    }
-  }
-
-  function clearPongTimer() {
-    if (pongTimer) {
-      window.clearTimeout(pongTimer);
-      pongTimer = 0;
-    }
-  }
-
-  function scheduleReconnect() {
-    if (disposed || reconnectTimer) {
-      return;
-    }
-    onStatusChange(tabId, 'disconnected');
-    const backoff = Math.min(
-      TERMINAL_RECONNECT_MAX_DELAY_MS,
-      TERMINAL_RECONNECT_DELAY_MS * 2 ** reconnectAttempts,
-    );
-    reconnectAttempts += 1;
-    // Equal jitter (half fixed, half random) keeps a floor delay while spreading
-    // retries so many panes dropping together don't reconnect in lockstep.
-    const delay = backoff / 2 + Math.random() * (backoff / 2);
-    reconnectTimer = window.setTimeout(connect, delay);
   }
 
   function connect() {
-    if (disposed) {
-      return;
-    }
-
-    const currentSocket = currentOutputSocket;
-    if (
-      currentSocket
-      && (currentSocket.readyState === WebSocket.OPEN || currentSocket.readyState === WebSocket.CONNECTING)
-    ) {
-      return;
-    }
-
-    clearReconnectTimer();
-    clearConnectionTimer();
-    clearPongTimer();
-    closeInputSocket();
-    awaitingSnapshot = null;
+    if (disposed || exited || currentSocket) return;
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = 0;
+    clearConnectionTimers();
+    ready = awaitingSnapshot = false;
     snapshotGeometry = null;
-    window.clearTimeout(outputAckTimer);
-    outputAckTimer = 0;
     outputAckSeq = null;
     outputAckBytes = 0;
-    terminalMessageQueue = Promise.resolve();
-
-    const socket = createTerminalSocket(authToken);
+    const socket = openAuthenticatedSocket('/terminal', authToken);
     socket.binaryType = 'arraybuffer';
-    currentOutputSocket = socket;
+    currentSocket = socket;
     onStatusChange(tabId, 'connecting');
-    connectionTimer = window.setTimeout(() => {
-      if (disposed || currentOutputSocket !== socket) {
-        return;
-      }
-
-      connectionTimer = 0;
-      currentOutputSocket = null;
-      inputReady = false;
-      closeInputSocket();
-      clearTerminalResyncTimer();
-      socket.close();
-      scheduleReconnect();
-    }, TERMINAL_CONNECT_TIMEOUT_MS);
-
+    // This covers opening, server preparation and parsing the first snapshot.
+    connectionTimer = window.setTimeout(() => disconnect(socket), CONNECT_TIMEOUT_MS);
+    let messageQueue = Promise.resolve();
     socket.addEventListener('open', () => {
-      if (disposed || currentOutputSocket !== socket) {
-        return;
-      }
-
-      clearConnectionTimer();
-      // Transport is healthy again — restart backoff from the base delay.
-      reconnectAttempts = 0;
-
-      // Size the grid to the frame first, then announce it via init. Sending a
-      // resize before init would be rejected by the server ("not initialized")
-      // and flash an error line.
+      if (!isCurrent(socket)) return;
       beforeInit();
-      socket.send(encodeTerminalClientMessage({
-        type: 'init',
-        sessionId: tabId,
-        cols: desiredSize.cols,
-        rows: desiredSize.rows,
-        lastSeq: lastAppliedTerminalSeq,
-        inputStreamId: inputState.streamId,
-        sessionGeneration: inputState.generation,
-      }));
+      send({ type: 'init', sessionId: tabId, ...desiredSize, inputStreamId: inputState.streamId });
       afterInit();
     });
-
     socket.addEventListener('message', (event) => {
-      if (currentOutputSocket !== socket) {
-        return;
-      }
-
-      terminalMessageQueue = terminalMessageQueue
-        .then(() => handleTerminalServerMessage(socket, event.data))
-        .catch(() => undefined);
+      if (!isCurrent(socket)) return;
+      // Decode and restore in arrival order, without an additional replay queue.
+      messageQueue = messageQueue.then(() => handleMessage(socket, event.data)).catch(() => disconnect(socket));
     });
-
-    socket.addEventListener('close', () => {
-      if (currentOutputSocket === socket) {
-        currentOutputSocket = null;
-        inputReady = false;
-        closeInputSocket();
-        clearConnectionTimer();
-        clearPongTimer();
-        clearTerminalResyncTimer();
-        scheduleReconnect();
-      }
-    });
-
-    socket.addEventListener('error', () => {
-      if (currentOutputSocket === socket) {
-        inputReady = false;
-        closeInputSocket();
-        clearConnectionTimer();
-        onStatusChange(tabId, 'error');
-        socket.close();
-        scheduleReconnect();
-      }
-    });
+    socket.addEventListener('close', () => disconnect(socket));
+    socket.addEventListener('error', () => disconnect(socket));
   }
 
-  // Ping the socket and reconnect if no pong lands within pongTimeoutMs. A dead or
-  // closed socket reconnects immediately; a live one just confirms liveness.
-  const probeConnection = (pongTimeoutMs: number) => {
-    if (document.visibilityState === 'hidden') {
+  function probeConnection(timeout: number) {
+    if (disposed || exited || document.visibilityState === 'hidden') return;
+    const socket = currentSocket;
+    if (!socket) { scheduleReconnect(); return; }
+    if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+      disconnect(socket);
       return;
     }
+    if (!isCurrent(socket) || pongTimer) return;
+    if (send({ type: 'ping' })) pongTimer = window.setTimeout(() => disconnect(socket), timeout);
+  }
 
-    const socket = currentOutputSocket;
-    if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
-      scheduleReconnect();
-      return;
+  function resume() {
+    if (document.visibilityState === 'hidden') return;
+    if (currentSocket?.readyState === WebSocket.CLOSED || currentSocket?.readyState === WebSocket.CLOSING) {
+      disconnect(currentSocket);
     }
-
-    if (socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-
-    if (pongTimer) {
-      return;
-    }
-
-    try {
-      socket.send(encodeTerminalClientMessage({ type: 'ping' }));
-    } catch {
-      currentOutputSocket = null;
-      closeInputSocket();
-      socket.close();
-      scheduleReconnect();
-      return;
-    }
-
-    pongTimer = window.setTimeout(() => {
-      if (currentOutputSocket !== socket) {
-        return;
-      }
-
-      pongTimer = 0;
-      currentOutputSocket = null;
-      closeInputSocket();
-      socket.close();
-      scheduleReconnect();
-    }, pongTimeoutMs);
-
-    const inputSocket = currentInputSocket;
-    if (inputReady && inputSocket?.readyState === WebSocket.OPEN && !inputPongTimer) {
-      try {
-        inputSocket.send(encodeTerminalClientMessage({ type: 'ping' }));
-        inputPongTimer = window.setTimeout(() => {
-          inputPongTimer = 0;
-          if (currentInputSocket === inputSocket) {
-            closeInputSocket();
-            socket.close();
-          }
-        }, pongTimeoutMs);
-      } catch {
-        closeInputSocket();
-        socket.close();
-      }
-    }
-  };
-
-  // The user just came back to the tab: reconnect promptly (skip the backoff ramp)
-  // and use the tight pong window since a slept socket is usually already dead.
-  const probeConnectionAfterResume = () => {
-    if (document.visibilityState === 'hidden') {
-      return;
-    }
-    const socket = currentOutputSocket;
-    reconnectAttempts = 0;
-
-    if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
-      clearReconnectTimer();
+    if (!currentSocket) {
+      reconnectAttempts = 0;
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = 0;
       connect();
-      return;
+    } else {
+      probeConnection(RESUME_PONG_TIMEOUT_MS);
     }
+  }
 
-    probeConnection(TERMINAL_RESUME_PONG_TIMEOUT_MS);
-  };
-
-  document.addEventListener('visibilitychange', probeConnectionAfterResume);
-  window.addEventListener('focus', probeConnectionAfterResume);
-  window.addEventListener('online', probeConnectionAfterResume);
-  // Passive heartbeat: catches a silently dropped socket while the tab stays open.
-  heartbeatTimer = window.setInterval(
-    () => probeConnection(TERMINAL_HEARTBEAT_PONG_TIMEOUT_MS),
-    TERMINAL_HEARTBEAT_INTERVAL_MS,
-  );
+  document.addEventListener('visibilitychange', resume);
+  window.addEventListener('focus', resume);
+  window.addEventListener('online', resume);
+  const heartbeatTimer = window.setInterval(() => probeConnection(HEARTBEAT_PONG_TIMEOUT_MS), HEARTBEAT_INTERVAL_MS);
   connect();
 
-
-  function dispose() {
-    disposed = true;
-    window.clearTimeout(outputAckTimer);
-    outputAckTimer = 0;
-    awaitingSnapshot = null;
-    inputReady = false;
-    closeInputSocket();
-    clearReconnectTimer();
-    clearPongTimer();
-    window.clearInterval(heartbeatTimer);
-    clearTerminalResyncTimer();
-    clearConnectionTimer();
-    document.removeEventListener('visibilitychange', probeConnectionAfterResume);
-    window.removeEventListener('focus', probeConnectionAfterResume);
-    window.removeEventListener('online', probeConnectionAfterResume);
-    currentOutputSocket?.close();
-    currentOutputSocket = null;
-  }
-
   return {
-    sendInput, dispose,
+    sendInput,
     resize(cols: number, rows: number) {
       if (disposed) return false;
       desiredSize = { cols, rows };
-      if (inputReady && currentInputSocket?.readyState === WebSocket.OPEN) {
-        currentInputSocket.send(encodeTerminalClientMessage({ type: 'resize', cols, rows }));
-      }
+      if (ready) send({ type: 'resize', cols, rows });
       return true;
+    },
+    dispose() {
+      disposed = true;
+      ready = false;
+      window.clearTimeout(reconnectTimer);
+      window.clearInterval(heartbeatTimer);
+      clearConnectionTimers();
+      document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener('focus', resume);
+      window.removeEventListener('online', resume);
+      currentSocket?.close();
+      currentSocket = null;
     },
   };
 }

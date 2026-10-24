@@ -18,13 +18,11 @@ export type TerminalClientMessage =
   | {
       type: 'init';
       sessionId: string;
-      sessionGeneration?: string;
       cols: number;
       rows: number;
       inputStreamId: string;
       cwd?: string;
       forceRestart?: boolean;
-      lastSeq?: number;
     }
   | { type: 'input'; data: string; inputSeq: number }
   | { type: 'resize'; cols: number; rows: number }
@@ -82,9 +80,7 @@ export function encodeTerminalClientMessage(message: TerminalClientMessage): Uin
           rows: message.rows,
           cwd: message.cwd ?? '',
           forceRestart: message.forceRestart ?? false,
-          lastSeq: message.lastSeq ?? 0,
           inputStreamId: message.inputStreamId,
-          sessionGeneration: message.sessionGeneration ?? '',
         },
       }).finish();
     case 'input':
@@ -127,9 +123,6 @@ export async function decodeTerminalServerMessage(
         cwd: message.ready!.cwd,
         sessionId: message.ready!.sessionId,
         sessionGeneration: message.ready!.sessionGeneration,
-        reset: message.ready!.reset,
-        gap: message.ready!.gap,
-        lastSeq: message.ready!.lastSeq,
         seq: message.seq,
         ...((message.ready!.cols ?? 0) > 0 && (message.ready!.rows ?? 0) > 0
           ? { cols: message.ready!.cols, rows: message.ready!.rows } : {}),

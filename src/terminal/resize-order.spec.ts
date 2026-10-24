@@ -50,13 +50,13 @@ test('the real connection applies resize fences after old output and before new 
   };
   try {
     output.open();
-    output.emit('message', encodeTerminalOutput(fixture.initial, 1, false));
+    output.emit('message', encodeTerminalOutput(fixture.initial, 1));
     await settle();
     connection.resize(fixture.cols, fixture.newRows);
     expect(model.rows).toBe(fixture.oldRows);
-    output.emit('message', encodeTerminalOutput(fixture.oldPaint, 2, false));
+    output.emit('message', encodeTerminalOutput(fixture.oldPaint, 2));
     output.emit('message', encodeTerminalServerMessage({ type: 'resize', cols: fixture.cols, rows: fixture.newRows, seq: 3 }));
-    output.emit('message', encodeTerminalOutput(fixture.newPaint, 4, false));
+    output.emit('message', encodeTerminalOutput(fixture.newPaint, 4));
     await settle();
     await write(expected, fixture.initial);
     await write(expected, fixture.oldPaint);

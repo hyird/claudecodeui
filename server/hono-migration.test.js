@@ -592,7 +592,6 @@ test('inactive PTYs report background and preserve their exited state', async ()
         rows: 40,
         cwd: '',
         forceRestart: true,
-        lastSeq: 0,
         inputStreamId: randomUUID(),
       },
     }).finish());
@@ -637,7 +636,6 @@ test('inactive PTYs report background and preserve their exited state', async ()
         rows: 40,
         cwd: '',
         forceRestart: false,
-        lastSeq: 0,
         inputStreamId: randomUUID(),
       },
     }).finish());
@@ -688,7 +686,6 @@ test('terminal WebSocket rejects legacy non-UUID session ids', async () => {
         rows: 40,
         cwd: '',
         forceRestart: false,
-        lastSeq: 0,
       },
     }).finish());
   });
@@ -697,34 +694,24 @@ test('terminal WebSocket rejects legacy non-UUID session ids', async () => {
   socket.close();
 });
 
-test('split terminal sockets route input acknowledgements upstream and raw output downstream', async (t) => {
+test('one terminal socket carries raw output and deduplicated input acknowledgements', async (t) => {
   const tabId = await createTestTab();
-  const inputStreamId = randomUUID();
-  const output = new WebSocket(`${wsBaseUrl}/terminal/output`, ['cloudcli.v1', `auth.${authToken}`]);
-  t.after(() => output.close());
-  const readyPromise = readTerminalWebSocketMessage(output, (message) => message.body === 'ready', 'split downlink ready');
-  output.on('open', () => output.send(TerminalClientMessage.encode({ init: { sessionId: tabId, inputStreamId, cols: 100, rows: 30 } }).finish()));
-  const ready = await readyPromise;
-  const input = new WebSocket(`${wsBaseUrl}/terminal/input`, ['cloudcli.v1', `auth.${authToken}`]);
-  t.after(() => input.close());
-  const inputReady = readTerminalWebSocketMessage(input, (message) => message.body === 'ready', 'split uplink ready');
-  input.on('open', () => input.send(TerminalClientMessage.encode({ init: {
-    sessionId: tabId, inputStreamId, sessionGeneration: ready.ready.sessionGeneration,
+  const ws = new WebSocket(wsBaseUrl + '/terminal', ['cloudcli.v1', 'auth.' + authToken]);
+  t.after(() => ws.close());
+  const ready = readTerminalWebSocketMessage(ws, message => message.body === 'ready', 'terminal ready');
+  ws.on('open', () => ws.send(TerminalClientMessage.encode({ init: {
+    sessionId: tabId, inputStreamId: randomUUID(), cols: 100, rows: 30,
   } }).finish()));
-  await inputReady;
-  const downstreamMessages = [];
-  output.on('message', (raw) => downstreamMessages.push(TerminalServerMessage.decode(toUint8(raw))));
-  const ack = readTerminalWebSocketMessage(input, (message) => message.body === 'inputAck', 'split input acknowledgement');
-  const receivedOutput = readTerminalWebSocketMessage(output, (message) => message.body === 'output', 'split output');
-  input.send(TerminalClientMessage.encode({ input: { data: 'echo SPLIT_WS_OK\r', inputSeq: 1 } }).finish());
+  await ready;
+  const ack = readTerminalWebSocketMessage(ws, message => message.body === 'inputAck', 'input acknowledgement');
+  const output = readTerminalWebSocketMessage(ws, message => message.body === 'output' && message.seq > 0, 'live output');
+  ws.send(TerminalClientMessage.encode({ input: { data: 'echo SINGLE_WS_OK\\r', inputSeq: 1 } }).finish());
   assert.equal((await ack).inputAck.inputSeq, 1);
-  const frame = await receivedOutput;
-  assert.equal(frame.output.compressed, false);
-  assert.equal(downstreamMessages.some((message) => message.body === 'inputAck'), false);
-  const duplicateAck = readTerminalWebSocketMessage(input, (message) => message.body === 'inputAck', 'split duplicate acknowledgement');
-  input.send(TerminalClientMessage.encode({ input: { data: 'echo SPLIT_WS_OK\r', inputSeq: 1 } }).finish());
-  assert.equal((await duplicateAck).inputAck.inputSeq, 1);
-  input.send(TerminalClientMessage.encode({ close: {} }).finish());
+  assert.equal((await output).output.compressed, false);
+  const duplicate = readTerminalWebSocketMessage(ws, message => message.body === 'inputAck', 'duplicate acknowledgement');
+  ws.send(TerminalClientMessage.encode({ input: { data: 'echo SINGLE_WS_OK\\r', inputSeq: 1 } }).finish());
+  assert.equal((await duplicate).inputAck.inputSeq, 1);
+  ws.send(TerminalClientMessage.encode({ close: {} }).finish());
 });
 
 test('terminal input is acknowledged and duplicate delivery is ignored', async () => {
@@ -760,7 +747,6 @@ test('terminal input is acknowledged and duplicate delivery is ignored', async (
         rows: 40,
         cwd: '',
         forceRestart: true,
-        lastSeq: 0,
         inputStreamId,
       },
     }).finish());
@@ -813,13 +799,13 @@ test('terminal session generations preserve reconnect input and identify a rebui
   const sockets = [];
   t.after(() => sockets.forEach((socket) => socket.terminate()));
 
-  async function attach(sessionGeneration = '', forceRestart = false) {
+  async function attach(forceRestart = false) {
     const socket = new WebSocket(`${wsBaseUrl}/terminal?token=${encodeURIComponent(authToken)}`);
     sockets.push(socket);
     const ready = readTerminalWebSocketMessage(socket, (message) => message.body === 'ready', 'generation ready');
     socket.on('open', () => {
       socket.send(TerminalClientMessage.encode({
-        init: { sessionId, inputStreamId, sessionGeneration, forceRestart, cols: 80, rows: 24 },
+        init: { sessionId, inputStreamId, forceRestart, cols: 80, rows: 24 },
       }).finish());
     });
     return { socket, ready: (await ready).ready };
@@ -839,13 +825,12 @@ test('terminal session generations preserve reconnect input and identify a rebui
   const first = await attach();
   assert.match(first.ready.sessionGeneration, UUID_V4_PATTERN);
   await sendInput(first.socket, 1);
-  const resumed = await attach(first.ready.sessionGeneration);
+  const resumed = await attach();
   assert.equal(resumed.ready.sessionGeneration, first.ready.sessionGeneration);
   await sendInput(resumed.socket, 2);
 
-  const rebuilt = await attach(resumed.ready.sessionGeneration, true);
+  const rebuilt = await attach(true);
   assert.notEqual(rebuilt.ready.sessionGeneration, resumed.ready.sessionGeneration);
-  assert.equal(rebuilt.ready.reset, true);
   await sendInput(rebuilt.socket, 1);
   rebuilt.socket.send(TerminalClientMessage.encode({ close: {} }).finish());
 });
@@ -1036,7 +1021,6 @@ test('bulk terminal output stays responsive with bounded frames and no lost byte
         rows: 40,
         cwd: '',
         forceRestart: true,
-        lastSeq: 0,
         inputStreamId,
       },
     }).finish());

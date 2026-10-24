@@ -26,7 +26,7 @@ type TerminalServerMessageMeta = {
 };
 
 export type TerminalServerMessage =
-  | ({ type: 'ready'; cwd: string; sessionId: string; sessionGeneration: string; reset: boolean; gap: boolean; lastSeq: number; cols?: number; rows?: number } & TerminalServerMessageMeta)
+  | ({ type: 'ready'; cwd: string; sessionId: string; sessionGeneration: string; cols?: number; rows?: number } & TerminalServerMessageMeta)
   | ({ type: 'output'; data: Uint8Array } & TerminalServerMessageMeta)
   | ({ type: 'resize'; cols: number; rows: number } & TerminalServerMessageMeta)
   | ({ type: 'exit'; exitCode: number; signal?: string | null } & TerminalServerMessageMeta)

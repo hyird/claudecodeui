@@ -6,6 +6,7 @@ import {
   encodeAuthServerMessage,
   encodeTabsServerMessage,
   encodeTerminalOutput,
+  encodeTerminalSnapshot,
   encodeTerminalServerMessage,
 } from '../../server/wire.js';
 import {
@@ -35,39 +36,20 @@ describe('terminal client -> server', () => {
     const bytes = encodeTerminalClientMessage({
       type: 'init',
       sessionId: 's1',
-      sessionGeneration: 'generation-1',
       cols: 120,
       rows: 40,
       cwd: '/tmp',
       forceRestart: true,
-      lastSeq: 7,
       inputStreamId: INPUT_STREAM_ID,
     });
     expect(decodeTerminalClientMessage(bytes)).toEqual({
       type: 'init',
       sessionId: 's1',
-      sessionGeneration: 'generation-1',
       cols: 120,
       rows: 40,
       cwd: '/tmp',
       forceRestart: true,
-      lastSeq: 7,
       inputStreamId: INPUT_STREAM_ID,
-    });
-  });
-
-  test('init without a session generation remains compatible with older callers', () => {
-    const bytes = encodeTerminalClientMessage({
-      type: 'init',
-      sessionId: 's1',
-      cols: 120,
-      rows: 40,
-      inputStreamId: INPUT_STREAM_ID,
-    });
-
-    expect(decodeTerminalClientMessage(bytes)).toMatchObject({
-      type: 'init',
-      sessionGeneration: '',
     });
   });
 
@@ -89,8 +71,8 @@ describe('terminal client -> server', () => {
 describe('terminal server -> client', () => {
   test('snapshot dimensions and sequenced resize boundaries round-trip', async () => {
     expect(await decodeTerminalServerMessage(encodeTerminalServerMessage({
-      type: 'ready', reset: true, cols: 207, rows: 41,
-    }))).toMatchObject({ type: 'ready', reset: true, cols: 207, rows: 41 });
+      type: 'ready', cols: 207, rows: 41,
+    }))).toMatchObject({ type: 'ready', cols: 207, rows: 41 });
     expect(await decodeTerminalServerMessage(encodeTerminalServerMessage({
       type: 'resize', cols: 120, rows: 32, seq: 99,
     }))).toEqual({ type: 'resize', cols: 120, rows: 32, seq: 99 });
@@ -98,22 +80,11 @@ describe('terminal server -> client', () => {
   test('ready reflects the resume fields and seq', async () => {
     const frame = encodeTerminalServerMessage({
       type: 'ready', cwd: '/root', sessionId: 's1', sessionGeneration: 'generation-1',
-      reset: true, gap: false, lastSeq: 3, seq: 1,
+      seq: 1,
     });
     expect(await decodeTerminalServerMessage(frame)).toEqual({
       type: 'ready', cwd: '/root', sessionId: 's1', sessionGeneration: 'generation-1',
-      reset: true, gap: false, lastSeq: 3, seq: 1,
-    });
-  });
-
-  test('ready without a session generation remains compatible with older servers', async () => {
-    const frame = encodeTerminalServerMessage({
-      type: 'ready', cwd: '/root', sessionId: 's1', reset: false, gap: false, lastSeq: 3, seq: 1,
-    });
-
-    expect(await decodeTerminalServerMessage(frame)).toEqual({
-      type: 'ready', cwd: '/root', sessionId: 's1', sessionGeneration: '',
-      reset: false, gap: false, lastSeq: 3, seq: 1,
+      seq: 1,
     });
   });
 
@@ -135,10 +106,10 @@ describe('terminal server -> client', () => {
 
   test('a large payload is deflated by the server and inflated by the client', async () => {
     const big = 'the quick brown fox jumps over the lazy dog. '.repeat(400);
-    const frame = encodeTerminalOutput(big, 9);
+    const frame = await encodeTerminalSnapshot(big);
     // The server must actually have compressed it, otherwise this asserts nothing.
     expect(frame.byteLength).toBeLessThan(big.length);
-    expect(await decodeTerminalServerMessage(frame)).toEqual({ type: 'output', data: new TextEncoder().encode(big), seq: 9 });
+    expect(await decodeTerminalServerMessage(frame)).toEqual({ type: 'output', data: new TextEncoder().encode(big), seq: 0 });
   });
 
   test('exit maps an empty signal back to null', async () => {

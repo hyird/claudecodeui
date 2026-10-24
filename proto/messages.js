@@ -431,9 +431,7 @@ export const cloudcli = $root.cloudcli = (() => {
          * @property {number|null} [rows] TerminalInit rows
          * @property {string|null} [cwd] TerminalInit cwd
          * @property {boolean|null} [forceRestart] TerminalInit forceRestart
-         * @property {number|null} [lastSeq] TerminalInit lastSeq
          * @property {string|null} [inputStreamId] TerminalInit inputStreamId
-         * @property {string|null} [sessionGeneration] TerminalInit sessionGeneration
          * @property {Array.<Uint8Array>} [$unknowns] Unknown fields preserved while decoding when enabled
          */
 
@@ -506,28 +504,12 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalInit.prototype.forceRestart = false;
 
         /**
-         * TerminalInit lastSeq.
-         * @member {number} lastSeq
-         * @memberof cloudcli.TerminalInit
-         * @instance
-         */
-        TerminalInit.prototype.lastSeq = 0;
-
-        /**
          * TerminalInit inputStreamId.
          * @member {string} inputStreamId
          * @memberof cloudcli.TerminalInit
          * @instance
          */
         TerminalInit.prototype.inputStreamId = "";
-
-        /**
-         * TerminalInit sessionGeneration.
-         * @member {string} sessionGeneration
-         * @memberof cloudcli.TerminalInit
-         * @instance
-         */
-        TerminalInit.prototype.sessionGeneration = "";
 
         /**
          * Encodes the specified TerminalInit message. Does not implicitly {@link cloudcli.TerminalInit.verify|verify} messages.
@@ -555,12 +537,8 @@ export const cloudcli = $root.cloudcli = (() => {
                 writer.uint32(/* id 4, wireType 2 =*/34).string(message.cwd);
             if (message.forceRestart != null && $Object.hasOwnProperty.call(message, "forceRestart") && message.forceRestart !== false)
                 writer.uint32(/* id 5, wireType 0 =*/40).bool(message.forceRestart);
-            if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq") && message.lastSeq !== 0)
-                writer.uint32(/* id 6, wireType 0 =*/48).uint32(message.lastSeq);
             if (message.inputStreamId != null && $Object.hasOwnProperty.call(message, "inputStreamId") && message.inputStreamId !== "")
                 writer.uint32(/* id 7, wireType 2 =*/58).string(message.inputStreamId);
-            if (message.sessionGeneration != null && $Object.hasOwnProperty.call(message, "sessionGeneration") && message.sessionGeneration !== "")
-                writer.uint32(/* id 8, wireType 2 =*/66).string(message.sessionGeneration);
             if (message.$unknowns != null && $Object.hasOwnProperty.call(message, "$unknowns"))
                 for (let i = 0; i < message.$unknowns.length; ++i)
                     writer.raw(message.$unknowns[i]);
@@ -650,15 +628,6 @@ export const cloudcli = $root.cloudcli = (() => {
                             delete message.forceRestart;
                         continue;
                     }
-                case 6: {
-                        if (wireType !== 0)
-                            break;
-                        if (value = reader.uint32())
-                            message.lastSeq = value;
-                        else
-                            delete message.lastSeq;
-                        continue;
-                    }
                 case 7: {
                         if (wireType !== 2)
                             break;
@@ -666,15 +635,6 @@ export const cloudcli = $root.cloudcli = (() => {
                             message.inputStreamId = value;
                         else
                             delete message.inputStreamId;
-                        continue;
-                    }
-                case 8: {
-                        if (wireType !== 2)
-                            break;
-                        if ((value = reader.stringVerify()).length)
-                            message.sessionGeneration = value;
-                        else
-                            delete message.sessionGeneration;
                         continue;
                     }
                 }
@@ -1598,9 +1558,6 @@ export const cloudcli = $root.cloudcli = (() => {
          * @typedef {Object} cloudcli.TerminalReady.$Properties
          * @property {string|null} [cwd] TerminalReady cwd
          * @property {string|null} [sessionId] TerminalReady sessionId
-         * @property {boolean|null} [reset] TerminalReady reset
-         * @property {boolean|null} [gap] TerminalReady gap
-         * @property {number|null} [lastSeq] TerminalReady lastSeq
          * @property {string|null} [sessionGeneration] TerminalReady sessionGeneration
          * @property {number|null} [cols] TerminalReady cols
          * @property {number|null} [rows] TerminalReady rows
@@ -1652,30 +1609,6 @@ export const cloudcli = $root.cloudcli = (() => {
         TerminalReady.prototype.sessionId = "";
 
         /**
-         * TerminalReady reset.
-         * @member {boolean} reset
-         * @memberof cloudcli.TerminalReady
-         * @instance
-         */
-        TerminalReady.prototype.reset = false;
-
-        /**
-         * TerminalReady gap.
-         * @member {boolean} gap
-         * @memberof cloudcli.TerminalReady
-         * @instance
-         */
-        TerminalReady.prototype.gap = false;
-
-        /**
-         * TerminalReady lastSeq.
-         * @member {number} lastSeq
-         * @memberof cloudcli.TerminalReady
-         * @instance
-         */
-        TerminalReady.prototype.lastSeq = 0;
-
-        /**
          * TerminalReady sessionGeneration.
          * @member {string} sessionGeneration
          * @memberof cloudcli.TerminalReady
@@ -1719,12 +1652,6 @@ export const cloudcli = $root.cloudcli = (() => {
                 writer.uint32(/* id 1, wireType 2 =*/10).string(message.cwd);
             if (message.sessionId != null && $Object.hasOwnProperty.call(message, "sessionId") && message.sessionId !== "")
                 writer.uint32(/* id 2, wireType 2 =*/18).string(message.sessionId);
-            if (message.reset != null && $Object.hasOwnProperty.call(message, "reset") && message.reset !== false)
-                writer.uint32(/* id 3, wireType 0 =*/24).bool(message.reset);
-            if (message.gap != null && $Object.hasOwnProperty.call(message, "gap") && message.gap !== false)
-                writer.uint32(/* id 4, wireType 0 =*/32).bool(message.gap);
-            if (message.lastSeq != null && $Object.hasOwnProperty.call(message, "lastSeq") && message.lastSeq !== 0)
-                writer.uint32(/* id 5, wireType 0 =*/40).uint32(message.lastSeq);
             if (message.sessionGeneration != null && $Object.hasOwnProperty.call(message, "sessionGeneration") && message.sessionGeneration !== "")
                 writer.uint32(/* id 6, wireType 2 =*/50).string(message.sessionGeneration);
             if (message.cols != null && $Object.hasOwnProperty.call(message, "cols") && message.cols !== 0)
@@ -1791,33 +1718,6 @@ export const cloudcli = $root.cloudcli = (() => {
                             message.sessionId = value;
                         else
                             delete message.sessionId;
-                        continue;
-                    }
-                case 3: {
-                        if (wireType !== 0)
-                            break;
-                        if (value = reader.bool())
-                            message.reset = value;
-                        else
-                            delete message.reset;
-                        continue;
-                    }
-                case 4: {
-                        if (wireType !== 0)
-                            break;
-                        if (value = reader.bool())
-                            message.gap = value;
-                        else
-                            delete message.gap;
-                        continue;
-                    }
-                case 5: {
-                        if (wireType !== 0)
-                            break;
-                        if (value = reader.uint32())
-                            message.lastSeq = value;
-                        else
-                            delete message.lastSeq;
                         continue;
                     }
                 case 6: {
