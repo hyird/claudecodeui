@@ -526,7 +526,7 @@ const navigatedDesktopState = await waitForState(
 );
 assertHealthyTerminal('desktop after keyboard navigation', navigatedDesktopState);
 
-// Changing directories updates both titles, while an application OSC title must
+// Changing directories updates the tab title, while an application OSC title must
 // not replace the path. Reload below verifies the path survives a reconnect.
 await enterTerminalCommand(
   `cd /tmp; printf '\\033]0;Building project...\\007'; sleep 30`,
@@ -534,7 +534,7 @@ await enterTerminalCommand(
 const desktopState = await waitForState(
   (state) => (
     state.tabs[0] === '/tmp'
-    && state.title === '/tmp'
+    && state.title === 'CloudTerminal'
     && state.selectedIndex === 0
     && state.statuses[0] === 'status-dot connected'
     && state.statuses[1] === 'status-dot background'
@@ -572,7 +572,7 @@ const mobileState = await waitForState(
   (state) => (
     state.tabs.length === 2
     && state.tabs[0] === '/tmp'
-    && state.title === '/tmp'
+    && state.title === 'CloudTerminal'
     && state.selectedIndex === 0
     && state.statuses[0] === 'status-dot connected'
     && state.statuses[1] === 'status-dot background'

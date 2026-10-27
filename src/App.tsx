@@ -62,10 +62,6 @@ function TerminalApp({ authToken, user, onLogout }: TerminalAppProps) {
 
   const closeCollaborators = useCallback(() => setCollaboratorsOpen(false), []);
 
-  useEffect(() => {
-    document.title = activeTab?.title || 'Cloud Terminal';
-  }, [activeTab?.title]);
-
   useLayoutEffect(() => {
     if (!settingsOpen) {
       return;

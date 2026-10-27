@@ -1,8 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import * as terminalState from './terminal-state.js';
 import { encodeTabsServerMessage } from './wire.js';
 import { UUID_V4_PATTERN, cleanTerminalTitle, readString } from './terminal-validation.js';
 import { WS_OPEN, websocketWritable } from './terminal-output.js';
+
+export function displayTabTitle(title, home = os.homedir(), paths = path) {
+  if (!home || !paths.isAbsolute(title) || !paths.isAbsolute(home)) return title;
+  const relative = paths.relative(home, title);
+  if (relative === '') return '~/';
+  if (relative === '..' || relative.startsWith(`..${paths.sep}`) || paths.isAbsolute(relative)) return title;
+  return `~/${relative.split(paths.sep).join('/')}`;
+}
 
 // `store` persists tab state; it defaults to the SQLite-backed terminal state.
 export function createTerminalWorkspaces({ sessions, persistentPty, closeSession, store = terminalState }) {
@@ -87,7 +97,7 @@ export function createTerminalWorkspaces({ sessions, persistentPty, closeSession
     return {
       tabs: tabsState.tabs.map((tab) => ({
         ...tab,
-        title: cleanTerminalTitle(tab.title) || tab.title,
+        title: displayTabTitle(cleanTerminalTitle(tab.title) || tab.title),
         status: getTabStatus(workspace, tab.id),
       })),
       activeId: tabsState.activeId,

@@ -1,8 +1,20 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import { cloudcli } from '../proto/messages.js';
-import { createTerminalWorkspaces } from './terminal-workspaces.js';
+import { createTerminalWorkspaces, displayTabTitle } from './terminal-workspaces.js';
+
+test('tab titles abbreviate the home directory without changing other paths or titles', () => {
+  assert.equal(displayTabTitle('/home/user', '/home/user', path.posix), '~/');
+  assert.equal(displayTabTitle('/home/user/project/nested', '/home/user', path.posix), '~/project/nested');
+  assert.equal(displayTabTitle('/home/username/project', '/home/user', path.posix), '/home/username/project');
+  assert.equal(displayTabTitle('~/project', '/home/user', path.posix), '~/project');
+  assert.equal(displayTabTitle('build', '/home/user', path.posix), 'build');
+  assert.equal(displayTabTitle('C:\\Users\\User\\project', 'C:\\Users\\User', path.win32), '~/project');
+  assert.equal(displayTabTitle('D:\\project', 'C:\\Users\\User', path.win32), 'D:\\project');
+});
 
 const disabledPty = { enabled: false, sessionIds: new Set() };
 
@@ -40,6 +52,20 @@ function setup({ persistentPty = disabledPty, sessions = new Map() } = {}) {
     move: (tabId, targetId, after) => command(workspace, { type: 'move-tab', tabId, targetId, after }),
   };
 }
+
+test('broadcasts display a home-relative title while keeping the session directory absolute', () => {
+  const sessions = new Map();
+  const h = setup({ sessions });
+  const tabId = randomUUID();
+  const cwd = path.join(os.homedir(), 'project');
+  h.tabsState.tabs = [{ id: tabId, title: 'terminal' }];
+  h.tabsState.activeId = tabId;
+  sessions.set(tabId, { cwd, workspace: h.workspace });
+  h.workspaces.updateTabTitle(h.workspace, tabId, cwd);
+  assert.equal(h.viewer.messages.at(-1).tabs.tabs[0].title, '~/project');
+  assert.equal(sessions.get(tabId).cwd, cwd);
+  assert.equal(h.tabsState.tabs[0].title, cwd);
+});
 
 test('tab move inserts on either side without changing the active terminal or tab objects', () => {
   const state = setup();
